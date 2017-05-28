@@ -1,0 +1,97 @@
+package no.mnemonic.messaging.jms;
+
+import no.mnemonic.commons.logging.Logger;
+import no.mnemonic.commons.logging.Logging;
+import no.mnemonic.messaging.api.RequestListener;
+import no.mnemonic.messaging.api.SignalContext;
+
+import javax.jms.*;
+import java.io.IOException;
+import java.io.InputStream;
+import java.security.MessageDigest;
+
+import static no.mnemonic.messaging.jms.JMSRequestProxy.*;
+
+class ChannelUploadMessageContext implements SignalContext {
+
+  private static final Logger LOGGER = Logging.getLogger(ServerResponseContext.class);
+
+  private final SignalContext realContext;
+  private final InputStream messageData;
+  private final String callID;
+  private final int fragmentSize;
+
+  public ChannelUploadMessageContext(SignalContext realContext, InputStream messageData, String callID, int fragmentSize) {
+    this.realContext = realContext;
+    this.messageData = messageData;
+    this.callID = callID;
+    this.fragmentSize = fragmentSize;
+  }
+
+  public void upload(Session session, Destination channelDestination) throws JMSException {
+    try {
+      if (LOGGER.isDebug()) LOGGER.debug(String.format("Initializing channel upload for callID %s to destination %s", callID, channelDestination));
+      MessageProducer producer = session.createProducer(channelDestination);
+      try {
+        byte[] bytes = new byte[fragmentSize];
+        int size;
+        int fragmentIndex = 0;
+        MessageDigest digest = JMSUtils.md5();
+        while ((size = messageData.read(bytes)) >= 0) {
+          digest.update(bytes, 0, size);
+          BytesMessage fragment = JMSUtils.createByteMessage(session, JMSUtils.arraySubSeq(bytes, 0, size));
+          fragment.setJMSCorrelationID(callID);
+          fragment.setStringProperty(PROPERTY_MESSAGE_TYPE, MESSAGE_TYPE_SIGNAL_FRAGMENT);
+          fragment.setIntProperty(PROPERTY_FRAGMENTS_IDX, fragmentIndex++);
+          producer.send(channelDestination, fragment);
+        }
+        javax.jms.Message eos = JMSUtils.createTextMessage(session, "End-Of-Stream", JMSUtils.ProtocolVersion.V16);
+        eos.setJMSCorrelationID(callID);
+        eos.setStringProperty(PROPERTY_MESSAGE_TYPE, MESSAGE_TYPE_STREAM_CLOSED);
+        eos.setIntProperty(PROPERTY_FRAGMENTS_TOTAL, fragmentIndex);
+        eos.setStringProperty(PROPERTY_DATA_CHECKSUM_MD5, JMSUtils.hex(digest.digest()));
+        producer.send(channelDestination, eos);
+        if (LOGGER.isDebug()) LOGGER.debug(String.format("Completed sending %d fragments for callID %s", fragmentIndex, callID));
+      } finally {
+        producer.close();
+      }
+    } catch (IOException e) {
+      throw new JMSException("Error reading from message data stream: " + e.getMessage());
+    }
+  }
+
+  @Override
+  public boolean addResponse(no.mnemonic.messaging.api.Message msg) {
+    return realContext.addResponse(msg);
+  }
+
+  @Override
+  public void endOfStream() {
+    realContext.endOfStream();
+  }
+
+  @Override
+  public boolean isClosed() {
+    return realContext.isClosed();
+  }
+
+  @Override
+  public boolean keepAlive(long until) {
+    return realContext.keepAlive(until);
+  }
+
+  @Override
+  public void notifyError(Throwable e) {
+    realContext.notifyError(e);
+  }
+
+  @Override
+  public void addListener(RequestListener listener) {
+    realContext.addListener(listener);
+  }
+
+  @Override
+  public void removeListener(RequestListener listener) {
+    realContext.removeListener(listener);
+  }
+}

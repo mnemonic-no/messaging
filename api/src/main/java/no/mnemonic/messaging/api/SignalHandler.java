@@ -2,6 +2,7 @@ package no.mnemonic.messaging.api;
 
 import no.mnemonic.commons.logging.Logger;
 import no.mnemonic.commons.logging.Logging;
+import no.mnemonic.commons.utilities.collections.ListUtils;
 
 import java.time.Clock;
 import java.util.*;
@@ -156,10 +157,11 @@ public class SignalHandler implements SignalContext, CallIDAwareMessageContext {
    *
    * @return all responses currently received
    */
-  public Collection<Message> getResponsesNoWait() {
+  public <T extends Message> Collection<T> getResponsesNoWait() {
     Collection<Message> result = new ArrayList<>();
     responses.drainTo(result);
-    return result;
+    //noinspection unchecked
+    return ListUtils.list(responses, v->(T)v);
   }
 
   /**
@@ -169,9 +171,10 @@ public class SignalHandler implements SignalContext, CallIDAwareMessageContext {
    * @return the first response to show up, or null if no responses were
    * recorded within maxWait millis.
    */
-  public Message getNextResponse(long maxWait) {
+  public <T extends Message> T getNextResponse(long maxWait) {
     try {
-      return responses.poll(maxWait, TimeUnit.MILLISECONDS);
+      //noinspection unchecked
+      return (T) responses.poll(maxWait, TimeUnit.MILLISECONDS);
     } catch (InterruptedException e) {
       throw new RuntimeException(e);
     }
@@ -186,7 +189,7 @@ public class SignalHandler implements SignalContext, CallIDAwareMessageContext {
    * @return a collection with the results received up until maxWait millis,
    * or maxResults results, whatever happens first.
    */
-  public Collection<Message> getResponses(long maxWait, int maxResults) {
+  public <T extends Message> Collection<T> getResponses(long maxWait, int maxResults) {
     // determine timeout
     long timeout = clock.millis() + maxWait;
     if (maxWait == 0)

@@ -165,6 +165,7 @@ public class SignalHandler implements SignalContext {
       synchronized (this) {
         checkIfReceivedError();
         if (responses.isEmpty()) {
+          if (isClosed()) return null;
           this.wait(maxWait);
           checkIfReceivedError();
         }
@@ -196,7 +197,7 @@ public class SignalHandler implements SignalContext {
       // if enough responses have come, return responses (so far)
       synchronized (this) {
         checkIfReceivedError();
-        if (responses.size() >= maxResults) {
+        if (responses.size() >= maxResults || isClosed()) {
           return getResponsesNoWait();
         }
         try {

@@ -116,6 +116,23 @@ public class SignalHandlerTest {
   }
 
   @Test
+  public void testGetResponsesReturnsPendingResultsWhenClosed() throws Throwable {
+    SignalHandler handler = new SignalHandler(false, "callid");
+    handler.addResponse(new TestMessage("msg3"));
+    handler.endOfStream();
+    assertNotNull(executor.submit(() -> handler.getNextResponse(100)).get(100, TimeUnit.MILLISECONDS));
+  }
+
+  @Test
+  public void testGetResponsesReturnsNullWhenClosedAndNoMoreResults() throws Throwable {
+    SignalHandler handler = new SignalHandler(false, "callid");
+    handler.addResponse(new TestMessage("msg3"));
+    handler.endOfStream();
+    assertNotNull(executor.submit(() -> handler.getNextResponse(100)).get(100, TimeUnit.MILLISECONDS));
+    assertNull(executor.submit(() -> handler.getNextResponse(100)).get(100, TimeUnit.MILLISECONDS));
+  }
+
+  @Test
   public void testGetResponsesWaitForResults() throws InterruptedException, ExecutionException, TimeoutException {
     SignalHandler handler = new SignalHandler(false, "callid");
     Future<Collection<TestMessage>> msg = executor.submit(() -> handler.getResponses(1000, 3));

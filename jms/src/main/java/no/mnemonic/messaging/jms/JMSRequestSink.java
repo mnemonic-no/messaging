@@ -117,10 +117,13 @@ public class JMSRequestSink extends JMSBase implements RequestSink, RequestListe
     if (ctx instanceof CallIDAwareMessageContext) {
       CallIDAwareMessageContext cctx = (CallIDAwareMessageContext) ctx;
       //make sure context has a callID set, preferably the message callID, else generate a random callID
-      if (cctx.getCallID() == null)
+      if (cctx.getCallID() == null) {
         cctx.setCallID(msg.getCallID() == null ? UUID.randomUUID().toString() : msg.getCallID());
+      }
       //if message has no callID, set the context callID on the message
-      if (msg.getCallID() == null) msg.setCallID(cctx.getCallID());
+      if (msg.getCallID() == null) {
+        msg.setCallID(cctx.getCallID());
+      }
     }
   }
 

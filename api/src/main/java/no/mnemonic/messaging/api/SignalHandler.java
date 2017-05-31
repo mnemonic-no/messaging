@@ -9,7 +9,6 @@ import java.time.Clock;
 import java.util.*;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.LinkedBlockingDeque;
-import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
@@ -20,7 +19,7 @@ import java.util.concurrent.atomic.AtomicReference;
  * After making an asynchronous call, this responsehandler may be used for tracking responses from the called
  * components.
  */
-public class SignalHandler implements SignalContext, CallIDAwareMessageContext {
+public class SignalHandler implements SignalContext {
 
   private static Clock clock = Clock.systemUTC();
   private static final Logger LOGGER = Logging.getLogger(SignalHandler.class);
@@ -30,27 +29,15 @@ public class SignalHandler implements SignalContext, CallIDAwareMessageContext {
   private final AtomicReference<Throwable> error = new AtomicReference<>();
   private final Set<RequestListener> requestListeners = Collections.synchronizedSet(new HashSet<>());
   private final boolean allowKeepAlive;
-  private final AtomicReference<String> callID = new AtomicReference<>();
+  private final String callID;
   private final AtomicLong timeout = new AtomicLong();
-
-  public SignalHandler() {
-    this.allowKeepAlive = false;
-  }
 
   public SignalHandler(boolean allowKeepAlive, String callID) {
     this.allowKeepAlive = allowKeepAlive;
-    this.callID.set(callID);
+    this.callID = callID;
   }
 
   //interface methods
-
-  public String getCallID() {
-    return callID.get();
-  }
-
-  public void setCallID(String callID) {
-    this.callID.set(callID);
-  }
 
   public void addListener(RequestListener listener) {
     requestListeners.add(listener);
@@ -148,7 +135,7 @@ public class SignalHandler implements SignalContext, CallIDAwareMessageContext {
     synchronized (this) {
       closed.set(true);
       this.notifyAll();
-      requestListeners.forEach(l -> l.close(callID.get()));
+      requestListeners.forEach(l -> l.close(callID));
     }
   }
 
@@ -163,7 +150,7 @@ public class SignalHandler implements SignalContext, CallIDAwareMessageContext {
     Collection<Message> result = new ArrayList<>();
     responses.drainTo(result);
     //noinspection unchecked
-    return ListUtils.list(responses, v -> (T) v);
+    return ListUtils.list(result, v -> (T) v);
   }
 
   /**

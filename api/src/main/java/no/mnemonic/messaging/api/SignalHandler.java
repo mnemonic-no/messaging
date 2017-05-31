@@ -4,6 +4,7 @@ import no.mnemonic.commons.logging.Logger;
 import no.mnemonic.commons.logging.Logging;
 import no.mnemonic.commons.utilities.collections.ListUtils;
 
+import java.lang.reflect.InvocationTargetException;
 import java.time.Clock;
 import java.util.*;
 import java.util.concurrent.BlockingQueue;
@@ -157,11 +158,12 @@ public class SignalHandler implements SignalContext, CallIDAwareMessageContext {
    *
    * @return all responses currently received
    */
-  public <T extends Message> Collection<T> getResponsesNoWait() {
+  public <T extends Message> Collection<T> getResponsesNoWait() throws InvocationTargetException {
+    checkIfReceivedError();
     Collection<Message> result = new ArrayList<>();
     responses.drainTo(result);
     //noinspection unchecked
-    return ListUtils.list(responses, v->(T)v);
+    return ListUtils.list(responses, v -> (T) v);
   }
 
   /**
@@ -171,10 +173,17 @@ public class SignalHandler implements SignalContext, CallIDAwareMessageContext {
    * @return the first response to show up, or null if no responses were
    * recorded within maxWait millis.
    */
-  public <T extends Message> T getNextResponse(long maxWait) {
+  public <T extends Message> T getNextResponse(long maxWait) throws InvocationTargetException {
     try {
-      //noinspection unchecked
-      return (T) responses.poll(maxWait, TimeUnit.MILLISECONDS);
+      synchronized (this) {
+        checkIfReceivedError();
+        if (responses.isEmpty()) {
+          this.wait(maxWait);
+          checkIfReceivedError();
+        }
+        //noinspection unchecked
+        return (T) responses.poll();
+      }
     } catch (InterruptedException e) {
       throw new RuntimeException(e);
     }
@@ -189,19 +198,20 @@ public class SignalHandler implements SignalContext, CallIDAwareMessageContext {
    * @return a collection with the results received up until maxWait millis,
    * or maxResults results, whatever happens first.
    */
-  public <T extends Message> Collection<T> getResponses(long maxWait, int maxResults) {
+  public <T extends Message> Collection<T> getResponses(long maxWait, int maxResults) throws InvocationTargetException {
     // determine timeout
     long timeout = clock.millis() + maxWait;
-    if (maxWait == 0)
+    if (maxWait == 0) {
       timeout = 0;
+    }
 
     while (timeout > 0 && clock.millis() < timeout) {
       // if enough responses have come, return responses (so far)
       synchronized (this) {
-        if (hasReceivedError())
-          throw new RuntimeException(error.get());
-        if (responses.size() >= maxResults)
-          break;
+        checkIfReceivedError();
+        if (responses.size() >= maxResults) {
+          return getResponsesNoWait();
+        }
         try {
           this.wait(timeout - clock.millis());
         } catch (InterruptedException e) {
@@ -211,6 +221,12 @@ public class SignalHandler implements SignalContext, CallIDAwareMessageContext {
     }
     //if timeout has passed, return responses received so far
     return getResponsesNoWait();
+  }
+
+  private void checkIfReceivedError() throws InvocationTargetException {
+    if (hasReceivedError()) {
+      throw new InvocationTargetException(error.get());
+    }
   }
 
   static void setClock(Clock clk) {

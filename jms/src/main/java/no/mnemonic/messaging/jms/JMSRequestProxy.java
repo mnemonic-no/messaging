@@ -136,7 +136,7 @@ public class JMSRequestProxy extends JMSBase implements MessageListener, Excepti
       //if semaphonre is depleted, this should block the activemq consumer, causing messages to queue up in JMS
       semaphore.acquire();
       try {
-        doProcessMessage(message, timeout);
+        submit(() -> doProcessMessage(message, timeout));
       } finally {
         semaphore.release();
       }

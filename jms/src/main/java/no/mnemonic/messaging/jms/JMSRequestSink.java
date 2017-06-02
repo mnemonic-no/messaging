@@ -52,10 +52,10 @@ public class JMSRequestSink extends JMSBase implements RequestSink, RequestListe
   private final LongAdder channelUploadCounter = new LongAdder();
 
   private JMSRequestSink(List<JMSConnection> connections, String destinationName, long failbackInterval,
-                         int timeToLive, int priority, boolean persistent, boolean temporary,
+                         int timeToLive, int priority, boolean persistent,
                          int maxMessageSize, JMSUtils.ProtocolVersion protocolVersion) {
     super(connections, destinationName, false,
-            failbackInterval, timeToLive, priority, persistent, temporary,
+            failbackInterval, timeToLive, priority, persistent, false,
             Executors.newSingleThreadExecutor()
     );
     this.maxMessageSize = maxMessageSize;
@@ -398,7 +398,6 @@ public class JMSRequestSink extends JMSBase implements RequestSink, RequestListe
     private int timeToLive = DEFAULT_TTL;
     private int priority = DEFAULT_PRIORITY;
     private boolean persistent = false;
-    private boolean temporary = false;
     private int maxMessageSize = DEFAULT_MAX_MESSAGE_SIZE;
     private JMSUtils.ProtocolVersion protocolVersion = JMSUtils.ProtocolVersion.V13;
 
@@ -406,7 +405,7 @@ public class JMSRequestSink extends JMSBase implements RequestSink, RequestListe
       if (CollectionUtils.isEmpty(connections)) throw new IllegalArgumentException("No connections defined");
       if (destinationName == null) throw new IllegalArgumentException("No destination name provided");
       return new JMSRequestSink(connections, destinationName, failbackInterval, timeToLive, priority, persistent,
-              temporary, maxMessageSize, protocolVersion);
+              maxMessageSize, protocolVersion);
     }
 
     //setters
@@ -443,11 +442,6 @@ public class JMSRequestSink extends JMSBase implements RequestSink, RequestListe
 
     public Builder setPersistent(boolean persistent) {
       this.persistent = persistent;
-      return this;
-    }
-
-    public Builder setTemporary(boolean temporary) {
-      this.temporary = temporary;
       return this;
     }
 

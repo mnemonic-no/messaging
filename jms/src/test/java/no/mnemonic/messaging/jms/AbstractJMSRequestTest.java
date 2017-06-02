@@ -27,50 +27,6 @@ abstract class AbstractJMSRequestTest {
     void action(Message msg) throws Exception;
   }
 
-  public static class TestMessage implements no.mnemonic.messaging.api.Message {
-
-    private final String id;
-    private String callID;
-    private long timestamp = System.currentTimeMillis();
-
-    TestMessage(String id) {
-      this.id = id;
-      this.callID = UUID.randomUUID().toString();
-    }
-
-    @Override
-    public long getMessageTimestamp() {
-      return timestamp;
-    }
-
-    @Override
-    public String getCallID() {
-      return callID;
-    }
-
-    @Override
-    public void setCallID(String callID) {
-      this.callID = callID;
-    }
-
-    @Override
-    public boolean equals(Object o) {
-      if (this == o) return true;
-      if (o == null || getClass() != o.getClass()) return false;
-      TestMessage that = (TestMessage) o;
-      return Objects.equals(id, that.id);
-    }
-
-    @Override
-    public int hashCode() {
-      return Objects.hash(id);
-    }
-
-    String getId() {
-      return id;
-    }
-  }
-
 
   ObjectMessage objMsg(Serializable obj, String messageType, String callID) throws JMSException {
     ObjectMessage msg = session.createObjectMessage(obj);

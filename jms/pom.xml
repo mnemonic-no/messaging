@@ -52,6 +52,12 @@
       <version>${mnemonic.commons.version}</version>
       <scope>test</scope>
     </dependency>
+    <dependency>
+      <groupId>no.mnemonic.commons</groupId>
+      <artifactId>testtools</artifactId>
+      <version>${mnemonic.commons.version}</version>
+      <scope>test</scope>
+    </dependency>
   </dependencies>
 
 </project>

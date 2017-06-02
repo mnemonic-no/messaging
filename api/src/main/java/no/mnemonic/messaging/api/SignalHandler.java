@@ -32,6 +32,13 @@ public class SignalHandler implements SignalContext {
   private final String callID;
   private final AtomicLong timeout = new AtomicLong();
 
+  public SignalHandler(RequestSink sink, Message msg, boolean allowKeepAlive, long maxWait) {
+    this.allowKeepAlive = allowKeepAlive;
+    this.callID = msg.getCallID();
+    timeout.set(System.currentTimeMillis() + maxWait);
+    sink.signal(msg, this, maxWait);
+  }
+
   public SignalHandler(boolean allowKeepAlive, String callID) {
     this.allowKeepAlive = allowKeepAlive;
     this.callID = callID;

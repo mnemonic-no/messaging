@@ -294,7 +294,7 @@ public class JMSRequestProxy extends JMSBase implements MessageListener, Excepti
 
     //fields
 
-    JMSRequestProxy build() {
+    public JMSRequestProxy build() {
       if (CollectionUtils.isEmpty(connections)) throw new IllegalArgumentException("No connections defined");
       if (requestSink == null) throw new IllegalArgumentException("No requestSink provided");
       if (destinationName == null) throw new IllegalArgumentException("No destination name provided");

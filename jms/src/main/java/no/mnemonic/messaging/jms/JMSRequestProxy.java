@@ -269,7 +269,7 @@ public class JMSRequestProxy extends JMSBase implements MessageListener, Excepti
 
   //inner classes
 
-  private interface ServerContext {
+  interface ServerContext {
     boolean isClosed();
   }
 

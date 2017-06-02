@@ -36,7 +36,7 @@ class ServerResponseContext implements SignalContext, JMSRequestProxy.ServerCont
     this.replyTo = session.createProducer(replyTo);
   }
 
-  public void handle(RequestSink requestSink, Message request) throws JMSException {
+  void handle(RequestSink requestSink, Message request) throws JMSException {
     requestSink.signal(request, this, System.currentTimeMillis() - timeout.get());
   }
 
@@ -68,6 +68,7 @@ class ServerResponseContext implements SignalContext, JMSRequestProxy.ServerCont
       if (protocolVersion == V16) {
         returnMessage = JMSUtils.createByteMessage(session, JMSUtils.serialize(msg));
       } else {
+        //noinspection deprecation
         returnMessage = JMSUtils.createObjectMessage(session, msg);
       }
       returnMessage.setJMSCorrelationID(callID);
@@ -112,6 +113,7 @@ class ServerResponseContext implements SignalContext, JMSRequestProxy.ServerCont
         if (protocolVersion == V16) {
           exMessage = JMSUtils.createByteMessage(session, JMSUtils.serialize(ex));
         } else {
+          //noinspection deprecation
           exMessage = JMSUtils.createObjectMessage(session, ex);
         }
         exMessage.setJMSCorrelationID(callID);

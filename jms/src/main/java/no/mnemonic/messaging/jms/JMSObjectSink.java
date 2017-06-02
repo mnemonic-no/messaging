@@ -33,6 +33,7 @@ public class JMSObjectSink<T extends Serializable> extends JMSBase
     if (isClosed()) throw new RuntimeException("closed");
     try {
       //encode and send in main thread
+      //noinspection deprecation
       Message msg = protocolVersion == JMSUtils.ProtocolVersion.V16 ?
               JMSUtils.createByteMessage(getSession(), JMSUtils.serialize(obj)) :
               JMSUtils.createObjectMessage(getSession(), obj);

@@ -15,7 +15,7 @@ import javax.naming.NamingException;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 
-import static no.mnemonic.messaging.jms.JMSUtils.ProtocolVersion.V16;
+import static no.mnemonic.messaging.jms.ProtocolVersion.V16;
 
 class ServerResponseContext implements SignalContext, JMSRequestProxy.ServerContext {
 
@@ -26,9 +26,9 @@ class ServerResponseContext implements SignalContext, JMSRequestProxy.ServerCont
   private final String callID;
   private final AtomicLong timeout = new AtomicLong();
   private final AtomicBoolean closed = new AtomicBoolean();
-  private final JMSUtils.ProtocolVersion protocolVersion;
+  private final ProtocolVersion protocolVersion;
 
-  ServerResponseContext(String callID, Session session, Destination replyTo, long timeout, JMSUtils.ProtocolVersion protocolVersion) throws NamingException, JMSException {
+  ServerResponseContext(String callID, Session session, Destination replyTo, long timeout, ProtocolVersion protocolVersion) throws NamingException, JMSException {
     this.callID = callID;
     this.protocolVersion = protocolVersion;
     this.timeout.set(timeout);

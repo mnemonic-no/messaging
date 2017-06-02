@@ -46,14 +46,14 @@ public class JMSRequestSink extends JMSBase implements RequestSink, RequestListe
   private final ConcurrentHashMap<String, ClassLoaderSignalContextPair> requests = new ConcurrentHashMap<>();
   private final AtomicReference<ResponseListener> responseListener = new AtomicReference<>();
   private final int maxMessageSize;
-  private final JMSUtils.ProtocolVersion protocolVersion;
+  private final ProtocolVersion protocolVersion;
 
   private final LongAdder requestCounter = new LongAdder();
   private final LongAdder channelUploadCounter = new LongAdder();
 
   private JMSRequestSink(List<JMSConnection> connections, String destinationName, long failbackInterval,
                          int timeToLive, int priority, boolean persistent,
-                         int maxMessageSize, JMSUtils.ProtocolVersion protocolVersion) {
+                         int maxMessageSize, ProtocolVersion protocolVersion) {
     super(connections, destinationName, false,
             failbackInterval, timeToLive, priority, persistent, false,
             Executors.newSingleThreadExecutor()
@@ -81,7 +81,7 @@ public class JMSRequestSink extends JMSBase implements RequestSink, RequestListe
     // determine message labels
     String callID = msg.getCallID();
 
-    if (protocolVersion == JMSUtils.ProtocolVersion.V16) {
+    if (protocolVersion == ProtocolVersion.V16) {
       checkForFragmentationAndSignal(msg, ctx, callID, maxWait);
     } else {
       // send request using old protocol (no fragmenting)
@@ -399,7 +399,7 @@ public class JMSRequestSink extends JMSBase implements RequestSink, RequestListe
     private int priority = DEFAULT_PRIORITY;
     private boolean persistent = false;
     private int maxMessageSize = DEFAULT_MAX_MESSAGE_SIZE;
-    private JMSUtils.ProtocolVersion protocolVersion = JMSUtils.ProtocolVersion.V13;
+    private ProtocolVersion protocolVersion = ProtocolVersion.V13;
 
     public JMSRequestSink build() {
       if (CollectionUtils.isEmpty(connections)) throw new IllegalArgumentException("No connections defined");
@@ -450,7 +450,7 @@ public class JMSRequestSink extends JMSBase implements RequestSink, RequestListe
       return this;
     }
 
-    public Builder setProtocolVersion(JMSUtils.ProtocolVersion protocolVersion) {
+    public Builder setProtocolVersion(ProtocolVersion protocolVersion) {
       this.protocolVersion = protocolVersion;
       return this;
     }

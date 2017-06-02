@@ -210,7 +210,7 @@ public class JMSRequestProxy extends JMSBase implements MessageListener, Excepti
 
   private void handleChannelUploadCompleted(String callID, byte[] data, Destination replyTo, long timeout) throws Exception {
     // create a response context to handle response messages
-    ServerResponseContext r = new ServerResponseContext(callID, getSession(), replyTo, timeout, JMSUtils.ProtocolVersion.V16);
+    ServerResponseContext r = new ServerResponseContext(callID, getSession(), replyTo, timeout, ProtocolVersion.V16);
     // overwrite channel upload context with a server response context
     calls.put(callID, r);
     //send uploaded signal to requestSink
@@ -245,7 +245,7 @@ public class JMSRequestProxy extends JMSBase implements MessageListener, Excepti
    * @param timeout how long this responsesink will forward messages
    * @return a responsesink fulfilling this API
    */
-  private ServerResponseContext setupServerContext(final String callID, Destination replyTo, long timeout, JMSUtils.ProtocolVersion protocolVersion) throws JMSException, NamingException {
+  private ServerResponseContext setupServerContext(final String callID, Destination replyTo, long timeout, ProtocolVersion protocolVersion) throws JMSException, NamingException {
     ServerContext ctx = calls.get(callID);
     if (ctx != null) return (ServerResponseContext) ctx;
     //create new response context

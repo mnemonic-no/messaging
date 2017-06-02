@@ -117,7 +117,7 @@ public class JMSFailoverTest {
   private JMSRequestSink createSink(JMSConnection connection) {
     return JMSRequestSink.builder()
             .addConnection(connection)
-            .setProtocolVersion(JMSUtils.ProtocolVersion.V16)
+            .setProtocolVersion(ProtocolVersion.V16)
             .setDestinationName("dynamicQueues/testqueue")
             .build();
   }

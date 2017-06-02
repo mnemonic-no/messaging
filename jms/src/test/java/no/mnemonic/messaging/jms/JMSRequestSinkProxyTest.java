@@ -93,7 +93,7 @@ public class JMSRequestSinkProxyTest extends AbstractJMSRequestTest {
             .addConnection(connection)
             .setDestinationName(queueName)
             //set protocol V16 to enable channel upload
-            .setProtocolVersion(JMSUtils.ProtocolVersion.V16)
+            .setProtocolVersion(ProtocolVersion.V16)
             //set max message size to 100 bytes, to force channel upload with message fragments
             .setMaxMessageSize(100)
             .build();

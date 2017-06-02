@@ -53,7 +53,7 @@ class ServerChannelUploadContext implements JMSRequestProxy.ServerContext {
     this.channelConsumer.setMessageListener(this::onMessage);
 
     this.replyTo = session.createProducer(responseDestination);
-    Message setupMessage = JMSUtils.createTextMessage(session, "channel setup", JMSUtils.ProtocolVersion.V16);
+    Message setupMessage = JMSUtils.createTextMessage(session, "channel setup", ProtocolVersion.V16);
     setupMessage.setJMSCorrelationID(callID);
     setupMessage.setStringProperty(PROPERTY_MESSAGE_TYPE, MESSAGE_TYPE_CHANNEL_SETUP);
     setupMessage.setLongProperty(PROPERTY_REQ_TIMEOUT, timeout.get());

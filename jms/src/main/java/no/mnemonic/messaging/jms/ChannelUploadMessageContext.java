@@ -46,7 +46,7 @@ class ChannelUploadMessageContext implements SignalContext {
           fragment.setLongProperty(PROPERTY_REQ_TIMEOUT, System.currentTimeMillis() + 10000);
           producer.send(channelDestination, fragment);
         }
-        javax.jms.Message eos = JMSUtils.createTextMessage(session, "End-Of-Stream", JMSUtils.ProtocolVersion.V16);
+        javax.jms.Message eos = JMSUtils.createTextMessage(session, "End-Of-Stream", ProtocolVersion.V16);
         eos.setJMSCorrelationID(callID);
         eos.setStringProperty(PROPERTY_MESSAGE_TYPE, MESSAGE_TYPE_STREAM_CLOSED);
         eos.setIntProperty(PROPERTY_FRAGMENTS_TOTAL, fragmentIndex);

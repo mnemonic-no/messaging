@@ -18,7 +18,7 @@ import java.util.concurrent.Executors;
 public class JMSObjectSink<T extends Serializable> extends JMSBase
         implements TransactedObjectSink<T> {
 
-  private final JMSUtils.ProtocolVersion protocolVersion = JMSUtils.ProtocolVersion.V13;
+  private final ProtocolVersion protocolVersion = ProtocolVersion.V13;
 
   public JMSObjectSink(List<JMSConnection> connections, String destinationName, boolean transacted, long failbackInterval,
                        int timeToLive, int priority, boolean persistent, boolean temporary) {
@@ -34,7 +34,7 @@ public class JMSObjectSink<T extends Serializable> extends JMSBase
     try {
       //encode and send in main thread
       //noinspection deprecation
-      Message msg = protocolVersion == JMSUtils.ProtocolVersion.V16 ?
+      Message msg = protocolVersion == ProtocolVersion.V16 ?
               JMSUtils.createByteMessage(getSession(), JMSUtils.serialize(obj)) :
               JMSUtils.createObjectMessage(getSession(), obj);
       sendJMSMessage(msg);

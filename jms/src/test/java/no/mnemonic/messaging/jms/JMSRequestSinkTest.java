@@ -168,7 +168,7 @@ public class JMSRequestSinkTest extends AbstractJMSRequestTest {
             .addConnection(connection)
             .setDestinationName(queueName)
             .setMaxMessageSize(maxMessageSize)
-            .setProtocolVersion(v16 ? JMSUtils.ProtocolVersion.V16 : JMSUtils.ProtocolVersion.V13)
+            .setProtocolVersion(v16 ? ProtocolVersion.V16 : ProtocolVersion.V13)
             .build();
     container = ComponentContainer.create(requestSink, connection);
     container.initialize();

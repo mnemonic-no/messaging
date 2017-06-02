@@ -36,15 +36,17 @@ import static no.mnemonic.messaging.jms.JMSRequestProxy.*;
  */
 public class JMSRequestSink extends JMSBase implements RequestSink, RequestListener {
 
-  private static final int DEFAULT_MAX_MESSAGE_SIZE = 1000000;
+  private static final int DEFAULT_MAX_MESSAGE_SIZE = 65536;
   private static final Logger LOGGER = Logging.getLogger(JMSRequestSink.class);
+  static final int DEFAULT_TTL = 1000;
+  static final int DEFAULT_PRIORITY = 1;
 
   // variables
 
   private final ConcurrentHashMap<String, ClassLoaderSignalContextPair> requests = new ConcurrentHashMap<>();
   private final AtomicReference<ResponseListener> responseListener = new AtomicReference<>();
-  private int maxMessageSize = DEFAULT_MAX_MESSAGE_SIZE;
-  private JMSUtils.ProtocolVersion protocolVersion = JMSUtils.ProtocolVersion.V13;
+  private final int maxMessageSize;
+  private final JMSUtils.ProtocolVersion protocolVersion;
 
   private final LongAdder requestCounter = new LongAdder();
   private final LongAdder channelUploadCounter = new LongAdder();
@@ -117,14 +119,14 @@ public class JMSRequestSink extends JMSBase implements RequestSink, RequestListe
   private void checkMessageInterfaces(Message msg, SignalContext ctx) {
     //check callID
     if (ctx instanceof CallIDAwareMessageContext) {
-      CallIDAwareMessageContext cctx = (CallIDAwareMessageContext) ctx;
+      CallIDAwareMessageContext callIDAwareContext = (CallIDAwareMessageContext) ctx;
       //make sure context has a callID set, preferably the message callID, else generate a random callID
-      if (cctx.getCallID() == null) {
-        cctx.setCallID(msg.getCallID() == null ? UUID.randomUUID().toString() : msg.getCallID());
+      if (callIDAwareContext.getCallID() == null) {
+        callIDAwareContext.setCallID(msg.getCallID() == null ? UUID.randomUUID().toString() : msg.getCallID());
       }
       //if message has no callID, set the context callID on the message
       if (msg.getCallID() == null) {
-        msg.setCallID(cctx.getCallID());
+        msg.setCallID(callIDAwareContext.getCallID());
       }
     }
   }
@@ -183,6 +185,7 @@ public class JMSRequestSink extends JMSBase implements RequestSink, RequestListe
 
   private void sendV13Message(Serializable msg, String callID, String messageType, long lifeTime) {
     try {
+      //noinspection deprecation
       javax.jms.Message m = JMSUtils.createObjectMessage(getSession(), msg);
       sendMessage(callID, messageType, lifeTime, m);
     } catch (Exception e) {
@@ -210,6 +213,7 @@ public class JMSRequestSink extends JMSBase implements RequestSink, RequestListe
     return ctx;
   }
 
+  @SuppressWarnings("UnusedReturnValue")
   private boolean handleResponse(javax.jms.Message message) throws JMSException {
     String responseType = message.getStringProperty(PROPERTY_MESSAGE_TYPE);
     if (responseType == null) responseType = "N/A";
@@ -379,21 +383,23 @@ public class JMSRequestSink extends JMSBase implements RequestSink, RequestListe
     }
   }
 
+  @SuppressWarnings("WeakerAccess")
   public static Builder builder() {
     return new Builder();
   }
 
+  @SuppressWarnings({"WeakerAccess", "unused"})
   public static class Builder {
 
     //fields
     private List<JMSConnection> connections;
     private String destinationName;
     private long failbackInterval;
-    private int timeToLive = 1000;
-    private int priority = 1;
+    private int timeToLive = DEFAULT_TTL;
+    private int priority = DEFAULT_PRIORITY;
     private boolean persistent = false;
     private boolean temporary = false;
-    private int maxMessageSize = 65536;
+    private int maxMessageSize = DEFAULT_MAX_MESSAGE_SIZE;
     private JMSUtils.ProtocolVersion protocolVersion = JMSUtils.ProtocolVersion.V13;
 
     public JMSRequestSink build() {
@@ -457,35 +463,13 @@ public class JMSRequestSink extends JMSBase implements RequestSink, RequestListe
   }
 
 
-  // accessor methods
-
-  @Deprecated
-  public void setMaxWait(long maxWait) {
-  }
-
-  public int getMaxMessageSize() {
-    return maxMessageSize;
-  }
-
-  public JMSRequestSink setMaxMessageSize(int maxMessageSize) {
-    this.maxMessageSize = maxMessageSize;
-    return this;
-  }
-
-  public JMSUtils.ProtocolVersion getProtocolVersion() {
-    return protocolVersion;
-  }
-
-  public JMSRequestSink setProtocolVersion(JMSUtils.ProtocolVersion protocolVersion) {
-    this.protocolVersion = protocolVersion;
-    return this;
-  }
+  //inner classes
 
   private class ClassLoaderSignalContextPair {
     private final SignalContext signalContext;
     private final ClassLoader classLoader;
 
-    public ClassLoaderSignalContextPair(SignalContext signalContext, ClassLoader classLoader) {
+    private ClassLoaderSignalContextPair(SignalContext signalContext, ClassLoader classLoader) {
       this.signalContext = signalContext;
       this.classLoader = classLoader;
     }

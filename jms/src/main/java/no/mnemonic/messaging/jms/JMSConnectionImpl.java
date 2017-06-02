@@ -18,7 +18,6 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
-import java.util.function.Consumer;
 
 public class JMSConnectionImpl implements JMSConnection, ExceptionListener, LifecycleAspect, AppendMembers {
 
@@ -277,10 +276,12 @@ public class JMSConnectionImpl implements JMSConnection, ExceptionListener, Life
 
   //builder
 
+  @SuppressWarnings("WeakerAccess")
   public static Builder builder() {
     return new Builder();
   }
 
+  @SuppressWarnings({"WeakerAccess", "SameParameterValue", "SpellCheckingInspection", "unused"})
   public static class Builder {
 
     //fields

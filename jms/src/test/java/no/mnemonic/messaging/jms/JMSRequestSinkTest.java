@@ -33,23 +33,15 @@ public class JMSRequestSinkTest extends AbstractJMSRequestTest {
 
   private Future<Void> endOfStream;
   private BlockingQueue<Message> queue;
+  private JMSConnection connection;
+  private String queueName;
 
   @Before
   public void setUp() throws Exception {
     MockitoAnnotations.initMocks(this);
 
-    JMSConnection connection = createConnection();
-    String queueName = "dynamicQueues/" + generateCookie(10);
-
-    //set up request sink pointing at a vm-local topic
-    requestSink = JMSRequestSink.builder()
-            .addConnection(connection)
-            .setDestinationName(queueName)
-            .build();
-
-    container = ComponentContainer.create(requestSink, connection);
-    container.initialize();
-
+    connection = createConnection();
+    queueName = "dynamicQueues/" + generateCookie(10);
     session = createSession(false);
     endOfStream = expectEndOfStream();
     queue = receiveFrom(queueName);
@@ -103,8 +95,7 @@ public class JMSRequestSinkTest extends AbstractJMSRequestTest {
 
   @Test
   public void testChannelUploadWithResponse() throws Exception {
-    requestSink.setMaxMessageSize(100);
-    requestSink.setProtocolVersion(JMSUtils.ProtocolVersion.V16);
+    setupSinkAndContainer(true, 100);
 
     TestMessage testMessage = new TestMessage(generateCookie(500));
     requestSink.signal(testMessage, signalContext, 1000);
@@ -127,7 +118,7 @@ public class JMSRequestSinkTest extends AbstractJMSRequestTest {
   //helper methods
 
   private void doTestSignalKeepalive(boolean v16) throws Exception {
-    requestSink.setProtocolVersion(v16 ? JMSUtils.ProtocolVersion.V16 : JMSUtils.ProtocolVersion.V13);
+    setupSinkAndContainer(v16, 65536);
     TestMessage testMessage = new TestMessage("test1");
     //signal message with short lifetime
     requestSink.signal(testMessage, signalContext, 1000);
@@ -140,7 +131,7 @@ public class JMSRequestSinkTest extends AbstractJMSRequestTest {
   }
 
   private void doTestSignalSubmitsMessage(boolean v16) throws Exception {
-    requestSink.setProtocolVersion(v16 ? JMSUtils.ProtocolVersion.V16 : JMSUtils.ProtocolVersion.V13);
+    setupSinkAndContainer(v16, 65536);
     TestMessage testMessage = new TestMessage("test1");
     //send testmessage
     requestSink.signal(testMessage, signalContext, 10000);
@@ -154,7 +145,7 @@ public class JMSRequestSinkTest extends AbstractJMSRequestTest {
   }
 
   private void doTestSignalReceiveResults(int resultCount, boolean v16) throws Exception {
-    requestSink.setProtocolVersion(v16 ? JMSUtils.ProtocolVersion.V16 : JMSUtils.ProtocolVersion.V13);
+    setupSinkAndContainer(v16, 65536);
     TestMessage testMessage = new TestMessage("test1");
     TestMessage responseMessage = new TestMessage("response");
 
@@ -170,6 +161,17 @@ public class JMSRequestSinkTest extends AbstractJMSRequestTest {
     waitForEOS();
     //verify that the response got through as well
     verify(signalContext, times(resultCount)).addResponse(eq(responseMessage));
+  }
+
+  private void setupSinkAndContainer(boolean v16, int maxMessageSize) {
+    requestSink = JMSRequestSink.builder()
+            .addConnection(connection)
+            .setDestinationName(queueName)
+            .setMaxMessageSize(maxMessageSize)
+            .setProtocolVersion(v16 ? JMSUtils.ProtocolVersion.V16 : JMSUtils.ProtocolVersion.V13)
+            .build();
+    container = ComponentContainer.create(requestSink, connection);
+    container.initialize();
   }
 
   private void waitForEOS() throws Exception {

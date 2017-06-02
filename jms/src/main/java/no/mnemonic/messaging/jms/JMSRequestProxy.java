@@ -99,12 +99,17 @@ public class JMSRequestProxy extends JMSBase implements MessageListener, Excepti
     invalidateInSeparateThread();
   }
 
-  //private and protected methods methods
+  @SuppressWarnings("WeakerAccess")
+  public void addJMSRequestProxyConnectionListener(JMSRequestProxyConnectionListener listener) {
+    this.connectionListeners.add(listener);
+  }
 
   public void onMessage(javax.jms.Message message) {
     checkCleanRequests();
     process(message);
   }
+
+  //private and protected methods methods
 
   private void reconnectInSeparateThread() {
     if (isReconnecting()) return;
@@ -262,21 +267,20 @@ public class JMSRequestProxy extends JMSBase implements MessageListener, Excepti
     context.setupChannel(this::handleChannelUploadCompleted);
   }
 
+  //inner classes
 
-  public interface ServerContext {
+  private interface ServerContext {
     boolean isClosed();
-  }
-
-  void addJMSRequestProxyConnectionListener(JMSRequestProxyConnectionListener listener) {
-    this.connectionListeners.add(listener);
   }
 
   //builder
 
-  static Builder builder() {
+  @SuppressWarnings("WeakerAccess")
+  public static Builder builder() {
     return new Builder();
   }
 
+  @SuppressWarnings({"WeakerAccess", "unused"})
   public static class Builder {
 
     private List<JMSConnection> connections;
@@ -306,7 +310,7 @@ public class JMSRequestProxy extends JMSBase implements MessageListener, Excepti
       return this;
     }
 
-    Builder addConnection(JMSConnection c) {
+    public Builder addConnection(JMSConnection c) {
       this.connections = ListUtils.addToList(this.connections, c);
       return this;
     }
@@ -316,12 +320,12 @@ public class JMSRequestProxy extends JMSBase implements MessageListener, Excepti
       return this;
     }
 
-    Builder setRequestSink(RequestSink requestSink) {
+    public Builder setRequestSink(RequestSink requestSink) {
       this.requestSink = requestSink;
       return this;
     }
 
-    Builder setDestinationName(String destinationName) {
+    public Builder setDestinationName(String destinationName) {
       this.destinationName = destinationName;
       return this;
     }

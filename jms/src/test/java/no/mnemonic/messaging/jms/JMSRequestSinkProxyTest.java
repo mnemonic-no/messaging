@@ -23,6 +23,8 @@ public class JMSRequestSinkProxyTest extends AbstractJMSRequestTest {
   private ComponentContainer container;
   private RequestSink endpoint;
   private SignalContext signalContext;
+  private JMSConnection connection;
+  private String queueName;
 
   @Before
   public void setUp() throws Exception {
@@ -32,8 +34,8 @@ public class JMSRequestSinkProxyTest extends AbstractJMSRequestTest {
     signalContext = mock(SignalContext.class);
 
     //set up a real JMS connection to a vm-local activemq
-    JMSConnection connection = createConnection();
-    String queueName = "dynamicQueues/" + generateCookie(10);
+    connection = createConnection();
+    queueName = "dynamicQueues/" + generateCookie(10);
 
     //set up request sink pointing at a vm-local topic
     requestSink = JMSRequestSink.builder()
@@ -49,7 +51,6 @@ public class JMSRequestSinkProxyTest extends AbstractJMSRequestTest {
             .build();
 
     container = ComponentContainer.create(requestSink, requestProxy, connection);
-    container.initialize();
   }
 
   @After
@@ -59,6 +60,7 @@ public class JMSRequestSinkProxyTest extends AbstractJMSRequestTest {
 
   @Test
   public void testSignal() throws Exception {
+    container.initialize();
     //mock client handling of response
     Future<List<TestMessage>> response = mockReceiveResponse();
     //when endpoint receives signal, it replies with a single reply, before closing channel
@@ -75,7 +77,7 @@ public class JMSRequestSinkProxyTest extends AbstractJMSRequestTest {
 
   @Test
   public void testInvalidation() throws InterruptedException {
-    //requestProxy.setDestinationName("invalidTopic");
+    container.initialize();
     requestProxy.invalidate();
     assertFalse(requestProxy.hasSession());
     Thread.sleep(1500);
@@ -86,10 +88,17 @@ public class JMSRequestSinkProxyTest extends AbstractJMSRequestTest {
 
   @Test
   public void testChannelUpload() throws InterruptedException, TimeoutException, ExecutionException {
-    //set protocol V16 to enable channel upload
-    requestSink.setProtocolVersion(JMSUtils.ProtocolVersion.V16);
-    //set max message size to 100 bytes, to force channel upload with message fragments
-    requestSink.setMaxMessageSize(100);
+    //set up request sink pointing at a vm-local topic
+    requestSink = JMSRequestSink.builder()
+            .addConnection(connection)
+            .setDestinationName(queueName)
+            //set protocol V16 to enable channel upload
+            .setProtocolVersion(JMSUtils.ProtocolVersion.V16)
+            //set max message size to 100 bytes, to force channel upload with message fragments
+            .setMaxMessageSize(100)
+            .build();
+    container = ComponentContainer.create(requestSink, requestProxy, connection);
+    container.initialize();
 
     //send message bigger than max message size
     TestMessage msg = new TestMessage(generateCookie(1000));
@@ -106,6 +115,7 @@ public class JMSRequestSinkProxyTest extends AbstractJMSRequestTest {
 
   @Test
   public void testSignalMultiReplies() throws InterruptedException, TimeoutException, ExecutionException {
+    container.initialize();
     //when endpoint receives signal, it replies with three replies, before closing channel
     Future<TestMessage> signal = mockEndpointSignal(new TestMessage("reply1"), new TestMessage("reply2"), new TestMessage("reply3"));
     //mock client handling of response
@@ -123,6 +133,7 @@ public class JMSRequestSinkProxyTest extends AbstractJMSRequestTest {
 
   @Test
   public void testSignalSequence() throws InterruptedException, TimeoutException, ExecutionException {
+    container.initialize();
     Semaphore sem = new Semaphore(0);
     doAnswer(i -> {
       sem.release();

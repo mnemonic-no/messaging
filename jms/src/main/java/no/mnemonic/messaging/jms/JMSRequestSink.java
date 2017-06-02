@@ -17,9 +17,9 @@ import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.atomic.LongAdder;
-import java.util.function.Consumer;
 
 import static no.mnemonic.messaging.jms.JMSRequestProxy.*;
 
@@ -51,8 +51,11 @@ public class JMSRequestSink extends JMSBase implements RequestSink, RequestListe
 
   private JMSRequestSink(List<JMSConnection> connections, String destinationName, long failbackInterval,
                          int timeToLive, int priority, boolean persistent, boolean temporary,
-                         Consumer<Runnable> executor, int maxMessageSize, JMSUtils.ProtocolVersion protocolVersion) {
-    super(connections, destinationName, false, failbackInterval, timeToLive, priority, persistent, temporary, executor);
+                         int maxMessageSize, JMSUtils.ProtocolVersion protocolVersion) {
+    super(connections, destinationName, false,
+            failbackInterval, timeToLive, priority, persistent, temporary,
+            Executors.newSingleThreadExecutor()
+    );
     this.maxMessageSize = maxMessageSize;
     this.protocolVersion = protocolVersion;
   }
@@ -95,10 +98,9 @@ public class JMSRequestSink extends JMSBase implements RequestSink, RequestListe
   }
 
   @Override
-  public void close() {
-    //destroy this request sink
+  public void stopComponent() {
     ensureResponseListenerClosed();
-    super.close();
+    super.stopComponent();
   }
 
   @Override
@@ -153,7 +155,7 @@ public class JMSRequestSink extends JMSBase implements RequestSink, RequestListe
 
   private synchronized void ensureResponseListenerClosed() {
     ResponseListener l = responseListener.getAndSet(null);
-    if (l != null) submit(l::close);
+    if (l != null) runInSeparateThread(l::close);
   }
 
   private void cleanResponseSinks() {
@@ -385,7 +387,6 @@ public class JMSRequestSink extends JMSBase implements RequestSink, RequestListe
 
     //fields
     private List<JMSConnection> connections;
-    private Consumer<Runnable> executor;
     private String destinationName;
     private long failbackInterval;
     private int timeToLive = 1000;
@@ -397,10 +398,9 @@ public class JMSRequestSink extends JMSBase implements RequestSink, RequestListe
 
     public JMSRequestSink build() {
       if (CollectionUtils.isEmpty(connections)) throw new IllegalArgumentException("No connections defined");
-      if (executor == null) throw new IllegalArgumentException("No executor provided");
       if (destinationName == null) throw new IllegalArgumentException("No destination name provided");
       return new JMSRequestSink(connections, destinationName, failbackInterval, timeToLive, priority, persistent,
-              temporary, executor, maxMessageSize, protocolVersion);
+              temporary, maxMessageSize, protocolVersion);
     }
 
     //setters
@@ -412,11 +412,6 @@ public class JMSRequestSink extends JMSBase implements RequestSink, RequestListe
 
     public Builder setConnections(List<JMSConnection> connections) {
       this.connections = connections;
-      return this;
-    }
-
-    public Builder setExecutor(Consumer<Runnable> executor) {
-      this.executor = executor;
       return this;
     }
 

@@ -14,6 +14,8 @@ import javax.jms.*;
 import javax.naming.InitialContext;
 import javax.naming.NamingException;
 import java.util.*;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
@@ -30,8 +32,8 @@ public class JMSConnectionImpl implements JMSConnection, ExceptionListener, Life
   private final String clientID;
   private final String username;
   private final String password;
-  private final Consumer<Runnable> executor;
   private final Properties properties;
+  private final ExecutorService executor = Executors.newSingleThreadExecutor();
 
 
   // variables
@@ -46,7 +48,7 @@ public class JMSConnectionImpl implements JMSConnection, ExceptionListener, Life
   private JMSConnectionImpl(
           String contextFactoryName, String contextURL, String connectionFactoryName,
           String clientID, String username, String password,
-          Consumer<Runnable> executor, Map<String, String> properties
+          Map<String, String> properties
   ) {
     this.contextFactoryName = contextFactoryName;
     this.contextURL = contextURL;
@@ -54,7 +56,6 @@ public class JMSConnectionImpl implements JMSConnection, ExceptionListener, Life
     this.clientID = clientID;
     this.username = username;
     this.password = password;
-    this.executor = executor;
     Properties p = new Properties();
     MapUtils.concatenate(properties).forEach(p::setProperty);
     this.properties = p;
@@ -84,6 +85,7 @@ public class JMSConnectionImpl implements JMSConnection, ExceptionListener, Life
   @Override
   public void stopComponent() {
     closed.set(true);
+    executor.shutdown();
   }
 
 
@@ -270,7 +272,7 @@ public class JMSConnectionImpl implements JMSConnection, ExceptionListener, Life
   // private methods
 
   private void invalidateInSeparateThread() {
-    executor.accept(this::invalidate);
+    executor.submit(this::invalidate);
   }
 
   //builder
@@ -285,7 +287,6 @@ public class JMSConnectionImpl implements JMSConnection, ExceptionListener, Life
     private String contextFactoryName;
     private String contextURL;
     private String connectionFactoryName;
-    private Consumer<Runnable> executor;
     private String clientID;
     private String username;
     private String password;
@@ -296,11 +297,10 @@ public class JMSConnectionImpl implements JMSConnection, ExceptionListener, Life
       if (StringUtils.isBlank(contextURL)) throw new IllegalArgumentException("contextURL not set");
       if (StringUtils.isBlank(connectionFactoryName))
         throw new IllegalArgumentException("connectionFactoryName not set");
-      if (executor == null) throw new IllegalArgumentException("executor not set");
       return new JMSConnectionImpl(
               contextFactoryName, contextURL,
               connectionFactoryName, clientID, username, password,
-              executor, properties);
+              properties);
     }
 
     //setters
@@ -317,11 +317,6 @@ public class JMSConnectionImpl implements JMSConnection, ExceptionListener, Life
 
     public Builder setConnectionFactoryName(String connectionFactoryName) {
       this.connectionFactoryName = connectionFactoryName;
-      return this;
-    }
-
-    public Builder setExecutor(Consumer<Runnable> executor) {
-      this.executor = executor;
       return this;
     }
 

@@ -10,8 +10,8 @@ import no.mnemonic.messaging.api.MessagingException;
 import javax.jms.*;
 import javax.naming.NamingException;
 import java.util.List;
+import java.util.concurrent.ExecutorService;
 import java.util.concurrent.atomic.*;
-import java.util.function.Consumer;
 
 @SuppressWarnings({"ClassReferencesSubclass"})
 public abstract class JMSBase implements LifecycleAspect, AppendMembers {
@@ -50,12 +50,14 @@ public abstract class JMSBase implements LifecycleAspect, AppendMembers {
   private final AtomicReference<MessageProducer> producer = new AtomicReference<>();
   private final AtomicReference<Thread> reconnectingThread = new AtomicReference<>();
 
-  private Consumer<Runnable> executor;
+  private final ExecutorService executor;
 
 
   // ************************* constructors ********************************
 
-  public JMSBase(List<JMSConnection> connections, String destinationName, boolean transacted, long failbackInterval, int timeToLive, int priority, boolean persistent, boolean temporary, Consumer<Runnable> executor) {
+  public JMSBase(List<JMSConnection> connections, String destinationName, boolean transacted,
+                 long failbackInterval, int timeToLive, int priority, boolean persistent, boolean temporary,
+                 ExecutorService executor) {
     this.connections = connections;
     this.destinationName = destinationName;
     this.transacted = transacted;
@@ -92,6 +94,7 @@ public abstract class JMSBase implements LifecycleAspect, AppendMembers {
   public void stopComponent() {
     closed.set(true);
     closeAllResources();
+    executor.shutdown();
   }
 
   public boolean isClosed() {
@@ -112,10 +115,6 @@ public abstract class JMSBase implements LifecycleAspect, AppendMembers {
     } finally {
       invalidating.set(false);
     }
-  }
-
-  public void close() {
-    stopComponent();
   }
 
   // ******************** protected and private methods ***********************
@@ -173,15 +172,15 @@ public abstract class JMSBase implements LifecycleAspect, AppendMembers {
     }
   }
 
-  void submit(Runnable task) {
+  void runInSeparateThread(Runnable task) {
     //noinspection unchecked
-    executor.accept(task);
+    executor.submit(task);
   }
 
   void invalidateInSeparateThread() {
     //if someone else is already invalidating, skip it
     if (isInvalidating()) return;
-    submit(() -> {
+    runInSeparateThread(() -> {
       try {
         invalidate();
       } catch (Exception e) {

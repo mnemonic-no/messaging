@@ -45,7 +45,6 @@ public class JMSRequestSinkTest extends AbstractJMSRequestTest {
     requestSink = JMSRequestSink.builder()
             .addConnection(connection)
             .setDestinationName(queueName)
-            .setExecutor(r -> executor.submit(r))
             .build();
 
     container = ComponentContainer.create(requestSink, connection);

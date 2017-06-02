@@ -24,9 +24,6 @@ public class JMSRequestSinkProxyTest extends AbstractJMSRequestTest {
   private RequestSink endpoint;
   private SignalContext signalContext;
 
-  private final TestMessage request = new TestMessage("request");
-  private final TestMessage reply = new TestMessage("response");
-
   @Before
   public void setUp() throws Exception {
 
@@ -42,14 +39,12 @@ public class JMSRequestSinkProxyTest extends AbstractJMSRequestTest {
     requestSink = JMSRequestSink.builder()
             .addConnection(connection)
             .setDestinationName(queueName)
-            .setExecutor(r -> executor.submit(r))
             .build();
 
     //set up request proxy listening to the vm-local topic, and pointing to mock endpoint
     requestProxy = JMSRequestProxy.builder()
             .addConnection(connection)
             .setDestinationName(queueName)
-            .setExecutor(r -> executor.submit(r))
             .setRequestSink(endpoint)
             .build();
 
@@ -67,11 +62,11 @@ public class JMSRequestSinkProxyTest extends AbstractJMSRequestTest {
     //mock client handling of response
     Future<List<TestMessage>> response = mockReceiveResponse();
     //when endpoint receives signal, it replies with a single reply, before closing channel
-    Future<TestMessage> signal = mockEndpointSignal(reply);
+    Future<TestMessage> signal = mockEndpointSignal(new TestMessage("reply"));
     //whenever SignalContext.isClosed() is called, return the state of the AtomicBoolean
     when(signalContext.isClosed()).thenAnswer(i -> response.isDone());
 
-    requestSink.signal(request, signalContext, 10000);
+    requestSink.signal(new TestMessage("request"), signalContext, 10000);
     //wait for reply
     assertEquals(1, response.get(1000, TimeUnit.MILLISECONDS).size());
     //verify that client was given resultsby request sink, and that context was closed
@@ -95,8 +90,10 @@ public class JMSRequestSinkProxyTest extends AbstractJMSRequestTest {
     requestSink.setProtocolVersion(JMSUtils.ProtocolVersion.V16);
     //set max message size to 100 bytes, to force channel upload with message fragments
     requestSink.setMaxMessageSize(100);
+
     //send message bigger than max message size
     TestMessage msg = new TestMessage(generateCookie(1000));
+    TestMessage reply = new TestMessage("reply");
 
     Future<TestMessage> signal = mockEndpointSignal(reply);
     Future<List<TestMessage>> response = mockReceiveResponse();
@@ -110,14 +107,14 @@ public class JMSRequestSinkProxyTest extends AbstractJMSRequestTest {
   @Test
   public void testSignalMultiReplies() throws InterruptedException, TimeoutException, ExecutionException {
     //when endpoint receives signal, it replies with three replies, before closing channel
-    Future<TestMessage> signal = mockEndpointSignal(reply, reply, reply);
+    Future<TestMessage> signal = mockEndpointSignal(new TestMessage("reply1"), new TestMessage("reply2"), new TestMessage("reply3"));
     //mock client handling of response
     Future<List<TestMessage>> response = mockReceiveResponse();
     //whenever SignalContext.isClosed() is called, return the state of the AtomicBoolean
     when(signalContext.isClosed()).thenAnswer(i -> response.isDone());
 
     //do request
-    requestSink.signal(request, signalContext, 10000);
+    requestSink.signal(new TestMessage("request"), signalContext, 10000);
     //wait for replies
     assertEquals(3, response.get(1000, TimeUnit.MILLISECONDS).size());
     //verify that client was given resultsby request sink, and that context was closed
@@ -133,20 +130,20 @@ public class JMSRequestSinkProxyTest extends AbstractJMSRequestTest {
     }).when(signalContext).endOfStream();
     when(endpoint.signal(isA(TestMessage.class), isA(SignalContext.class), anyLong())).thenAnswer(i -> {
       SignalContext ctx = (SignalContext) i.getArguments()[1];
-      ctx.addResponse(reply);
+      ctx.addResponse(new TestMessage("reploy"));
       ctx.endOfStream();
       return ctx;
     });
 
     //do first request
-    requestSink.signal(request, signalContext, 10000);
+    requestSink.signal(new TestMessage("request"), signalContext, 10000);
     //verify that reply was received and context closed
     assertTrue(sem.tryAcquire(1000, TimeUnit.MILLISECONDS));
     verify(signalContext, times(1)).addResponse(isA(Message.class));
     verify(endpoint, times(1)).signal(any(), any(), anyLong());
 
     //do second request
-    requestSink.signal(request, signalContext, 10000);
+    requestSink.signal(new TestMessage("request"), signalContext, 10000);
     //verify that reply was received and context closed
     assertTrue(sem.tryAcquire(1000, TimeUnit.MILLISECONDS));
     verify(signalContext, times(2)).addResponse(isA(Message.class));

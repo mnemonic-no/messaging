@@ -12,6 +12,8 @@ import org.mockito.MockitoAnnotations;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
@@ -30,6 +32,7 @@ public class JMSMultiResponseTest extends AbstractJMSRequestTest {
 
   private JMSRequestSink requestSink;
   private JMSRequestProxy requestProxy;
+  private ExecutorService executor = Executors.newCachedThreadPool();
 
   @Mock
   private RequestSink endpoint;
@@ -52,14 +55,12 @@ public class JMSMultiResponseTest extends AbstractJMSRequestTest {
     requestSink = JMSRequestSink.builder()
             .addConnection(connection)
             .setDestinationName(queueName)
-            .setExecutor(r -> executor.submit(r))
             .build();
 
     //set up request sink pointing at a vm-local topic
     requestProxy = JMSRequestProxy.builder()
             .addConnection(connection)
             .setDestinationName(queueName)
-            .setExecutor(r -> executor.submit(r))
             .setRequestSink(endpoint)
             .build();
 
@@ -73,6 +74,7 @@ public class JMSMultiResponseTest extends AbstractJMSRequestTest {
   @After
   public void tearDown() throws Exception {
     container.destroy();
+    executor.shutdown();
   }
 
   @Test

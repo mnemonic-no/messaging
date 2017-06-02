@@ -27,7 +27,7 @@ public class JMSDurableSubscriber<T extends Serializable> extends JMSObjectSourc
   public JMSDurableSubscriber(List<JMSConnection> connections, String destinationName, boolean transacted, long failbackInterval,
                               int timeToLive, int priority, boolean persistent, boolean temporary,
                               Consumer<Runnable> executor, long maxReconnectTime, String durableName) {
-    super(connections, destinationName, transacted, failbackInterval, timeToLive, priority, persistent, temporary, executor, maxReconnectTime);
+    super(connections, destinationName, transacted, failbackInterval, timeToLive, priority, persistent, temporary, maxReconnectTime);
     this.durableName = durableName;
   }
 
@@ -43,7 +43,7 @@ public class JMSDurableSubscriber<T extends Serializable> extends JMSObjectSourc
   }
 
   @Override
-  public void close() {
+  public void stopComponent() {
     try {
       if (topicSubscriber != null) {
         topicSubscriber.close();
@@ -51,7 +51,7 @@ public class JMSDurableSubscriber<T extends Serializable> extends JMSObjectSourc
     } catch (Exception e) {
       LOGGER.error(e, "Error on close");
     } finally {
-      super.close();
+      super.stopComponent();
       topicSubscriber = null;
     }
   }

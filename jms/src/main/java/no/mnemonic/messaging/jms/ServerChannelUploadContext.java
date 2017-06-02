@@ -25,7 +25,6 @@ import static no.mnemonic.messaging.jms.JMSRequestProxy.*;
  */
 class ServerChannelUploadContext implements JMSRequestProxy.ServerContext {
 
-  public static final int DEFAULT_TIMEOUT = 10000;
   private static final Logger LOGGER = Logging.getLogger(ServerChannelUploadContext.class);
 
   private final String callID;
@@ -40,11 +39,11 @@ class ServerChannelUploadContext implements JMSRequestProxy.ServerContext {
   private TemporaryQueue channelQueue;
   private MessageConsumer channelConsumer;
 
-  ServerChannelUploadContext(String callID, Session session, Destination responseDestination) throws JMSException, NamingException {
+  ServerChannelUploadContext(String callID, Session session, Destination responseDestination, long timeout) throws JMSException, NamingException {
     this.callID = callID;
     this.session = session;
     this.responseDestination = responseDestination;
-    this.timeout.set(System.currentTimeMillis() + DEFAULT_TIMEOUT);
+    this.timeout.set(timeout);
   }
 
   public void setupChannel(UploadHandler handler) throws JMSException {
@@ -94,7 +93,9 @@ class ServerChannelUploadContext implements JMSRequestProxy.ServerContext {
       LOGGER.warning("Ignoring fragment with wrong callID: " + callID);
       return;
     }
-    timeout.set(System.currentTimeMillis() + DEFAULT_TIMEOUT);
+    //extend timeout if client is requesting timeout extention
+    long reqTimeout = message.getLongProperty(JMSRequestProxy.PROPERTY_REQ_TIMEOUT);
+    timeout.updateAndGet(v->v < reqTimeout ? reqTimeout : v);
     fragments.add(message);
   }
 

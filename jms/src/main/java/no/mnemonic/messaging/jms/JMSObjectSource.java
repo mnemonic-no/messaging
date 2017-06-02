@@ -23,7 +23,7 @@ import java.util.Collections;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
-import java.util.function.Consumer;
+import java.util.concurrent.Executors;
 
 public class JMSObjectSource<T extends Serializable> extends JMSBase
         implements TransactedObjectSource<T>, ObjectSource<T>, AsynchronousObjectSource<T>, MessageListener, ExceptionListener, LifecycleAspect {
@@ -36,8 +36,12 @@ public class JMSObjectSource<T extends Serializable> extends JMSBase
   private final Set<ObjectListener<T>> listeners = Collections.synchronizedSet(new HashSet<>());
   private final Set<ErrorListener> errorListeners = Collections.synchronizedSet(new HashSet<>());
 
-  public JMSObjectSource(List<JMSConnection> connections, String destinationName, boolean transacted, long failbackInterval, int timeToLive, int priority, boolean persistent, boolean temporary, Consumer<Runnable> executor, long maxReconnectTime) {
-    super(connections, destinationName, transacted, failbackInterval, timeToLive, priority, persistent, temporary, executor);
+  public JMSObjectSource(List<JMSConnection> connections, String destinationName, boolean transacted, long failbackInterval,
+                         int timeToLive, int priority, boolean persistent, boolean temporary, long maxReconnectTime) {
+    super(connections, destinationName, transacted, failbackInterval, timeToLive,
+            priority, persistent, temporary,
+            Executors.newSingleThreadExecutor()
+    );
     this.maxReconnectTime = maxReconnectTime;
   }
 
@@ -177,7 +181,7 @@ public class JMSObjectSource<T extends Serializable> extends JMSBase
   private void reconnectInSeparateThread() {
     if (isReconnecting()) return;
     //start reconnect job in separate thread
-    submit(() -> doReconnect(maxReconnectTime, this, this));
+    runInSeparateThread(() -> doReconnect(maxReconnectTime, this, this));
   }
 
 }

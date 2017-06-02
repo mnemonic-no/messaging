@@ -44,7 +44,6 @@ public class JMSRequestProxyTest extends AbstractJMSRequestTest {
     requestProxy = JMSRequestProxy.builder()
             .addConnection(connection)
             .setDestinationName(queueName)
-            .setExecutor(r -> executor.submit(r))
             .setRequestSink(endpoint)
             .build();
 
@@ -288,6 +287,7 @@ public class JMSRequestProxyTest extends AbstractJMSRequestTest {
     for (byte[] f : fragments) {
       Message message = byteMsg(f, MESSAGE_TYPE_SIGNAL_FRAGMENT, callID);
       message.setIntProperty(JMSRequestProxy.PROPERTY_FRAGMENTS_IDX, idx++);
+      message.setLongProperty(JMSRequestProxy.PROPERTY_REQ_TIMEOUT, System.currentTimeMillis() + 10000);
       producer.send(message);
     }
     Message eos = textMsg("channel end", MESSAGE_TYPE_STREAM_CLOSED, callID, true);

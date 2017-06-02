@@ -11,8 +11,6 @@ import java.util.Hashtable;
 import java.util.Objects;
 import java.util.Random;
 import java.util.UUID;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
 
 import static no.mnemonic.messaging.jms.JMSBase.*;
 import static no.mnemonic.messaging.jms.JMSRequestProxy.PROPERTY_MESSAGE_TYPE;
@@ -21,7 +19,6 @@ abstract class AbstractJMSRequestTest {
 
   private static final char[] COOKIE_CHARACTERS = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789".toCharArray();
   private static Random random = new SecureRandom();
-  static ExecutorService executor = Executors.newCachedThreadPool();
 
   Connection testConnection;
   Session session;
@@ -150,7 +147,6 @@ abstract class AbstractJMSRequestTest {
             .setContextFactoryName("org.apache.activemq.jndi.ActiveMQInitialContextFactory")
             .setContextURL("vm://localhost?broker.persistent=false")
             .setConnectionFactoryName("ConnectionFactory")
-            .setExecutor(r -> executor.submit(r))
             .setProperty("trustAllPackages", "true")
             .build();
   }

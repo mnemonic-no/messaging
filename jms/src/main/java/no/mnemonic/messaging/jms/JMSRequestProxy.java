@@ -84,6 +84,28 @@ public class JMSRequestProxy extends JMSBase implements MessageListener, Excepti
   }
 
   @Override
+  public void stopComponent() {
+    try {
+      //stop accepting messages
+      getMessageConsumer().setMessageListener(null);
+      long timeout = System.currentTimeMillis() + 10000;
+      //wait for all current calls to end
+      while (System.currentTimeMillis() < timeout && semaphore.availablePermits() < maxConcurrentCalls) {
+        LOGGER.info("Waiting for all requests to finish...");
+        Thread.sleep(1000);
+      }
+      if (semaphore.availablePermits() < maxConcurrentCalls) {
+        LOGGER.info("Still %d unfinished requests, forcing shutdown", (maxConcurrentCalls - semaphore.availablePermits()));
+      }
+    } catch (Exception e) {
+      LOGGER.warning(e, "Error deregistering message listener");
+    }
+
+    //now do cleanup of resources
+    super.stopComponent();
+  }
+
+  @Override
   public void invalidate() {
     try {
       super.invalidate();
@@ -154,11 +176,7 @@ public class JMSRequestProxy extends JMSBase implements MessageListener, Excepti
       //avoid enqueueing a lot of messages into the executor queue, we rather want them to stay in JMS
       //if semaphore is depleted, this should block the activemq consumer, causing messages to queue up in JMS
       semaphore.acquire();
-      try {
-        runInSeparateThread(() -> doProcessMessage(message, timeout));
-      } finally {
-        semaphore.release();
-      }
+      runInSeparateThread(() -> doProcessMessage(message, timeout));
     } catch (Throwable e) {
       errorCallsCounter.increment();
       LOGGER.warning(e, "Error handling message");
@@ -180,6 +198,8 @@ public class JMSRequestProxy extends JMSBase implements MessageListener, Excepti
     } catch (Throwable e) {
       errorCallsCounter.increment();
       LOGGER.error(e, "Error handling JMS call");
+    } finally {
+      semaphore.release();
     }
   }
 

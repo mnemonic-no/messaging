@@ -18,6 +18,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Semaphore;
 import java.util.concurrent.atomic.AtomicLong;
@@ -50,6 +51,7 @@ public class JMSRequestProxy extends JMSBase implements MessageListener, Excepti
 
   // properties
   private final long maxReconnectTime;
+  private final int maxConcurrentCalls;
   private final RequestSink requestSink;
 
   // variables
@@ -68,11 +70,10 @@ public class JMSRequestProxy extends JMSBase implements MessageListener, Excepti
                           int timeToLive, int priority, int maxConcurrentCalls,
                           long maxReconnectTime, RequestSink requestSink) {
     super(connections, destinationName, false, failbackInterval, timeToLive,
-            priority, false, false,
-            Executors.newFixedThreadPool(maxConcurrentCalls)
-    );
+            priority, false, false);
     this.maxReconnectTime = maxReconnectTime;
     this.requestSink = requestSink;
+    this.maxConcurrentCalls = maxConcurrentCalls;
     this.semaphore = new Semaphore(maxConcurrentCalls);
   }
 
@@ -109,7 +110,12 @@ public class JMSRequestProxy extends JMSBase implements MessageListener, Excepti
     process(message);
   }
 
-  //private and protected methods methods
+  //private and protected methods
+
+  @Override
+  ExecutorService createExecutor() {
+    return Executors.newFixedThreadPool(maxConcurrentCalls);
+  }
 
   private void reconnectInSeparateThread() {
     if (isReconnecting()) return;
@@ -298,6 +304,8 @@ public class JMSRequestProxy extends JMSBase implements MessageListener, Excepti
       if (CollectionUtils.isEmpty(connections)) throw new IllegalArgumentException("No connections defined");
       if (requestSink == null) throw new IllegalArgumentException("No requestSink provided");
       if (destinationName == null) throw new IllegalArgumentException("No destination name provided");
+      if (maxConcurrentCalls < 1)
+        throw new IllegalArgumentException("maxConcurrentCalls cannot be lower than 1");
       if (maxReconnectTime < MINIMUM_RECONNECT_TIME)
         throw new IllegalArgumentException("Invalid value for maxReconnectTime, proxy will not be able to connect");
       return new JMSRequestProxy(connections, destinationName, failbackInterval, timeToLive, priority, maxConcurrentCalls, maxReconnectTime, requestSink);

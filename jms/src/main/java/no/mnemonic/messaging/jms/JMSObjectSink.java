@@ -13,7 +13,6 @@ import no.mnemonic.messaging.api.Transaction;
 import javax.jms.Message;
 import java.io.Serializable;
 import java.util.List;
-import java.util.concurrent.Executors;
 
 public class JMSObjectSink<T extends Serializable> extends JMSBase
         implements TransactedObjectSink<T> {
@@ -23,10 +22,7 @@ public class JMSObjectSink<T extends Serializable> extends JMSBase
   public JMSObjectSink(List<JMSConnection> connections, String destinationName, boolean transacted, long failbackInterval,
                        int timeToLive, int priority, boolean persistent, boolean temporary) {
     super(connections, destinationName, transacted, failbackInterval,
-            timeToLive, priority, persistent, temporary,
-            //only need for executor is to invalidate in separate thread
-            Executors.newSingleThreadExecutor()
-    );
+            timeToLive, priority, persistent, temporary);
   }
 
   public void sendObject(T obj) {

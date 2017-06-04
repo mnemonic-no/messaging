@@ -23,7 +23,6 @@ import java.util.Collections;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
-import java.util.concurrent.Executors;
 
 public class JMSObjectSource<T extends Serializable> extends JMSBase
         implements TransactedObjectSource<T>, ObjectSource<T>, AsynchronousObjectSource<T>, MessageListener, ExceptionListener, LifecycleAspect {
@@ -39,9 +38,7 @@ public class JMSObjectSource<T extends Serializable> extends JMSBase
   public JMSObjectSource(List<JMSConnection> connections, String destinationName, boolean transacted, long failbackInterval,
                          int timeToLive, int priority, boolean persistent, boolean temporary, long maxReconnectTime) {
     super(connections, destinationName, transacted, failbackInterval, timeToLive,
-            priority, persistent, temporary,
-            Executors.newSingleThreadExecutor()
-    );
+            priority, persistent, temporary);
     this.maxReconnectTime = maxReconnectTime;
   }
 

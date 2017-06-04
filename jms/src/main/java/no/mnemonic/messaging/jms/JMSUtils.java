@@ -64,10 +64,7 @@ class JMSUtils {
 
   static boolean isCompatible(Message message) throws JMSException {
     String argusCompat = message.getStringProperty(JMSBase.PROTOCOL_VERSION_KEY);
-    if (SetUtils.in(argusCompat, JMSBase.PROTOCOL_VERSION_13, JMSBase.PROTOCOL_VERSION_16)) {
-      return true;
-    }
-    return false;
+    return SetUtils.in(argusCompat, JMSBase.PROTOCOL_VERSION_13, JMSBase.PROTOCOL_VERSION_16);
   }
 
   static ProtocolVersion getProtocolVersion(Message message) throws JMSException {
@@ -80,10 +77,7 @@ class JMSUtils {
 
   static boolean isV16Protocol(Message message) throws JMSException {
     String argusCompat = message.getStringProperty(JMSBase.PROTOCOL_VERSION_KEY);
-    if (SetUtils.in(argusCompat, JMSBase.PROTOCOL_VERSION_16)) {
-      return true;
-    }
-    return false;
+    return SetUtils.in(argusCompat, JMSBase.PROTOCOL_VERSION_16);
   }
 
   static void removeMessageListenerAndClose(MessageConsumer consumer) {
@@ -236,6 +230,7 @@ class JMSUtils {
     return result;
   }
 
+  //TODO: Move to commons
   static class ClassLoaderContext implements AutoCloseable {
 
     private final ClassLoader contextClassLoader;

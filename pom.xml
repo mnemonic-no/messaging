@@ -28,8 +28,8 @@
   </properties>
 
   <modules>
-    <module>api</module>
-    <module>jms</module>
+    <module>requestsink</module>
+    <module>requestsink-jms</module>
   </modules>
 
   <scm>

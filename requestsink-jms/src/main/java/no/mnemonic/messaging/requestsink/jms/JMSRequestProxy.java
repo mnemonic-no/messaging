@@ -1,5 +1,6 @@
 package no.mnemonic.messaging.requestsink.jms;
 
+import no.mnemonic.commons.component.Dependency;
 import no.mnemonic.commons.logging.Logger;
 import no.mnemonic.commons.logging.Logging;
 import no.mnemonic.commons.utilities.collections.CollectionUtils;
@@ -52,6 +53,7 @@ public class JMSRequestProxy extends JMSBase implements MessageListener, Excepti
   // properties
   private final long maxReconnectTime;
   private final int maxConcurrentCalls;
+  @Dependency
   private final RequestSink requestSink;
 
   // variables

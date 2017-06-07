@@ -34,7 +34,6 @@ public class JMSConnectionImpl implements JMSConnection, ExceptionListener, Life
   private final Properties properties;
   private final ExecutorService executor = Executors.newSingleThreadExecutor();
 
-
   // variables
 
   private final AtomicBoolean invalidating = new AtomicBoolean();

@@ -115,12 +115,11 @@ public abstract class JMSBase implements LifecycleAspect, AppendMembers {
     }
   }
 
-  // ******************** protected and private methods ***********************
-
-
-  private boolean isClosed() {
+  public boolean isClosed() {
     return closed.get();
   }
+
+  // ******************** protected and private methods ***********************
 
   ExecutorService createExecutor() {
     return Executors.newSingleThreadExecutor();
@@ -233,14 +232,14 @@ public abstract class JMSBase implements LifecycleAspect, AppendMembers {
     return getOrUpdateSynchronized(session, () -> getConnection().getSession(this, transacted));
   }
 
+  MessageConsumer getMessageConsumer() throws JMSException, NamingException {
+    if (isClosed()) throw new RuntimeException("closed");
+    return getOrUpdateSynchronized(consumer, () -> getSession().createConsumer(getDestination()));
+  }
+
   private MessageProducer getMessageProducer() throws JMSException, NamingException {
     if (isClosed()) throw new RuntimeException("closed");
     return getOrUpdateSynchronized(producer, () -> getSession().createProducer(getDestination()));
-  }
-
-  private MessageConsumer getMessageConsumer() throws JMSException, NamingException {
-    if (isClosed()) throw new RuntimeException("closed");
-    return getOrUpdateSynchronized(consumer, () -> getSession().createConsumer(getDestination()));
   }
 
   private <U> U getOrUpdateSynchronized(AtomicReference<U> ref, JMSSupplier<U> task) throws NamingException, JMSException {

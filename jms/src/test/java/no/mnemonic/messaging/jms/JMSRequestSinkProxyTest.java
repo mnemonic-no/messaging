@@ -24,7 +24,6 @@ public class JMSRequestSinkProxyTest extends AbstractJMSRequestTest {
   private ComponentContainer clientContainer, serverContainer;
   private RequestSink endpoint;
   private RequestContext requestContext;
-  private JMSConnection connection;
   private String queueName;
 
   private ExecutorService executor = Executors.newCachedThreadPool();
@@ -90,16 +89,16 @@ public class JMSRequestSinkProxyTest extends AbstractJMSRequestTest {
 
     CompletableFuture<TestMessage> requestReceived = new CompletableFuture<>();
     CompletableFuture<TestMessage> serverResponse = new CompletableFuture<>();
-    when(endpoint.signal(isA(TestMessage.class), isA(SignalContext.class), anyLong())).thenAnswer(i -> {
+    when(endpoint.signal(isA(TestMessage.class), isA(RequestContext.class), anyLong())).thenAnswer(i -> {
       requestReceived.complete(i.getArgument(0));
-      SignalContext ctx = (SignalContext) i.getArguments()[1];
+      RequestContext ctx = i.getArgument(1);
       ctx.addResponse(serverResponse.get(10000, TimeUnit.MILLISECONDS));
       ctx.endOfStream();
       System.out.println("Finished request");
       return ctx;
     });
 
-    requestSink.signal(new TestMessage("request"), signalContext, 10000);
+    requestSink.signal(new TestMessage("request"), requestContext, 10000);
 
     //wait for request to be received
     requestReceived.get(1000, TimeUnit.MILLISECONDS);

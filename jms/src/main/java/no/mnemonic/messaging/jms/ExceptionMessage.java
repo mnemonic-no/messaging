@@ -1,6 +1,6 @@
 package no.mnemonic.messaging.jms;
 
-import no.mnemonic.messaging.api.Message;
+import no.mnemonic.messaging.requestsink.Message;
 
 public class ExceptionMessage implements Message {
 
@@ -10,7 +10,8 @@ public class ExceptionMessage implements Message {
   private Throwable exception;
   private long timestamp;
 
-  public ExceptionMessage(Throwable exception) {
+  ExceptionMessage(String callID, Throwable exception) {
+    this.callID = callID;
     this.exception = exception;
     this.timestamp = System.currentTimeMillis();
   }
@@ -18,11 +19,6 @@ public class ExceptionMessage implements Message {
   @Override
   public String getCallID() {
     return callID;
-  }
-
-  @Override
-  public void setCallID(String callID) {
-    this.callID = callID;
   }
 
   @Override

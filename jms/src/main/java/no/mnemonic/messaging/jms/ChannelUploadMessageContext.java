@@ -2,8 +2,8 @@ package no.mnemonic.messaging.jms;
 
 import no.mnemonic.commons.logging.Logger;
 import no.mnemonic.commons.logging.Logging;
-import no.mnemonic.messaging.api.RequestListener;
-import no.mnemonic.messaging.api.SignalContext;
+import no.mnemonic.messaging.requestsink.RequestContext;
+import no.mnemonic.messaging.requestsink.RequestListener;
 
 import javax.jms.*;
 import java.io.IOException;
@@ -12,23 +12,25 @@ import java.security.MessageDigest;
 
 import static no.mnemonic.messaging.jms.JMSRequestProxy.*;
 
-class ChannelUploadMessageContext implements SignalContext {
+class ChannelUploadMessageContext implements RequestContext {
 
   private static final Logger LOGGER = Logging.getLogger(ServerResponseContext.class);
 
-  private final SignalContext realContext;
+  private final RequestContext realContext;
   private final InputStream messageData;
   private final String callID;
   private final int fragmentSize;
+  private final ProtocolVersion protocolVersion;
 
-  public ChannelUploadMessageContext(SignalContext realContext, InputStream messageData, String callID, int fragmentSize) {
+  ChannelUploadMessageContext(RequestContext realContext, InputStream messageData, String callID, int fragmentSize, ProtocolVersion protocolVersion) {
     this.realContext = realContext;
     this.messageData = messageData;
     this.callID = callID;
     this.fragmentSize = fragmentSize;
+    this.protocolVersion = protocolVersion;
   }
 
-  public void upload(Session session, Destination channelDestination) throws JMSException {
+  void upload(Session session, Destination channelDestination) throws JMSException {
     try {
       if (LOGGER.isDebug()) LOGGER.debug(String.format("Initializing channel upload for callID %s to destination %s", callID, channelDestination));
       MessageProducer producer = session.createProducer(channelDestination);
@@ -39,14 +41,14 @@ class ChannelUploadMessageContext implements SignalContext {
         MessageDigest digest = JMSUtils.md5();
         while ((size = messageData.read(bytes)) >= 0) {
           digest.update(bytes, 0, size);
-          BytesMessage fragment = JMSUtils.createByteMessage(session, JMSUtils.arraySubSeq(bytes, 0, size));
+          BytesMessage fragment = JMSUtils.createByteMessage(session, JMSUtils.arraySubSeq(bytes, 0, size), protocolVersion);
           fragment.setJMSCorrelationID(callID);
           fragment.setStringProperty(PROPERTY_MESSAGE_TYPE, MESSAGE_TYPE_SIGNAL_FRAGMENT);
           fragment.setIntProperty(PROPERTY_FRAGMENTS_IDX, fragmentIndex++);
           fragment.setLongProperty(PROPERTY_REQ_TIMEOUT, System.currentTimeMillis() + 10000);
           producer.send(channelDestination, fragment);
         }
-        javax.jms.Message eos = JMSUtils.createTextMessage(session, "End-Of-Stream", ProtocolVersion.V16);
+        javax.jms.Message eos = JMSUtils.createTextMessage(session, "End-Of-Stream", ProtocolVersion.V1);
         eos.setJMSCorrelationID(callID);
         eos.setStringProperty(PROPERTY_MESSAGE_TYPE, MESSAGE_TYPE_STREAM_CLOSED);
         eos.setIntProperty(PROPERTY_FRAGMENTS_TOTAL, fragmentIndex);
@@ -62,7 +64,7 @@ class ChannelUploadMessageContext implements SignalContext {
   }
 
   @Override
-  public boolean addResponse(no.mnemonic.messaging.api.Message msg) {
+  public boolean addResponse(no.mnemonic.messaging.requestsink.Message msg) {
     return realContext.addResponse(msg);
   }
 

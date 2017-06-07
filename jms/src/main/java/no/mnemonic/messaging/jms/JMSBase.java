@@ -5,7 +5,7 @@ import no.mnemonic.commons.logging.Logger;
 import no.mnemonic.commons.logging.Logging;
 import no.mnemonic.commons.utilities.AppendMembers;
 import no.mnemonic.commons.utilities.AppendUtils;
-import no.mnemonic.messaging.api.MessagingException;
+import no.mnemonic.messaging.requestsink.MessagingException;
 
 import javax.jms.*;
 import javax.naming.NamingException;
@@ -19,8 +19,7 @@ public abstract class JMSBase implements LifecycleAspect, AppendMembers {
   private static final Logger LOGGER = Logging.getLogger(JMSBase.class);
 
   static final String PROTOCOL_VERSION_KEY = "ArgusMessagingProtocol";
-  static final String PROTOCOL_VERSION_13 = "13.10.1";
-  static final String PROTOCOL_VERSION_16 = "16";
+  static final String PROTOCOL_VERSION_1 = "1";
 
   // common properties
 
@@ -55,9 +54,9 @@ public abstract class JMSBase implements LifecycleAspect, AppendMembers {
 
   // ************************* constructors ********************************
 
-  public JMSBase(List<JMSConnection> connections, String destinationName, boolean transacted,
-                 long failbackInterval, int timeToLive, int priority, boolean persistent, boolean temporary,
-                 ExecutorService executor) {
+  JMSBase(List<JMSConnection> connections, String destinationName, boolean transacted,
+          long failbackInterval, int timeToLive, int priority, boolean persistent, boolean temporary,
+          ExecutorService executor) {
     this.connections = connections;
     this.destinationName = destinationName;
     this.transacted = transacted;
@@ -97,9 +96,6 @@ public abstract class JMSBase implements LifecycleAspect, AppendMembers {
     executor.shutdown();
   }
 
-  public boolean isClosed() {
-    return closed.get();
-  }
 
   // other public methods
 
@@ -109,7 +105,7 @@ public abstract class JMSBase implements LifecycleAspect, AppendMembers {
     //if someone else is already invalidating, leave it
     if (!invalidating.compareAndSet(false, true)) return;
     try {
-      //dont do invalidation if not connected
+      //don`t do invalidation if not connected
       LOGGER.info("Invalidating client: %s (%s)", getClass().getSimpleName(), getDestinationName());
       closeAllResources();
     } finally {
@@ -118,6 +114,11 @@ public abstract class JMSBase implements LifecycleAspect, AppendMembers {
   }
 
   // ******************** protected and private methods ***********************
+
+
+  private boolean isClosed() {
+    return closed.get();
+  }
 
   private void closeAllResources() {
     try {
@@ -189,24 +190,6 @@ public abstract class JMSBase implements LifecycleAspect, AppendMembers {
     });
   }
 
-  void checkForFailBack() {
-    //if failback not activated, return
-    if (failbackInterval == 0) return;
-    //if currently on primary connection, return
-    if (connections.size() == 1 || activeConnection == connections.get(0))
-      return;
-    //we just committed/rolled back, so check for failback
-    synchronized (this) {
-      if (System.currentTimeMillis() > (lastFailbackTime.get() + failbackInterval)) {
-        //if failback interval has elapsed, invalidate current connection
-        LOGGER.warning("Attempting failback to primary connection: " + connections.get(0));
-        connectionPointer.set(0);
-        lastFailbackTime.set(System.currentTimeMillis());
-        closeAllResources();
-      }
-    }
-  }
-
   private void resetState() {
     session.set(null);
     destination.set(null);
@@ -248,7 +231,7 @@ public abstract class JMSBase implements LifecycleAspect, AppendMembers {
     return getOrUpdateSynchronized(producer, () -> getSession().createProducer(getDestination()));
   }
 
-  protected MessageConsumer getMessageConsumer() throws JMSException, NamingException {
+  private MessageConsumer getMessageConsumer() throws JMSException, NamingException {
     if (isClosed()) throw new RuntimeException("closed");
     return getOrUpdateSynchronized(consumer, () -> getSession().createConsumer(getDestination()));
   }
@@ -283,7 +266,7 @@ public abstract class JMSBase implements LifecycleAspect, AppendMembers {
    *
    * @param msg message to send
    */
-  protected void sendJMSMessage(final Message msg) {
+  void sendJMSMessage(final Message msg) {
     try {
       getMessageProducer().send(msg, (isPersistent() ? DeliveryMode.PERSISTENT : DeliveryMode.NON_PERSISTENT),
               getPriority(), getTimeToLive());
@@ -292,16 +275,12 @@ public abstract class JMSBase implements LifecycleAspect, AppendMembers {
     }
   }
 
-  protected MessagingException handleMessagingException(Exception e) {
+  MessagingException handleMessagingException(Exception e) {
     if (!temporary) {
       invalidate();
       errorCount.increment();
     }
     throw new MessagingException(e);
-  }
-
-  void setActiveConnection(JMSConnection activeConnection) {
-    this.activeConnection.set(activeConnection);
   }
 
   // ************************* property accessors ********************************

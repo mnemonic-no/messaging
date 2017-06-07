@@ -1,8 +1,7 @@
 package no.mnemonic.messaging.jms;
 
 public enum ProtocolVersion {
-  V13(JMSBase.PROTOCOL_VERSION_13),
-  V16(JMSBase.PROTOCOL_VERSION_16);
+  V1(JMSBase.PROTOCOL_VERSION_1);
 
   private String versionString;
 

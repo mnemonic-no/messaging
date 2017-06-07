@@ -1,11 +1,9 @@
-package no.mnemonic.messaging.api;
+package no.mnemonic.messaging.requestsink;
 
 /**
- * Interface for response sinks forwarded to downstream requestsink
- *
  * @author joakim
  */
-public interface MessageContext {
+public interface RequestContext {
 
   /**
    * @return true if this request is closed down (will not accept any more responses)
@@ -28,9 +26,11 @@ public interface MessageContext {
   void notifyError(Throwable e);
 
   /**
-   * Add a RequestListener to context
+   * Add a {@link RequestListener} to context. A context implementation should notify any registered listeners
+   * about relevant events.
    *
    * @param listener listener to add
+   *
    */
   void addListener(RequestListener listener);
 
@@ -41,5 +41,17 @@ public interface MessageContext {
    */
   void removeListener(RequestListener listener);
 
+  /**
+   * Add a signal response to give back to requesting client
+   *
+   * @param msg the response message to add
+   * @return true if the response message was accepted, false if it was discarded
+   */
+  boolean addResponse(Message msg);
+
+  /**
+   * Signal end of stream (the current context holder will not provide any more data).
+   */
+  void endOfStream();
 
 }

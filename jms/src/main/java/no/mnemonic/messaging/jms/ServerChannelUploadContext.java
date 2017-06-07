@@ -33,27 +33,29 @@ class ServerChannelUploadContext implements JMSRequestProxy.ServerContext {
   private final AtomicBoolean closed = new AtomicBoolean();
   private final BlockingQueue<Message> fragments = new LinkedBlockingDeque<>();
   private final AtomicLong timeout = new AtomicLong();
+  private final ProtocolVersion protocolVersion;
 
   private UploadHandler uploadHandler;
   private MessageProducer replyTo;
   private TemporaryQueue channelQueue;
   private MessageConsumer channelConsumer;
 
-  ServerChannelUploadContext(String callID, Session session, Destination responseDestination, long timeout) throws JMSException, NamingException {
+  ServerChannelUploadContext(String callID, Session session, Destination responseDestination, long timeout, ProtocolVersion protocolVersion) throws JMSException, NamingException {
     this.callID = callID;
     this.session = session;
     this.responseDestination = responseDestination;
+    this.protocolVersion = protocolVersion;
     this.timeout.set(timeout);
   }
 
-  public void setupChannel(UploadHandler handler) throws JMSException {
+  void setupChannel(UploadHandler handler) throws JMSException {
     this.uploadHandler = handler;
     this.channelQueue = session.createTemporaryQueue();
     this.channelConsumer = session.createConsumer(channelQueue);
     this.channelConsumer.setMessageListener(this::onMessage);
 
     this.replyTo = session.createProducer(responseDestination);
-    Message setupMessage = JMSUtils.createTextMessage(session, "channel setup", ProtocolVersion.V16);
+    Message setupMessage = JMSUtils.createTextMessage(session, "channel setup", ProtocolVersion.V1);
     setupMessage.setJMSCorrelationID(callID);
     setupMessage.setStringProperty(PROPERTY_MESSAGE_TYPE, MESSAGE_TYPE_CHANNEL_SETUP);
     setupMessage.setLongProperty(PROPERTY_REQ_TIMEOUT, timeout.get());
@@ -171,9 +173,9 @@ class ServerChannelUploadContext implements JMSRequestProxy.ServerContext {
 
   private void notifyError(Throwable e) {
     try {
-      ExceptionMessage ex = new ExceptionMessage(e);
+      ExceptionMessage ex = new ExceptionMessage(callID, e);
       javax.jms.Message exMessage;
-      exMessage = JMSUtils.createByteMessage(session, JMSUtils.serialize(ex));
+      exMessage = JMSUtils.createByteMessage(session, JMSUtils.serialize(ex), protocolVersion);
       exMessage.setJMSCorrelationID(callID);
       exMessage.setStringProperty(PROPERTY_MESSAGE_TYPE, MESSAGE_TYPE_EXCEPTION);
       replyTo.send(exMessage);

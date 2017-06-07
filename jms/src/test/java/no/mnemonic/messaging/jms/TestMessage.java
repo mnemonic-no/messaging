@@ -1,8 +1,7 @@
 package no.mnemonic.messaging.jms;
 
-import no.mnemonic.messaging.api.Message;
+import no.mnemonic.messaging.requestsink.Message;
 
-import java.io.Serializable;
 import java.util.Objects;
 import java.util.UUID;
 
@@ -27,11 +26,6 @@ public class TestMessage implements Message {
   @Override
   public String getCallID() {
     return callID;
-  }
-
-  @Override
-  public void setCallID(String callID) {
-    this.callID = callID;
   }
 
   @Override

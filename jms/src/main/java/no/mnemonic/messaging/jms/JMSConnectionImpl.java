@@ -8,7 +8,7 @@ import no.mnemonic.commons.utilities.AppendUtils;
 import no.mnemonic.commons.utilities.StringUtils;
 import no.mnemonic.commons.utilities.collections.MapUtils;
 import no.mnemonic.commons.utilities.lambda.LambdaUtils;
-import no.mnemonic.messaging.api.MessagingException;
+import no.mnemonic.messaging.requestsink.MessagingException;
 
 import javax.jms.*;
 import javax.naming.InitialContext;

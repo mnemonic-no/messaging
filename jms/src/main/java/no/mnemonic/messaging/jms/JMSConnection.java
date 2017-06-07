@@ -45,6 +45,11 @@ public interface JMSConnection {
   void close();
 
   /**
+   * @return true if this connection is closed
+   */
+  boolean isClosed();
+
+  /**
    * Allow a JMS client to deregister from this connection
    *
    * @param client client which should have closed its session

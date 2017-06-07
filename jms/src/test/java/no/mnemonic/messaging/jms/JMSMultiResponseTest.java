@@ -1,8 +1,8 @@
 package no.mnemonic.messaging.jms;
 
 import no.mnemonic.commons.container.ComponentContainer;
-import no.mnemonic.messaging.api.RequestSink;
-import no.mnemonic.messaging.api.SignalContext;
+import no.mnemonic.messaging.requestsink.RequestSink;
+import no.mnemonic.messaging.requestsink.RequestContext;
 import org.junit.After;
 import org.junit.Before;
 import org.junit.Test;
@@ -37,7 +37,7 @@ public class JMSMultiResponseTest extends AbstractJMSRequestTest {
   @Mock
   private RequestSink endpoint;
   @Mock
-  private SignalContext signalContext;
+  private RequestContext requestContext;
 
   private ComponentContainer container;
   private AtomicBoolean finished = new AtomicBoolean();
@@ -84,7 +84,7 @@ public class JMSMultiResponseTest extends AbstractJMSRequestTest {
     TestMessage reply = new TestMessage("resp");
 
     when(endpoint.signal(any(), any(), anyLong())).thenAnswer(i -> {
-      SignalContext ctx = i.getArgument(1);
+      RequestContext ctx = i.getArgument(1);
       executor.submit(() -> {
         for (int i1 = 0; i1 < 100; i1++) {
           ctx.addResponse(reply);
@@ -95,7 +95,7 @@ public class JMSMultiResponseTest extends AbstractJMSRequestTest {
       return ctx;
     });
 
-    requestSink.signal(request, signalContext, 30000);
+    requestSink.signal(request, requestContext, 30000);
     List<TestMessage> result = resolved.get(1000, TimeUnit.MILLISECONDS);
     assertEquals(100, result.size());
     assertTrue(finished.get());
@@ -109,19 +109,19 @@ public class JMSMultiResponseTest extends AbstractJMSRequestTest {
     TestMessage reply = new TestMessage("resp");
 
     when(endpoint.signal(any(), any(), anyLong())).thenAnswer(i -> {
-      SignalContext endpointSignalContext = i.getArgument(1);
+      RequestContext endpointRequestContext = i.getArgument(1);
       executor.submit(() -> {
         System.out.println("Submitting responses");
         for (int i1 = 0; i1 < 100; i1++) {
-          endpointSignalContext.addResponse(reply);
+          endpointRequestContext.addResponse(reply);
         }
-        endpointSignalContext.endOfStream();
+        endpointRequestContext.endOfStream();
         System.out.println("Sent EOS");
       });
-      return endpointSignalContext;
+      return endpointRequestContext;
     });
 
-    requestSink.signal(request, signalContext, 30000);
+    requestSink.signal(request, requestContext, 30000);
     List<TestMessage> result = resolved.get(1000, TimeUnit.MILLISECONDS);
     assertEquals(100, result.size());
     assertTrue(finished.get());
@@ -130,20 +130,20 @@ public class JMSMultiResponseTest extends AbstractJMSRequestTest {
 
   private void mockEndpoint() {
     List<TestMessage> responses = new ArrayList<>();
-    when(signalContext.addResponse(any())).thenAnswer(i -> {
+    when(requestContext.addResponse(any())).thenAnswer(i -> {
       responses.add(i.getArgument(0));
       return true;
     });
-    when(signalContext.isClosed()).thenAnswer(i -> finished.get());
+    when(requestContext.isClosed()).thenAnswer(i -> finished.get());
     doAnswer(i -> {
       error.set(i.getArgument(0));
       return null;
-    }).when(signalContext).notifyError(any());
+    }).when(requestContext).notifyError(any());
     doAnswer(i -> {
       finished.set(true);
       resolved.complete(responses);
       return null;
-    }).when(signalContext).endOfStream();
+    }).when(requestContext).endOfStream();
   }
 
 }

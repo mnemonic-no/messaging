@@ -1,4 +1,4 @@
-package no.mnemonic.messaging.api;
+package no.mnemonic.messaging.requestsink;
 
 import no.mnemonic.commons.utilities.collections.SetUtils;
 import org.junit.AfterClass;
@@ -15,7 +15,7 @@ import java.util.concurrent.*;
 import static org.junit.Assert.*;
 import static org.mockito.Mockito.when;
 
-public class SignalHandlerTest {
+public class RequestHandlerTest {
 
   private static ExecutorService executor = Executors.newSingleThreadExecutor();
   @Mock
@@ -24,7 +24,7 @@ public class SignalHandlerTest {
   @Before
   public void setup() {
     MockitoAnnotations.initMocks(this);
-    SignalHandler.setClock(clock);
+    RequestHandler.setClock(clock);
     when(clock.millis()).thenAnswer(i -> System.currentTimeMillis());
   }
 
@@ -35,7 +35,7 @@ public class SignalHandlerTest {
 
   @Test
   public void testCloseHandler() {
-    SignalHandler handler = new SignalHandler(false, "callid");
+    RequestHandler handler = new RequestHandler(false, "callid");
     assertFalse(handler.isClosed());
     handler.close();
     assertTrue(handler.isClosed());
@@ -43,13 +43,13 @@ public class SignalHandlerTest {
 
   @Test
   public void testGetResponsesNoWaitWithoutResults() throws InvocationTargetException {
-    SignalHandler handler = new SignalHandler(false, "callid");
+    RequestHandler handler = new RequestHandler(false, "callid");
     assertTrue(handler.getResponsesNoWait().isEmpty());
   }
 
   @Test
   public void testGetResponsesNoWaitWithResult() throws InvocationTargetException {
-    SignalHandler handler = new SignalHandler(false, "callid");
+    RequestHandler handler = new RequestHandler(false, "callid");
     assertTrue(handler.addResponse(new TestMessage("msg")));
     Collection<TestMessage> response = handler.getResponsesNoWait();
     assertEquals(1, response.size());
@@ -58,7 +58,7 @@ public class SignalHandlerTest {
 
   @Test
   public void testGetResponsesNoWaitWithMultipleResults() throws InvocationTargetException {
-    SignalHandler handler = new SignalHandler(false, "callid");
+    RequestHandler handler = new RequestHandler(false, "callid");
     assertTrue(handler.addResponse(new TestMessage("msg1")));
     assertTrue(handler.addResponse(new TestMessage("msg2")));
     assertTrue(handler.addResponse(new TestMessage("msg3")));
@@ -67,7 +67,7 @@ public class SignalHandlerTest {
 
   @Test
   public void testGetResponsesNoWaitEnqueuesMoreResults() throws InvocationTargetException {
-    SignalHandler handler = new SignalHandler(false, "callid");
+    RequestHandler handler = new RequestHandler(false, "callid");
     assertTrue(handler.addResponse(new TestMessage("msg1")));
     assertTrue(handler.addResponse(new TestMessage("msg2")));
     assertEquals(SetUtils.set("msg1", "msg2"), SetUtils.set(handler.getResponsesNoWait(), m -> ((TestMessage) m).getMsgID()));
@@ -77,7 +77,7 @@ public class SignalHandlerTest {
 
   @Test(expected = InvocationTargetException.class)
   public void testGetResponsesNoWaitWithError() throws InvocationTargetException {
-    SignalHandler handler = new SignalHandler(false, "callid");
+    RequestHandler handler = new RequestHandler(false, "callid");
     assertTrue(handler.addResponse(new TestMessage("msg")));
     handler.notifyError(new IllegalArgumentException("invalid"));
     handler.getResponsesNoWait();
@@ -85,7 +85,7 @@ public class SignalHandlerTest {
 
   @Test
   public void testGetNextResponse() throws InterruptedException, ExecutionException, TimeoutException {
-    SignalHandler handler = new SignalHandler(false, "callid");
+    RequestHandler handler = new RequestHandler(false, "callid");
     Future<TestMessage> msg = executor.submit(() -> handler.getNextResponse(1000));
     assertFalse(msg.isDone());
     handler.addResponse(new TestMessage("msg"));
@@ -94,7 +94,7 @@ public class SignalHandlerTest {
 
   @Test
   public void testGetResponsesWaitForTimeout() throws InterruptedException, ExecutionException, TimeoutException {
-    SignalHandler handler = new SignalHandler(false, "callid");
+    RequestHandler handler = new RequestHandler(false, "callid");
     Future<Collection<TestMessage>> msg = executor.submit(() -> handler.getResponses(200, 3));
     handler.addResponse(new TestMessage("msg1"));
     assertEquals(1, msg.get(500, TimeUnit.MILLISECONDS).size());
@@ -102,7 +102,7 @@ public class SignalHandlerTest {
 
   @Test(expected = InvocationTargetException.class)
   public void testGetResponsesReturnError() throws Throwable {
-    SignalHandler handler = new SignalHandler(false, "callid");
+    RequestHandler handler = new RequestHandler(false, "callid");
     Future<Collection<TestMessage>> msg = executor.submit(() -> handler.getResponses(200, 3));
     assertFalse(msg.isDone());
     handler.addResponse(new TestMessage("msg1"));
@@ -117,7 +117,7 @@ public class SignalHandlerTest {
 
   @Test
   public void testGetResponsesReturnsPendingResultsWhenClosed() throws Throwable {
-    SignalHandler handler = new SignalHandler(false, "callid");
+    RequestHandler handler = new RequestHandler(false, "callid");
     handler.addResponse(new TestMessage("msg3"));
     handler.endOfStream();
     assertNotNull(executor.submit(() -> handler.getNextResponse(100)).get(100, TimeUnit.MILLISECONDS));
@@ -125,7 +125,7 @@ public class SignalHandlerTest {
 
   @Test
   public void testGetResponsesReturnsNullWhenClosedAndNoMoreResults() throws Throwable {
-    SignalHandler handler = new SignalHandler(false, "callid");
+    RequestHandler handler = new RequestHandler(false, "callid");
     handler.addResponse(new TestMessage("msg3"));
     handler.endOfStream();
     assertNotNull(executor.submit(() -> handler.getNextResponse(100)).get(100, TimeUnit.MILLISECONDS));
@@ -134,7 +134,7 @@ public class SignalHandlerTest {
 
   @Test
   public void testGetResponsesWaitForResults() throws InterruptedException, ExecutionException, TimeoutException {
-    SignalHandler handler = new SignalHandler(false, "callid");
+    RequestHandler handler = new RequestHandler(false, "callid");
     Future<Collection<TestMessage>> msg = executor.submit(() -> handler.getResponses(1000, 3));
     assertFalse(msg.isDone());
     handler.addResponse(new TestMessage("msg1"));
@@ -149,7 +149,7 @@ public class SignalHandlerTest {
 
   @Test(expected = InvocationTargetException.class)
   public void testGetNextResponseWhenError() throws Throwable {
-    SignalHandler handler = new SignalHandler(false, "callid");
+    RequestHandler handler = new RequestHandler(false, "callid");
     Future<TestMessage> msg = executor.submit(() -> handler.getNextResponse(1000));
     assertFalse(msg.isDone());
     handler.notifyError(new IllegalArgumentException("invalid"));
@@ -162,7 +162,7 @@ public class SignalHandlerTest {
 
   @Test
   public void testGetNextResponseReturnsWhenEOS() throws InvocationTargetException, InterruptedException, ExecutionException, TimeoutException {
-    SignalHandler handler = new SignalHandler(false, "callid");
+    RequestHandler handler = new RequestHandler(false, "callid");
     Future<TestMessage> msg = executor.submit(() -> handler.getNextResponse(1000));
     assertFalse(msg.isDone());
     handler.endOfStream();
@@ -171,7 +171,7 @@ public class SignalHandlerTest {
 
   @Test
   public void testGetNextResponseTimeout() throws InterruptedException, ExecutionException, TimeoutException {
-    SignalHandler handler = new SignalHandler(false, "callid");
+    RequestHandler handler = new RequestHandler(false, "callid");
     Future<TestMessage> msg = executor.submit(() -> handler.getNextResponse(100));
     assertFalse(msg.isDone());
     assertNull(msg.get(1000, TimeUnit.MILLISECONDS));
@@ -179,7 +179,7 @@ public class SignalHandlerTest {
 
   @Test
   public void testWaitForEndOfStream() throws InterruptedException, ExecutionException, TimeoutException {
-    SignalHandler handler = new SignalHandler(false, "callid");
+    RequestHandler handler = new RequestHandler(false, "callid");
     Future<Boolean> msg = executor.submit(() -> handler.waitForEndOfStream(1000));
     assertFalse(msg.isDone());
     handler.endOfStream();
@@ -188,7 +188,7 @@ public class SignalHandlerTest {
 
   @Test
   public void testWaitForEndOfStreamTimeout() throws InterruptedException, ExecutionException, TimeoutException {
-    SignalHandler handler = new SignalHandler(false, "callid");
+    RequestHandler handler = new RequestHandler(false, "callid");
     Future<Boolean> msg = executor.submit(() -> handler.waitForEndOfStream(100));
     assertFalse(msg.isDone());
     assertTrue(msg.get(1000, TimeUnit.MILLISECONDS));
@@ -196,7 +196,7 @@ public class SignalHandlerTest {
 
   @Test
   public void testWaitForEndOfStreamKeepAliveNotEnabled() throws InterruptedException, ExecutionException, TimeoutException {
-    SignalHandler handler = new SignalHandler(false, "callid");
+    RequestHandler handler = new RequestHandler(false, "callid");
     //wait for end of stream, wait at most 100ms before closing
     Future<Boolean> msg = executor.submit(() -> handler.waitForEndOfStream(100));
     assertFalse(msg.isDone());
@@ -208,7 +208,7 @@ public class SignalHandlerTest {
 
   @Test
   public void testWaitForEndOfStreamKeepAlive() throws InterruptedException, ExecutionException, TimeoutException {
-    SignalHandler handler = new SignalHandler(true, "callid");
+    RequestHandler handler = new RequestHandler(true, "callid");
     //wait for end of stream, wait at most 100ms before closing
     Future<Boolean> msg = executor.submit(() -> handler.waitForEndOfStream(100));
     assertFalse(msg.isDone());
@@ -224,7 +224,7 @@ public class SignalHandlerTest {
 
   public static class TestMessage implements Message {
     private final String msgID;
-    private String callID;
+    private String callID = "callid";
     private final long messageTimestamp = System.currentTimeMillis();
 
     TestMessage(String msgID) {
@@ -240,10 +240,6 @@ public class SignalHandlerTest {
       return callID;
     }
 
-    @Override
-    public void setCallID(String callID) {
-      this.callID = callID;
-    }
 
     @Override
     public long getMessageTimestamp() {

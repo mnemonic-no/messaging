@@ -1,4 +1,4 @@
-package no.mnemonic.messaging.api;
+package no.mnemonic.messaging.requestsink;
 
 /**
  * @author joakim
@@ -16,6 +16,6 @@ public interface RequestSink {
    * @param maxWait       the maximum lifetime of this request, before closing
    * @return the signal context
    */
-  <T extends SignalContext> T signal(Message msg, T signalContext, long maxWait);
+  <T extends RequestContext> T signal(Message msg, T signalContext, long maxWait);
 
 }

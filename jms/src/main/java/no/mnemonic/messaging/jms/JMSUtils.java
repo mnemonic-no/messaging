@@ -3,7 +3,7 @@ package no.mnemonic.messaging.jms;
 import no.mnemonic.commons.logging.Logger;
 import no.mnemonic.commons.logging.Logging;
 import no.mnemonic.commons.utilities.collections.SetUtils;
-import no.mnemonic.messaging.api.MessagingException;
+import no.mnemonic.messaging.requestsink.MessagingException;
 
 import javax.jms.*;
 import java.io.*;
@@ -20,20 +20,6 @@ import java.util.*;
 class JMSUtils {
 
   private static final Logger LOGGER = Logging.getLogger(JMSUtils.class);
-
-  /**
-   * Creates a JMS object (message) from a serializable object
-   *
-   * @param obj object to create message from
-   * @return a JMS message created from given object
-   */
-  @Deprecated
-  static ObjectMessage createObjectMessage(Session session, Serializable obj) throws JMSException {
-    ObjectMessage m = session.createObjectMessage(obj);
-    m.setStringProperty(JMSBase.PROTOCOL_VERSION_KEY, JMSBase.PROTOCOL_VERSION_13);
-    return m;
-  }
-
 
   /**
    * Creates a JMS object from a string serializable object
@@ -55,35 +41,25 @@ class JMSUtils {
    * @param data data to create message from
    * @return a JMS message created from given object
    */
-  static BytesMessage createByteMessage(Session session, byte[] data) throws JMSException, IOException {
+  static BytesMessage createByteMessage(Session session, byte[] data, ProtocolVersion protocolVersion) throws JMSException, IOException {
     BytesMessage m = session.createBytesMessage();
     m.writeBytes(data);
-    m.setStringProperty(JMSBase.PROTOCOL_VERSION_KEY, JMSBase.PROTOCOL_VERSION_16);
+    m.setStringProperty(JMSBase.PROTOCOL_VERSION_KEY, protocolVersion.getVersionString());
     return m;
   }
 
   static boolean isCompatible(Message message) throws JMSException {
-    String argusCompat = message.getStringProperty(JMSBase.PROTOCOL_VERSION_KEY);
-    if (SetUtils.in(argusCompat, JMSBase.PROTOCOL_VERSION_13, JMSBase.PROTOCOL_VERSION_16)) {
-      return true;
-    }
-    return false;
+    if (!message.propertyExists(JMSBase.PROTOCOL_VERSION_KEY)) return false;
+    String proto = message.getStringProperty(JMSBase.PROTOCOL_VERSION_KEY);
+    return SetUtils.in(proto, JMSBase.PROTOCOL_VERSION_1);
   }
 
   static ProtocolVersion getProtocolVersion(Message message) throws JMSException {
-    String argusCompat = message.getStringProperty(JMSBase.PROTOCOL_VERSION_KEY);
-    if (SetUtils.in(argusCompat, JMSBase.PROTOCOL_VERSION_16)) {
-      return ProtocolVersion.V16;
+    String proto = message.getStringProperty(JMSBase.PROTOCOL_VERSION_KEY);
+    if (SetUtils.in(proto, JMSBase.PROTOCOL_VERSION_1)) {
+      return ProtocolVersion.V1;
     }
-    return ProtocolVersion.V13;
-  }
-
-  static boolean isV16Protocol(Message message) throws JMSException {
-    String argusCompat = message.getStringProperty(JMSBase.PROTOCOL_VERSION_KEY);
-    if (SetUtils.in(argusCompat, JMSBase.PROTOCOL_VERSION_16)) {
-      return true;
-    }
-    return false;
+    throw new JMSException("Received message with invalid protocol version: " + proto);
   }
 
   static void removeMessageListenerAndClose(MessageConsumer consumer) {

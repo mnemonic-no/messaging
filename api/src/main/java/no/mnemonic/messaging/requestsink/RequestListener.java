@@ -1,4 +1,4 @@
-package no.mnemonic.messaging.api;
+package no.mnemonic.messaging.requestsink;
 
 /**
  * @author joakim

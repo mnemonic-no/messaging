@@ -8,11 +8,10 @@ import java.io.Serializable;
 import java.nio.CharBuffer;
 import java.security.SecureRandom;
 import java.util.Hashtable;
-import java.util.Objects;
 import java.util.Random;
-import java.util.UUID;
 
-import static no.mnemonic.messaging.jms.JMSBase.*;
+import static no.mnemonic.messaging.jms.JMSBase.PROTOCOL_VERSION_1;
+import static no.mnemonic.messaging.jms.JMSBase.PROTOCOL_VERSION_KEY;
 import static no.mnemonic.messaging.jms.JMSRequestProxy.PROPERTY_MESSAGE_TYPE;
 
 abstract class AbstractJMSRequestTest {
@@ -27,18 +26,9 @@ abstract class AbstractJMSRequestTest {
     void action(Message msg) throws Exception;
   }
 
-
-  ObjectMessage objMsg(Serializable obj, String messageType, String callID) throws JMSException {
-    ObjectMessage msg = session.createObjectMessage(obj);
-    msg.setStringProperty(PROTOCOL_VERSION_KEY, PROTOCOL_VERSION_13);
-    msg.setStringProperty(PROPERTY_MESSAGE_TYPE, messageType);
-    msg.setJMSCorrelationID(callID);
-    return msg;
-  }
-
-  TextMessage textMsg(String text, String messageType, String callID, boolean v16, JMSRequestProxyTest.JMSAction... actions) throws Exception {
+  TextMessage textMsg(String text, String messageType, String callID, JMSRequestProxyTest.JMSAction... actions) throws Exception {
     TextMessage msg = session.createTextMessage(text);
-    msg.setStringProperty(PROTOCOL_VERSION_KEY, v16 ? PROTOCOL_VERSION_16 : PROTOCOL_VERSION_13);
+    msg.setStringProperty(PROTOCOL_VERSION_KEY, PROTOCOL_VERSION_1);
     msg.setStringProperty(PROPERTY_MESSAGE_TYPE, messageType);
     msg.setJMSCorrelationID(callID);
     if (actions != null) {
@@ -50,7 +40,7 @@ abstract class AbstractJMSRequestTest {
   BytesMessage byteMsg(Serializable obj, String messageType, String callID) throws JMSException, IOException {
     BytesMessage msg = session.createBytesMessage();
     msg.writeBytes(JMSUtils.serialize(obj));
-    msg.setStringProperty(PROTOCOL_VERSION_KEY, PROTOCOL_VERSION_16);
+    msg.setStringProperty(PROTOCOL_VERSION_KEY, PROTOCOL_VERSION_1);
     msg.setStringProperty(PROPERTY_MESSAGE_TYPE, messageType);
     msg.setJMSCorrelationID(callID);
     return msg;
@@ -59,7 +49,7 @@ abstract class AbstractJMSRequestTest {
   BytesMessage byteMsg(byte[] data, String messageType, String callID) throws JMSException, IOException {
     BytesMessage msg = session.createBytesMessage();
     msg.writeBytes(data);
-    msg.setStringProperty(PROTOCOL_VERSION_KEY, PROTOCOL_VERSION_16);
+    msg.setStringProperty(PROTOCOL_VERSION_KEY, PROTOCOL_VERSION_1);
     msg.setStringProperty(PROPERTY_MESSAGE_TYPE, messageType);
     msg.setJMSCorrelationID(callID);
     return msg;

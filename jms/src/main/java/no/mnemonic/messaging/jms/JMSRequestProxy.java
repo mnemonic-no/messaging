@@ -5,8 +5,8 @@ import no.mnemonic.commons.logging.Logging;
 import no.mnemonic.commons.utilities.collections.CollectionUtils;
 import no.mnemonic.commons.utilities.collections.ListUtils;
 import no.mnemonic.commons.utilities.collections.SetUtils;
-import no.mnemonic.messaging.api.Message;
-import no.mnemonic.messaging.api.RequestSink;
+import no.mnemonic.messaging.requestsink.Message;
+import no.mnemonic.messaging.requestsink.RequestSink;
 
 import javax.jms.Destination;
 import javax.jms.ExceptionListener;
@@ -205,12 +205,12 @@ public class JMSRequestProxy extends JMSBase implements MessageListener, Excepti
         LOGGER.debug("Request without return information ignored: " + message);
       return;
     }
-    setupChannel(callID, responseDestination, timeout);
+    setupChannel(callID, responseDestination, timeout, JMSUtils.getProtocolVersion(message));
   }
 
   private void handleChannelUploadCompleted(String callID, byte[] data, Destination replyTo, long timeout) throws Exception {
     // create a response context to handle response messages
-    ServerResponseContext r = new ServerResponseContext(callID, getSession(), replyTo, timeout, ProtocolVersion.V16);
+    ServerResponseContext r = new ServerResponseContext(callID, getSession(), replyTo, timeout, ProtocolVersion.V1);
     // overwrite channel upload context with a server response context
     calls.put(callID, r);
     //send uploaded signal to requestSink
@@ -256,11 +256,11 @@ public class JMSRequestProxy extends JMSBase implements MessageListener, Excepti
     return context;
   }
 
-  private void setupChannel(String callID, Destination replyTo, long timeout) throws NamingException, JMSException {
+  private void setupChannel(String callID, Destination replyTo, long timeout, ProtocolVersion protocolVersion) throws NamingException, JMSException {
     ServerContext ctx = calls.get(callID);
     if (ctx != null) return;
     //create new upload context
-    ServerChannelUploadContext context = new ServerChannelUploadContext(callID, getSession(), replyTo, timeout);
+    ServerChannelUploadContext context = new ServerChannelUploadContext(callID, getSession(), replyTo, timeout, protocolVersion);
     // register this responsesink
     calls.put(callID, context);
     //listen on upload messages and transmit channel setup

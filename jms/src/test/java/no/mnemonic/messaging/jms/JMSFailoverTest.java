@@ -3,9 +3,9 @@ package no.mnemonic.messaging.jms;
 import no.mnemonic.commons.container.ComponentContainer;
 import no.mnemonic.commons.testtools.AvailablePortFinder;
 import no.mnemonic.commons.utilities.lambda.LambdaUtils;
-import no.mnemonic.messaging.api.RequestSink;
-import no.mnemonic.messaging.api.SignalContext;
-import no.mnemonic.messaging.api.SignalHandler;
+import no.mnemonic.messaging.requestsink.RequestSink;
+import no.mnemonic.messaging.requestsink.RequestContext;
+import no.mnemonic.messaging.requestsink.RequestHandler;
 import org.apache.activemq.broker.BrokerService;
 import org.junit.After;
 import org.junit.Before;
@@ -42,7 +42,7 @@ public class JMSFailoverTest {
     broker2 = setupBroker(port2, port1);
 
     when(mockedSink.signal(any(), any(), anyLong())).thenAnswer(i -> {
-      ((SignalContext) i.getArgument(1)).endOfStream();
+      ((RequestContext) i.getArgument(1)).endOfStream();
       return null;
     });
   }
@@ -66,16 +66,16 @@ public class JMSFailoverTest {
     JMSRequestSink sink = setupFailoverServerAndClient();
     System.out.println("Starting");
 
-    assertTrue(new SignalHandler(sink, new TestMessage("msg"), true, 10000).waitForEndOfStream(10000));
+    assertTrue(RequestHandler.signal(sink, new TestMessage("msg"), true, 10000).waitForEndOfStream(10000));
 
     broker1.stop();
 
-    assertTrue(new SignalHandler(sink, new TestMessage("msg"), true, 10000).waitForEndOfStream(10000));
+    assertTrue(RequestHandler.signal(sink, new TestMessage("msg"), true, 10000).waitForEndOfStream(10000));
 
     broker1 = setupBroker(port1, port2);
     broker2.stop();
 
-    assertTrue(new SignalHandler(sink, new TestMessage("msg"), true, 10000).waitForEndOfStream(10000));
+    assertTrue(RequestHandler.signal(sink, new TestMessage("msg"), true, 10000).waitForEndOfStream(10000));
 
     broker1.stop();
 
@@ -117,7 +117,7 @@ public class JMSFailoverTest {
   private JMSRequestSink createSink(JMSConnection connection) {
     return JMSRequestSink.builder()
             .addConnection(connection)
-            .setProtocolVersion(ProtocolVersion.V16)
+            .setProtocolVersion(ProtocolVersion.V1)
             .setDestinationName("dynamicQueues/testqueue")
             .build();
   }

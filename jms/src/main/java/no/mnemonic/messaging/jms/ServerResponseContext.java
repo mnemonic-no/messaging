@@ -2,10 +2,10 @@ package no.mnemonic.messaging.jms;
 
 import no.mnemonic.commons.logging.Logger;
 import no.mnemonic.commons.logging.Logging;
-import no.mnemonic.messaging.api.Message;
-import no.mnemonic.messaging.api.RequestListener;
-import no.mnemonic.messaging.api.RequestSink;
-import no.mnemonic.messaging.api.SignalContext;
+import no.mnemonic.messaging.requestsink.Message;
+import no.mnemonic.messaging.requestsink.RequestContext;
+import no.mnemonic.messaging.requestsink.RequestListener;
+import no.mnemonic.messaging.requestsink.RequestSink;
 
 import javax.jms.Destination;
 import javax.jms.JMSException;
@@ -15,9 +15,7 @@ import javax.naming.NamingException;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 
-import static no.mnemonic.messaging.jms.ProtocolVersion.V16;
-
-class ServerResponseContext implements SignalContext, JMSRequestProxy.ServerContext {
+class ServerResponseContext implements RequestContext, JMSRequestProxy.ServerContext {
 
   private static Logger LOGGER = Logging.getLogger(ServerResponseContext.class);
 
@@ -64,13 +62,7 @@ class ServerResponseContext implements SignalContext, JMSRequestProxy.ServerCont
 
     try {
       // construct return message
-      javax.jms.Message returnMessage;
-      if (protocolVersion == V16) {
-        returnMessage = JMSUtils.createByteMessage(session, JMSUtils.serialize(msg));
-      } else {
-        //noinspection deprecation
-        returnMessage = JMSUtils.createObjectMessage(session, msg);
-      }
+      javax.jms.Message returnMessage = JMSUtils.createByteMessage(session, JMSUtils.serialize(msg), protocolVersion);
       returnMessage.setJMSCorrelationID(callID);
       returnMessage.setStringProperty(JMSRequestProxy.PROPERTY_MESSAGE_TYPE, JMSRequestProxy.MESSAGE_TYPE_SIGNAL_RESPONSE);
       // send return message
@@ -97,7 +89,7 @@ class ServerResponseContext implements SignalContext, JMSRequestProxy.ServerCont
       try {
         close();
       } catch (Exception e) {
-        LOGGER.warning(e,"Error closing response sink");
+        LOGGER.warning(e, "Error closing response sink");
       }
       return true;
     } else {
@@ -108,14 +100,8 @@ class ServerResponseContext implements SignalContext, JMSRequestProxy.ServerCont
   public void notifyError(Throwable e) {
     if (!isClosed()) {
       try {
-        ExceptionMessage ex = new ExceptionMessage(e);
-        javax.jms.Message exMessage;
-        if (protocolVersion == V16) {
-          exMessage = JMSUtils.createByteMessage(session, JMSUtils.serialize(ex));
-        } else {
-          //noinspection deprecation
-          exMessage = JMSUtils.createObjectMessage(session, ex);
-        }
+        ExceptionMessage ex = new ExceptionMessage(callID, e);
+        javax.jms.Message exMessage = JMSUtils.createByteMessage(session, JMSUtils.serialize(ex), protocolVersion);
         exMessage.setJMSCorrelationID(callID);
         exMessage.setStringProperty(JMSRequestProxy.PROPERTY_MESSAGE_TYPE, JMSRequestProxy.MESSAGE_TYPE_EXCEPTION);
         replyTo.send(exMessage);

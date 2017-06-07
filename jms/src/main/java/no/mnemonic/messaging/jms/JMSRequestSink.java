@@ -2,24 +2,22 @@ package no.mnemonic.messaging.jms;
 
 import no.mnemonic.commons.logging.Logger;
 import no.mnemonic.commons.logging.Logging;
+import no.mnemonic.commons.utilities.ObjectUtils;
 import no.mnemonic.commons.utilities.collections.CollectionUtils;
 import no.mnemonic.commons.utilities.collections.ListUtils;
 import no.mnemonic.commons.utilities.lambda.LambdaUtils;
-import no.mnemonic.messaging.api.*;
+import no.mnemonic.messaging.requestsink.*;
 
 import javax.jms.JMSException;
 import javax.jms.MessageConsumer;
 import javax.jms.TemporaryQueue;
 import javax.naming.NamingException;
 import java.io.ByteArrayInputStream;
-import java.io.Serializable;
 import java.util.List;
 import java.util.Map;
-import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicReference;
-import java.util.concurrent.atomic.LongAdder;
 
 import static no.mnemonic.messaging.jms.JMSRequestProxy.*;
 
@@ -48,9 +46,6 @@ public class JMSRequestSink extends JMSBase implements RequestSink, RequestListe
   private final int maxMessageSize;
   private final ProtocolVersion protocolVersion;
 
-  private final LongAdder requestCounter = new LongAdder();
-  private final LongAdder channelUploadCounter = new LongAdder();
-
   private JMSRequestSink(List<JMSConnection> connections, String destinationName, long failbackInterval,
                          int timeToLive, int priority, boolean persistent,
                          int maxMessageSize, ProtocolVersion protocolVersion) {
@@ -64,30 +59,19 @@ public class JMSRequestSink extends JMSBase implements RequestSink, RequestListe
 
   // **************** interface methods **************************
 
-  public <T extends SignalContext> T signal(Message msg, final T signalContext, long maxWait) {
-    SignalContext ctx = signalContext;
+  public <T extends RequestContext> T signal(Message msg, final T signalContext, long maxWait) {
+    //make sure message has callID set
+    if (msg.getCallID() == null) {
+      throw new IllegalArgumentException("Cannot accept message with no callID");
+    }
+
     //if no context given by user, create a null context
-    if (ctx == null) ctx = new NullSignalContext();
+    RequestContext ctx = ObjectUtils.ifNull(signalContext, NullRequestContext::new);
 
     //register for client-side notifications
     ctx.addListener(this);
 
-    //check if message has any special interfaces to handle
-    checkMessageInterfaces(msg, ctx);
-
-    //make sure message has callID set
-    if (msg.getCallID() == null) msg.setCallID(UUID.randomUUID().toString());
-
-    // determine message labels
-    String callID = msg.getCallID();
-
-    if (protocolVersion == ProtocolVersion.V16) {
-      checkForFragmentationAndSignal(msg, ctx, callID, maxWait);
-    } else {
-      // send request using old protocol (no fragmenting)
-      requests.putIfAbsent(callID, new ClassLoaderSignalContextPair(ctx, Thread.currentThread().getContextClassLoader()));
-      sendV13Message(msg, callID, MESSAGE_TYPE_SIGNAL, maxWait);
-    }
+    checkForFragmentationAndSignal(msg, ctx, msg.getCallID(), maxWait);
 
     return signalContext;
   }
@@ -116,34 +100,19 @@ public class JMSRequestSink extends JMSBase implements RequestSink, RequestListe
 
   // ****************** private methods ************************
 
-  private void checkMessageInterfaces(Message msg, SignalContext ctx) {
-    //check callID
-    if (ctx instanceof CallIDAwareMessageContext) {
-      CallIDAwareMessageContext callIDAwareContext = (CallIDAwareMessageContext) ctx;
-      //make sure context has a callID set, preferably the message callID, else generate a random callID
-      if (callIDAwareContext.getCallID() == null) {
-        callIDAwareContext.setCallID(msg.getCallID() == null ? UUID.randomUUID().toString() : msg.getCallID());
-      }
-      //if message has no callID, set the context callID on the message
-      if (msg.getCallID() == null) {
-        msg.setCallID(callIDAwareContext.getCallID());
-      }
-    }
-  }
-
-  private void checkForFragmentationAndSignal(Message msg, SignalContext ctx, String callID, long maxWait) {
+  private void checkForFragmentationAndSignal(Message msg, RequestContext ctx, String callID, long maxWait) {
     try {
       byte[] messageBytes = JMSUtils.serialize(msg);
       String messageType = MESSAGE_TYPE_SIGNAL;
       //check if we need to fragment this request message
       if (messageBytes.length > maxMessageSize) {
         //if needing to fragment, replace signal context with a wrapper client upload context and send a channel request
-        ctx = new ChannelUploadMessageContext(ctx, new ByteArrayInputStream(messageBytes), callID, maxMessageSize);
+        ctx = new ChannelUploadMessageContext(ctx, new ByteArrayInputStream(messageBytes), callID, maxMessageSize, protocolVersion);
         messageBytes = "channel upload request".getBytes();
         messageType = MESSAGE_TYPE_CHANNEL_REQUEST;
       }
       requests.putIfAbsent(callID, new ClassLoaderSignalContextPair(ctx, Thread.currentThread().getContextClassLoader()));
-      sendV16Message(messageBytes, callID, messageType, maxWait);
+      sendMessage(messageBytes, callID, messageType, maxWait);
     } catch (Exception e) {
       throw new RuntimeException(e);
     }
@@ -163,7 +132,7 @@ public class JMSRequestSink extends JMSBase implements RequestSink, RequestListe
   private void cleanResponseSinks() {
     for (Map.Entry<String, ClassLoaderSignalContextPair> e : requests.entrySet()) {
       ClassLoaderSignalContextPair c = e.getValue();
-      if (c.signalContext.isClosed()) {
+      if (c.requestContext.isClosed()) {
         requests.remove(e.getKey());
       }
     }
@@ -174,31 +143,17 @@ public class JMSRequestSink extends JMSBase implements RequestSink, RequestListe
     return responseListener.updateAndGet(u -> u != null ? u : new ResponseListener());
   }
 
-  private void sendV16Message(byte[] messageBytes, String callID, String messageType, long lifeTime) {
+  private void sendMessage(byte[] messageBytes, String callID, String messageType, long lifeTime) {
     try {
-      javax.jms.Message m = JMSUtils.createByteMessage(getSession(), messageBytes);
-      sendMessage(callID, messageType, lifeTime, m);
+      javax.jms.Message m = JMSUtils.createByteMessage(getSession(), messageBytes, protocolVersion);
+      m.setJMSReplyTo(checkResponseListener().getResponseQueue());
+      m.setJMSCorrelationID(callID);
+      m.setStringProperty(PROPERTY_MESSAGE_TYPE, messageType);
+      m.setLongProperty(PROPERTY_REQ_TIMEOUT, System.currentTimeMillis() + lifeTime);
+      sendJMSMessage(m);
     } catch (Exception e) {
       throw handleMessagingException(e);
     }
-  }
-
-  private void sendV13Message(Serializable msg, String callID, String messageType, long lifeTime) {
-    try {
-      //noinspection deprecation
-      javax.jms.Message m = JMSUtils.createObjectMessage(getSession(), msg);
-      sendMessage(callID, messageType, lifeTime, m);
-    } catch (Exception e) {
-      throw handleMessagingException(e);
-    }
-  }
-
-  private void sendMessage(String callID, String messageType, long lifeTime, javax.jms.Message m) throws JMSException {
-    m.setJMSReplyTo(checkResponseListener().getResponseQueue());
-    m.setJMSCorrelationID(callID);
-    m.setStringProperty(PROPERTY_MESSAGE_TYPE, messageType);
-    m.setLongProperty(PROPERTY_REQ_TIMEOUT, System.currentTimeMillis() + lifeTime);
-    sendJMSMessage(m);
   }
 
   private ClassLoaderSignalContextPair getCurrentCall(String callID) {
@@ -238,7 +193,7 @@ public class JMSRequestSink extends JMSBase implements RequestSink, RequestListe
     ClassLoaderSignalContextPair ctx = getCurrentCall(response.getJMSCorrelationID());
     if (ctx == null) return false;
     try (JMSUtils.ClassLoaderContext ignored = JMSUtils.ClassLoaderContext.of(ctx.classLoader)) {
-      ctx.signalContext.addResponse(JMSUtils.extractObject(response));
+      ctx.requestContext.addResponse(JMSUtils.extractObject(response));
     }
     return true;
   }
@@ -247,8 +202,8 @@ public class JMSRequestSink extends JMSBase implements RequestSink, RequestListe
     ClassLoaderSignalContextPair ctx = getCurrentCall(response.getJMSCorrelationID());
     if (ctx == null) return false;
     try {
-      if (ctx.signalContext instanceof ChannelUploadMessageContext) {
-        ChannelUploadMessageContext uploadCtx = (ChannelUploadMessageContext) ctx.signalContext;
+      if (ctx.requestContext instanceof ChannelUploadMessageContext) {
+        ChannelUploadMessageContext uploadCtx = (ChannelUploadMessageContext) ctx.requestContext;
         uploadCtx.upload(getSession(), response.getJMSReplyTo());
         return true;
       } else {
@@ -256,7 +211,7 @@ public class JMSRequestSink extends JMSBase implements RequestSink, RequestListe
         return false;
       }
     } catch (NamingException e) {
-      ctx.signalContext.notifyError(e);
+      ctx.requestContext.notifyError(e);
       return false;
     }
   }
@@ -264,14 +219,14 @@ public class JMSRequestSink extends JMSBase implements RequestSink, RequestListe
   private boolean handleSignalEndOfStream(javax.jms.Message response) throws JMSException {
     ClassLoaderSignalContextPair ctx = getCurrentCall(response.getJMSCorrelationID());
     if (ctx == null) return false;
-    ctx.signalContext.endOfStream();
+    ctx.requestContext.endOfStream();
     return true;
   }
 
   private boolean handleSignalExtendWait(javax.jms.Message response) throws JMSException {
     ClassLoaderSignalContextPair ctx = getCurrentCall(response.getJMSCorrelationID());
     if (ctx == null) return false;
-    ctx.signalContext.keepAlive(response.getLongProperty(PROPERTY_REQ_TIMEOUT));
+    ctx.requestContext.keepAlive(response.getLongProperty(PROPERTY_REQ_TIMEOUT));
     return true;
   }
 
@@ -279,12 +234,12 @@ public class JMSRequestSink extends JMSBase implements RequestSink, RequestListe
     ClassLoaderSignalContextPair ctx = getCurrentCall(response.getJMSCorrelationID());
     if (ctx == null) return false;
     if (MESSAGE_TYPE_STREAM_CLOSED.equals(response.getStringProperty(PROPERTY_MESSAGE_TYPE))) {
-      ctx.signalContext.endOfStream();
+      ctx.requestContext.endOfStream();
     } else {
       try (JMSUtils.ClassLoaderContext ignored = JMSUtils.ClassLoaderContext.of(ctx.classLoader)) {
         ExceptionMessage em = JMSUtils.extractObject(response);
         //noinspection ThrowableResultOfMethodCallIgnored
-        ctx.signalContext.notifyError(em.getException());
+        ctx.requestContext.notifyError(em.getException());
       }
     }
     return true;
@@ -321,7 +276,7 @@ public class JMSRequestSink extends JMSBase implements RequestSink, RequestListe
       //run invalidation in another thread
       invalidateInSeparateThread();
       //notify all connected client contexts about error
-      requests.values().forEach(ctx -> LambdaUtils.tryTo(() -> ctx.signalContext.notifyError(e)));
+      requests.values().forEach(ctx -> LambdaUtils.tryTo(() -> ctx.requestContext.notifyError(e)));
     }
 
     public void onMessage(javax.jms.Message message) {
@@ -354,8 +309,8 @@ public class JMSRequestSink extends JMSBase implements RequestSink, RequestListe
 
   }
 
-  private static class NullSignalContext implements SignalContext {
-    private NullSignalContext() {
+  private static class NullRequestContext implements RequestContext {
+    private NullRequestContext() {
     }
 
     public boolean addResponse(Message msg) {
@@ -399,9 +354,10 @@ public class JMSRequestSink extends JMSBase implements RequestSink, RequestListe
     private int priority = DEFAULT_PRIORITY;
     private boolean persistent = false;
     private int maxMessageSize = DEFAULT_MAX_MESSAGE_SIZE;
-    private ProtocolVersion protocolVersion = ProtocolVersion.V13;
+    private ProtocolVersion protocolVersion = ProtocolVersion.V1;
 
     public JMSRequestSink build() {
+      if (protocolVersion == null) throw new IllegalArgumentException("protocolVersion not set");
       if (CollectionUtils.isEmpty(connections)) throw new IllegalArgumentException("No connections defined");
       if (destinationName == null) throw new IllegalArgumentException("No destination name provided");
       return new JMSRequestSink(connections, destinationName, failbackInterval, timeToLive, priority, persistent,
@@ -460,11 +416,11 @@ public class JMSRequestSink extends JMSBase implements RequestSink, RequestListe
   //inner classes
 
   private class ClassLoaderSignalContextPair {
-    private final SignalContext signalContext;
+    private final RequestContext requestContext;
     private final ClassLoader classLoader;
 
-    private ClassLoaderSignalContextPair(SignalContext signalContext, ClassLoader classLoader) {
-      this.signalContext = signalContext;
+    private ClassLoaderSignalContextPair(RequestContext requestContext, ClassLoader classLoader) {
+      this.requestContext = requestContext;
       this.classLoader = classLoader;
     }
   }

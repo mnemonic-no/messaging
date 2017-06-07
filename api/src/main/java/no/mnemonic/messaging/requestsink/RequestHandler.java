@@ -1,4 +1,4 @@
-package no.mnemonic.messaging.api;
+package no.mnemonic.messaging.requestsink;
 
 import no.mnemonic.commons.logging.Logger;
 import no.mnemonic.commons.logging.Logging;
@@ -16,13 +16,13 @@ import java.util.concurrent.atomic.AtomicReference;
 /**
  * Common implementation for asynchronous response handling.
  * <p>
- * After making an asynchronous call, this responsehandler may be used for tracking responses from the called
- * components.
+ * After making an asynchronous call, this requesthandler may be used for tracking responses
+ * from the requestsink.
  */
-public class SignalHandler implements SignalContext {
+public class RequestHandler implements RequestContext {
 
   private static Clock clock = Clock.systemUTC();
-  private static final Logger LOGGER = Logging.getLogger(SignalHandler.class);
+  private static final Logger LOGGER = Logging.getLogger(RequestHandler.class);
 
   private final BlockingQueue<Message> responses = new LinkedBlockingDeque<>();
   private final AtomicBoolean closed = new AtomicBoolean();
@@ -32,16 +32,16 @@ public class SignalHandler implements SignalContext {
   private final String callID;
   private final AtomicLong timeout = new AtomicLong();
 
-  public SignalHandler(RequestSink sink, Message msg, boolean allowKeepAlive, long maxWait) {
-    this.allowKeepAlive = allowKeepAlive;
-    this.callID = msg.getCallID();
-    timeout.set(System.currentTimeMillis() + maxWait);
-    sink.signal(msg, this, maxWait);
-  }
-
-  public SignalHandler(boolean allowKeepAlive, String callID) {
+  public RequestHandler(boolean allowKeepAlive, String callID) {
     this.allowKeepAlive = allowKeepAlive;
     this.callID = callID;
+  }
+
+  public static RequestHandler signal(RequestSink sink, Message msg, boolean allowKeepAlive, long maxWait) {
+    RequestHandler handler = new RequestHandler(allowKeepAlive, msg.getCallID());
+    sink.signal(msg, handler, maxWait);
+    handler.keepAlive(System.currentTimeMillis() + maxWait);
+    return handler;
   }
 
   //interface methods

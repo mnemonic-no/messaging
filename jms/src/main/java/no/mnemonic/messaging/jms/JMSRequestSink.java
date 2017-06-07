@@ -50,9 +50,7 @@ public class JMSRequestSink extends JMSBase implements RequestSink, RequestListe
                          int timeToLive, int priority, boolean persistent,
                          int maxMessageSize, ProtocolVersion protocolVersion) {
     super(connections, destinationName, false,
-            failbackInterval, timeToLive, priority, persistent, false,
-            Executors.newSingleThreadExecutor()
-    );
+            failbackInterval, timeToLive, priority, persistent, false);
     this.maxMessageSize = maxMessageSize;
     this.protocolVersion = protocolVersion;
   }

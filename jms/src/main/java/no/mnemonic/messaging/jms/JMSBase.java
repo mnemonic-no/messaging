@@ -1,16 +1,20 @@
 package no.mnemonic.messaging.jms;
 
+import no.mnemonic.commons.component.Dependency;
 import no.mnemonic.commons.component.LifecycleAspect;
 import no.mnemonic.commons.logging.Logger;
 import no.mnemonic.commons.logging.Logging;
 import no.mnemonic.commons.utilities.AppendMembers;
 import no.mnemonic.commons.utilities.AppendUtils;
+import no.mnemonic.commons.utilities.ObjectUtils;
 import no.mnemonic.messaging.requestsink.MessagingException;
 
 import javax.jms.*;
 import javax.naming.NamingException;
+import java.lang.IllegalStateException;
 import java.util.List;
 import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.*;
 
 @SuppressWarnings({"ClassReferencesSubclass"})
@@ -23,11 +27,11 @@ public abstract class JMSBase implements LifecycleAspect, AppendMembers {
 
   // common properties
 
+  @Dependency
   private final List<JMSConnection> connections;
   private final String destinationName;
   private final boolean transacted;
 
-  private final long failbackInterval;
   private final int timeToLive;
   private final int priority;
   private final boolean persistent;
@@ -49,23 +53,20 @@ public abstract class JMSBase implements LifecycleAspect, AppendMembers {
   private final AtomicReference<MessageProducer> producer = new AtomicReference<>();
   private final AtomicReference<Thread> reconnectingThread = new AtomicReference<>();
 
-  private final ExecutorService executor;
+  private final AtomicReference<ExecutorService> executor = new AtomicReference<>();
 
 
   // ************************* constructors ********************************
 
-  JMSBase(List<JMSConnection> connections, String destinationName, boolean transacted,
-          long failbackInterval, int timeToLive, int priority, boolean persistent, boolean temporary,
-          ExecutorService executor) {
+   JMSBase(List<JMSConnection> connections, String destinationName, boolean transacted,
+                 long failbackInterval, int timeToLive, int priority, boolean persistent, boolean temporary) {
     this.connections = connections;
     this.destinationName = destinationName;
     this.transacted = transacted;
-    this.failbackInterval = failbackInterval;
     this.timeToLive = timeToLive;
     this.priority = priority;
     this.persistent = persistent;
     this.temporary = temporary;
-    this.executor = executor;
   }
 
   // ************************ interface methods ***********************************
@@ -87,13 +88,14 @@ public abstract class JMSBase implements LifecycleAspect, AppendMembers {
 
   @Override
   public void startComponent() {
+    this.executor.set(createExecutor());
   }
 
   @Override
   public void stopComponent() {
     closed.set(true);
     closeAllResources();
-    executor.shutdown();
+    ObjectUtils.ifNotNullDo(executor.get(), ExecutorService::shutdown);
   }
 
 
@@ -118,6 +120,10 @@ public abstract class JMSBase implements LifecycleAspect, AppendMembers {
 
   private boolean isClosed() {
     return closed.get();
+  }
+
+  ExecutorService createExecutor() {
+    return Executors.newSingleThreadExecutor();
   }
 
   private void closeAllResources() {
@@ -175,7 +181,8 @@ public abstract class JMSBase implements LifecycleAspect, AppendMembers {
 
   void runInSeparateThread(Runnable task) {
     //noinspection unchecked
-    executor.submit(task);
+    if (executor.get() == null) throw new IllegalStateException("Component not started");
+    executor.get().submit(task);
   }
 
   void invalidateInSeparateThread() {

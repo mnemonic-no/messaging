@@ -12,6 +12,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.*;
 
+import static no.mnemonic.commons.utilities.lambda.LambdaUtils.tryTo;
 import static org.junit.Assert.*;
 import static org.mockito.ArgumentMatchers.isA;
 import static org.mockito.Mockito.*;
@@ -20,11 +21,13 @@ public class JMSRequestSinkProxyTest extends AbstractJMSRequestTest {
 
   private JMSRequestSink requestSink;
   private JMSRequestProxy requestProxy;
-  private ComponentContainer container;
+  private ComponentContainer clientContainer, serverContainer;
   private RequestSink endpoint;
   private RequestContext requestContext;
   private JMSConnection connection;
   private String queueName;
+
+  private ExecutorService executor = Executors.newCachedThreadPool();
 
   @Before
   public void setUp() throws Exception {
@@ -34,33 +37,38 @@ public class JMSRequestSinkProxyTest extends AbstractJMSRequestTest {
     requestContext = mock(RequestContext.class);
 
     //set up a real JMS connection to a vm-local activemq
-    connection = createConnection();
     queueName = "dynamicQueues/" + generateCookie(10);
 
     //set up request sink pointing at a vm-local topic
+    JMSConnection clientConnection = createConnection();
     requestSink = JMSRequestSink.builder()
-            .addConnection(connection)
+            .addConnection(clientConnection)
             .setDestinationName(queueName)
             .build();
 
     //set up request proxy listening to the vm-local topic, and pointing to mock endpoint
+    JMSConnection serverConnection = createConnection();
     requestProxy = JMSRequestProxy.builder()
-            .addConnection(connection)
+            .addConnection(serverConnection)
             .setDestinationName(queueName)
             .setRequestSink(endpoint)
             .build();
 
-    container = ComponentContainer.create(requestSink, requestProxy, connection);
+    clientContainer = ComponentContainer.create(requestSink, clientConnection);
+    serverContainer = ComponentContainer.create(requestProxy, serverConnection);
   }
 
   @After
   public void tearDown() throws Exception {
-    container.destroy();
+    clientContainer.destroy();
+    serverContainer.destroy();
+    executor.shutdown();
   }
 
   @Test
   public void testSignal() throws Exception {
-    container.initialize();
+    serverContainer.initialize();
+    clientContainer.initialize();
     //mock client handling of response
     Future<List<TestMessage>> response = mockReceiveResponse();
     //when endpoint receives signal, it replies with a single reply, before closing channel
@@ -76,8 +84,47 @@ public class JMSRequestSinkProxyTest extends AbstractJMSRequestTest {
   }
 
   @Test
+  public void testNiceShutdown() throws Exception {
+    serverContainer.initialize();
+    clientContainer.initialize();
+
+    CompletableFuture<TestMessage> requestReceived = new CompletableFuture<>();
+    CompletableFuture<TestMessage> serverResponse = new CompletableFuture<>();
+    when(endpoint.signal(isA(TestMessage.class), isA(SignalContext.class), anyLong())).thenAnswer(i -> {
+      requestReceived.complete(i.getArgument(0));
+      SignalContext ctx = (SignalContext) i.getArguments()[1];
+      ctx.addResponse(serverResponse.get(10000, TimeUnit.MILLISECONDS));
+      ctx.endOfStream();
+      System.out.println("Finished request");
+      return ctx;
+    });
+
+    requestSink.signal(new TestMessage("request"), signalContext, 10000);
+
+    //wait for request to be received
+    requestReceived.get(1000, TimeUnit.MILLISECONDS);
+    //when request is received, start shutting down server
+    System.out.println("Shutting down container");
+    Future<?> containerShutdown = executor.submit(() -> serverContainer.destroy());
+
+    //make sure server does not shut down (yet) while request is still being processed
+    assertFalse(tryTo(() -> containerShutdown.get(2000, TimeUnit.MILLISECONDS)));
+    assertFalse(requestProxy.isClosed());
+
+    //now let the server complete the pending request
+    System.out.println("Completing request");
+    serverResponse.complete(new TestMessage("response"));
+
+    //make sure server shuts down cleanly
+    assertTrue(tryTo(() -> containerShutdown.get(5000, TimeUnit.MILLISECONDS)));
+    assertTrue(requestProxy.isClosed());
+    System.out.println("Verification done");
+  }
+
+  @Test
   public void testInvalidation() throws InterruptedException {
-    container.initialize();
+    serverContainer.initialize();
+    clientContainer.initialize();
     requestProxy.invalidate();
     assertFalse(requestProxy.hasSession());
     Thread.sleep(1500);
@@ -88,17 +135,20 @@ public class JMSRequestSinkProxyTest extends AbstractJMSRequestTest {
 
   @Test
   public void testChannelUpload() throws InterruptedException, TimeoutException, ExecutionException {
+    serverContainer.initialize();
+
     //set up request sink pointing at a vm-local topic
+    JMSConnection clientConnection = createConnection();
     requestSink = JMSRequestSink.builder()
-            .addConnection(connection)
+            .addConnection(clientConnection)
             .setDestinationName(queueName)
             //set protocol V16 to enable channel upload
             .setProtocolVersion(ProtocolVersion.V1)
             //set max message size to 100 bytes, to force channel upload with message fragments
             .setMaxMessageSize(100)
             .build();
-    container = ComponentContainer.create(requestSink, requestProxy, connection);
-    container.initialize();
+    clientContainer = ComponentContainer.create(requestSink, clientConnection);
+    clientContainer.initialize();
 
     //send message bigger than max message size
     TestMessage msg = new TestMessage(generateCookie(1000));
@@ -115,7 +165,8 @@ public class JMSRequestSinkProxyTest extends AbstractJMSRequestTest {
 
   @Test
   public void testSignalMultiReplies() throws InterruptedException, TimeoutException, ExecutionException {
-    container.initialize();
+    serverContainer.initialize();
+    clientContainer.initialize();
     //when endpoint receives signal, it replies with three replies, before closing channel
     Future<TestMessage> signal = mockEndpointSignal(new TestMessage("reply1"), new TestMessage("reply2"), new TestMessage("reply3"));
     //mock client handling of response
@@ -133,7 +184,8 @@ public class JMSRequestSinkProxyTest extends AbstractJMSRequestTest {
 
   @Test
   public void testSignalSequence() throws InterruptedException, TimeoutException, ExecutionException {
-    container.initialize();
+    serverContainer.initialize();
+    clientContainer.initialize();
     Semaphore sem = new Semaphore(0);
     doAnswer(i -> {
       sem.release();

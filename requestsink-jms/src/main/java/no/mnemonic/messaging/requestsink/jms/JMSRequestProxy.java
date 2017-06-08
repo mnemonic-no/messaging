@@ -3,6 +3,7 @@ package no.mnemonic.messaging.requestsink.jms;
 import no.mnemonic.commons.component.Dependency;
 import no.mnemonic.commons.logging.Logger;
 import no.mnemonic.commons.logging.Logging;
+import no.mnemonic.commons.utilities.ClassLoaderContext;
 import no.mnemonic.commons.utilities.collections.CollectionUtils;
 import no.mnemonic.commons.utilities.collections.ListUtils;
 import no.mnemonic.commons.utilities.collections.SetUtils;
@@ -71,7 +72,7 @@ public class JMSRequestProxy extends JMSBase implements MessageListener, Excepti
   private JMSRequestProxy(List<JMSConnection> connections, String destinationName, long failbackInterval,
                           int timeToLive, int priority, int maxConcurrentCalls,
                           long maxReconnectTime, RequestSink requestSink) {
-    super(connections, destinationName, false, failbackInterval, timeToLive,
+    super(connections, destinationName, false, timeToLive,
             priority, false, false);
     this.maxReconnectTime = maxReconnectTime;
     this.requestSink = requestSink;
@@ -216,7 +217,7 @@ public class JMSRequestProxy extends JMSBase implements MessageListener, Excepti
     }
     // create a response context to handle response messages
     ServerResponseContext ctx = setupServerContext(callID, responseDestination, timeout, JMSUtils.getProtocolVersion(message));
-    try (JMSUtils.ClassLoaderContext ignored = JMSUtils.ClassLoaderContext.of(requestSink)) {
+    try (ClassLoaderContext ignored = ClassLoaderContext.of(requestSink)) {
       // requestsink will broadcast signal, and responses sent to response mockSink
       //use the classloader for the receiving sink when extracting object
       Message request = JMSUtils.extractObject(message);
@@ -242,7 +243,7 @@ public class JMSRequestProxy extends JMSBase implements MessageListener, Excepti
     // overwrite channel upload context with a server response context
     calls.put(callID, r);
     //send uploaded signal to requestSink
-    try (JMSUtils.ClassLoaderContext classLoaderCtx = JMSUtils.ClassLoaderContext.of(requestSink)) {
+    try (ClassLoaderContext classLoaderCtx = ClassLoaderContext.of(requestSink)) {
       // requestsink will broadcast signal, and responses sent to response mockSink
       //use the classloader for the receiving sink when extracting object
       Message request = JMSUtils.unserialize(data, classLoaderCtx.getContextClassLoader());

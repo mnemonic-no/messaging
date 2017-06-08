@@ -15,6 +15,7 @@ public class ClassLoaderAwareObjectInputStream extends ObjectInputStream {
   }
 
   protected Class<?> resolveClass(ObjectStreamClass desc) throws IOException, ClassNotFoundException {
+    if (desc == null) throw new IllegalArgumentException("ObjectStreamClass not set");
     return Class.forName(desc.getName(), false, classLoader);
   }
 

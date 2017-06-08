@@ -58,40 +58,34 @@ public class JMSRequestSinkTest extends AbstractJMSRequestTest {
     requestSink.signal(testMessage, requestContext, 10000);
     //wait for message to come through and validate
     Message receivedMessage = expectMessage(JMSRequestProxy.MESSAGE_TYPE_SIGNAL);
-    Assert.assertEquals(JMSBase.PROTOCOL_VERSION_1, receivedMessage.getStringProperty(JMSBase.PROTOCOL_VERSION_KEY));
+    Assert.assertEquals(ProtocolVersion.V1.getVersionString(), receivedMessage.getStringProperty(JMSBase.PROTOCOL_VERSION_KEY));
     Assert.assertEquals(JMSRequestProxy.MESSAGE_TYPE_SIGNAL, receivedMessage.getStringProperty(JMSRequestProxy.PROPERTY_MESSAGE_TYPE));
     assertEquals(testMessage, JMSUtils.extractObject(receivedMessage));
     assertTrue(receivedMessage instanceof BytesMessage);
   }
 
   @Test
-  public void testSignalReceiveSingleResultV13Protocol() throws Exception {
+  public void testSignalReceiveSingleResult() throws Exception {
     doTestSignalReceiveResults(1);
   }
 
   @Test
-  public void testSignalReceiveMultipleResultsV13Protocol() throws Exception {
+  public void testSignalReceiveMultipleResults() throws Exception {
     doTestSignalReceiveResults(100);
   }
 
   @Test
-  public void testSignalReceiveSingleResultV16Protocol() throws Exception {
-    doTestSignalReceiveResults(1);
-  }
-
-  @Test
-  public void testSignalReceiveMultipleResultsV16Protocol() throws Exception {
-    doTestSignalReceiveResults(100);
-  }
-
-  @Test
-  public void testSignalKeepaliveV13() throws Exception {
-    doTestSignalKeepalive(false);
-  }
-
-  @Test
-  public void testSignalKeepaliveV16() throws Exception {
-    doTestSignalKeepalive(true);
+  public void testSignalKeepalive() throws Exception {
+    setupSinkAndContainer(65536);
+    TestMessage testMessage = new TestMessage("test1");
+    //signal message with short lifetime
+    requestSink.signal(testMessage, requestContext, 1000);
+    //wait for message to come through
+    Message receivedMessage = expectMessage(JMSRequestProxy.MESSAGE_TYPE_SIGNAL);
+    keepalive(receivedMessage, 1000);
+    eos(receivedMessage);
+    waitForEOS();
+    verify(requestContext).keepAlive(1000);
   }
 
   @Test
@@ -117,19 +111,6 @@ public class JMSRequestSinkTest extends AbstractJMSRequestTest {
   }
 
   //helper methods
-
-  private void doTestSignalKeepalive(boolean v16) throws Exception {
-    setupSinkAndContainer(65536);
-    TestMessage testMessage = new TestMessage("test1");
-    //signal message with short lifetime
-    requestSink.signal(testMessage, requestContext, 1000);
-    //wait for message to come through
-    Message receivedMessage = expectMessage(JMSRequestProxy.MESSAGE_TYPE_SIGNAL);
-    keepalive(receivedMessage, 1000);
-    eos(receivedMessage);
-    waitForEOS();
-    verify(requestContext).keepAlive(1000);
-  }
 
   private void doTestSignalReceiveResults(int resultCount) throws Exception {
     setupSinkAndContainer(65536);

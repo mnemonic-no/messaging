@@ -16,6 +16,8 @@ import java.util.concurrent.LinkedBlockingDeque;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 
+import static no.mnemonic.messaging.requestsink.jms.JMSUtils.assertNotNull;
+
 /**
  * This listener listens for incoming reply messages and adds them to the correct responsehandler
  *
@@ -39,21 +41,29 @@ class ServerChannelUploadContext implements JMSRequestProxy.ServerContext {
   private MessageConsumer channelConsumer;
 
   ServerChannelUploadContext(String callID, Session session, Destination responseDestination, long timeout, ProtocolVersion protocolVersion) throws JMSException, NamingException {
-    this.callID = callID;
-    this.session = session;
-    this.responseDestination = responseDestination;
-    this.protocolVersion = protocolVersion;
+    this.callID = assertNotNull(callID, "CallID not set");
+    this.session = assertNotNull(session, "Session not set");
+    this.responseDestination = assertNotNull(responseDestination, "ResponseDestination not set");
+    this.protocolVersion = assertNotNull(protocolVersion, "ProtocolVersion not set");
     this.timeout.set(timeout);
   }
 
+  /**
+   *
+   * @param handler handler to receive the reassembled uploaded message
+   * @throws JMSException on error receiving from JMS
+   */
   void setupChannel(UploadHandler handler) throws JMSException {
-    this.uploadHandler = handler;
+    //save reference to handler which should get the reassembled message
+    this.uploadHandler = assertNotNull(handler, "UploadHandler not set");
+    //create a temporary upload queue, a consumer on that queue, and bind a messagelistener to it
     this.channelQueue = session.createTemporaryQueue();
     this.channelConsumer = session.createConsumer(channelQueue);
     this.channelConsumer.setMessageListener(this::onMessage);
-
+    //create producer to send feedback to the client
     this.replyTo = session.createProducer(responseDestination);
-    Message setupMessage = JMSUtils.createTextMessage(session, "channel setup", ProtocolVersion.V1);
+    //send a channel setup message to the client
+    Message setupMessage = JMSUtils.createTextMessage(session, "channel setup", protocolVersion);
     setupMessage.setJMSCorrelationID(callID);
     setupMessage.setStringProperty(JMSRequestProxy.PROPERTY_MESSAGE_TYPE, JMSRequestProxy.MESSAGE_TYPE_CHANNEL_SETUP);
     setupMessage.setLongProperty(JMSRequestProxy.PROPERTY_REQ_TIMEOUT, timeout.get());
@@ -87,7 +97,7 @@ class ServerChannelUploadContext implements JMSRequestProxy.ServerContext {
   }
 
   private void handleUploadFragment(Message message) throws JMSException {
-    if (LOGGER.isDebug()) LOGGER.debug("UploadListener.handleUploadFragment");
+    if (LOGGER.isDebug()) LOGGER.debug("ServerChannelUploadContext.handleUploadFragment");
     String callID = message.getJMSCorrelationID();
     if (!callID.equals(this.callID)) {
       LOGGER.warning("Ignoring fragment with wrong callID: " + callID);
@@ -100,7 +110,7 @@ class ServerChannelUploadContext implements JMSRequestProxy.ServerContext {
   }
 
   private void handleSignalEndOfStream(Message message) {
-    if (LOGGER.isDebug()) LOGGER.debug("UploadListener.handleSignalEndOfStream");
+    if (LOGGER.isDebug()) LOGGER.debug("ServerChannelUploadContext.handleSignalEndOfStream");
     close();
     try {
       byte[] messageData = prepareData(message);
@@ -115,11 +125,11 @@ class ServerChannelUploadContext implements JMSRequestProxy.ServerContext {
   }
 
   private void handleSignalExtendWait(Message msg) {
-    if (LOGGER.isDebug()) LOGGER.debug("UploadListener.handleSignalExtendWait");
+    LOGGER.info("Unexpected message: ServerChannelUploadContext.handleSignalExtendWait");
   }
 
   private void abortUpload() {
-    if (LOGGER.isDebug()) LOGGER.debug("UploadListener.abortUpload");
+    LOGGER.info("Unexpected message: ServerChannelUploadContext.abortUpload");
     close();
   }
 

@@ -10,7 +10,9 @@
     <version>1.0.0-SNAPSHOT</version>
   </parent>
   <artifactId>requestsink-jms</artifactId>
-  <version>1.0.0-SNAPSHOT</version>
+
+  <name>mnemonic messaging - RequestSink JMS</name>
+  <description>Implementation of RequestSink framework using JMS</description>
 
   <dependencies>
     <dependency>

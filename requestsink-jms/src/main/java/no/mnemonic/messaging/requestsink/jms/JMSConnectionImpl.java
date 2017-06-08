@@ -7,7 +7,6 @@ import no.mnemonic.commons.utilities.AppendMembers;
 import no.mnemonic.commons.utilities.AppendUtils;
 import no.mnemonic.commons.utilities.StringUtils;
 import no.mnemonic.commons.utilities.collections.MapUtils;
-import no.mnemonic.commons.utilities.lambda.LambdaUtils;
 import no.mnemonic.messaging.requestsink.MessagingException;
 
 import javax.jms.*;
@@ -18,6 +17,10 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
+
+import static no.mnemonic.commons.utilities.ObjectUtils.ifNotNullDo;
+import static no.mnemonic.commons.utilities.collections.MapUtils.map;
+import static no.mnemonic.commons.utilities.lambda.LambdaUtils.tryTo;
 
 public class JMSConnectionImpl implements JMSConnection, ExceptionListener, LifecycleAspect, AppendMembers {
 
@@ -55,12 +58,11 @@ public class JMSConnectionImpl implements JMSConnection, ExceptionListener, Life
     this.username = username;
     this.password = password;
     Properties p = new Properties();
-    MapUtils.concatenate(properties).forEach(p::setProperty);
+    properties.forEach(p::setProperty);
     this.properties = p;
   }
 
   // interface methods
-
 
   @Override
   public void appendMembers(StringBuilder buf) {
@@ -77,35 +79,37 @@ public class JMSConnectionImpl implements JMSConnection, ExceptionListener, Life
 
   @Override
   public void startComponent() {
-
   }
 
   @Override
   public void stopComponent() {
     closed.set(true);
+    invalidateInSeparateThread();
     executor.shutdown();
   }
 
-
-  // public methods
-
+  @Override
   public boolean isClosed() {
     return closed.get();
   }
 
+  @Override
   public void onException(JMSException e) {
     if (invalidating.get()) return;
-    exceptionListeners.forEach(l -> LambdaUtils.tryTo(() -> l.onException(e)));
+    exceptionListeners.forEach(l -> tryTo(() -> l.onException(e)));
   }
 
+  @Override
   public void addExceptionListener(ExceptionListener listener) {
     exceptionListeners.add(listener);
   }
 
+  @Override
   public void removeExceptionListener(ExceptionListener listener) {
     exceptionListeners.remove(listener);
   }
 
+  @Override
   public Destination lookupDestination(String destinationName) throws JMSException, NamingException {
     try {
       Object obj = getInitialContext().lookup(destinationName);
@@ -124,6 +128,7 @@ public class JMSConnectionImpl implements JMSConnection, ExceptionListener, Life
     }
   }
 
+  @Override
   public Session getSession(JMSBase client, boolean transacted) throws JMSException, NamingException {
     try {
       return getConnection(client)
@@ -135,6 +140,54 @@ public class JMSConnectionImpl implements JMSConnection, ExceptionListener, Life
       invalidateInSeparateThread();
       throw new MessagingException(e);
     }
+  }
+
+  @Override
+  public void register(JMSBase client) {
+    if (LOGGER.isDebug()) LOGGER.debug("Registering JMS client");
+    clients.add(client);
+  }
+
+  @Override
+  public void deregister(JMSBase client) {
+    if (LOGGER.isDebug()) LOGGER.debug("Deregistering JMS client");
+    clients.remove(client);
+    if (client instanceof ExceptionListener) {
+      exceptionListeners.remove(client);
+    }
+  }
+
+  @Override
+  public void invalidate() {
+    // avoid multiple calls to this method
+    if (invalidating.get())
+      return;
+    invalidating.set(true);
+
+    try {
+      // invalidate all clients
+      LOGGER.info("Invalidating %d clients", clients.size());
+      for (JMSBase client : new ArrayList<>(clients)) {
+        try {
+          client.invalidate();
+        } catch (Exception e) {
+          //do nothing
+        }
+      }
+    } finally {
+      invalidating.set(false);
+      // finally reset connection
+      clients.clear();
+      exceptionListeners.clear();
+      // close this connection
+      ifNotNullDo(connection.getAndSet(null), c -> tryTo(c::close));
+      ifNotNullDo(initialContext.getAndSet(null), c -> tryTo(c::close));
+    }
+  }
+
+  @Override
+  public void close() {
+    invalidate();
   }
 
   //protected and private methods
@@ -196,78 +249,12 @@ public class JMSConnectionImpl implements JMSConnection, ExceptionListener, Life
         Hashtable<String, String> env = new Hashtable<>();
         env.put(InitialContext.INITIAL_CONTEXT_FACTORY, contextFactoryName);
         env.put(InitialContext.PROVIDER_URL, contextURL);
-        MapUtils.concatenate(properties).forEach((k, v) -> env.put((String) k, (String) v));
+        properties.forEach((k, v) -> env.put((String) k, (String) v));
         initialContext.set(new InitialContext(env));
       }
       return initialContext.get();
     }
   }
-
-  public void register(JMSBase client) {
-    if (LOGGER.isDebug()) LOGGER.debug("Registering JMS client");
-    synchronized (this) {
-      if (!clients.contains(client))
-        clients.add(client);
-    }
-  }
-
-  public void deregister(JMSBase client) {
-    if (LOGGER.isDebug()) LOGGER.debug("Deregistering JMS client");
-    synchronized (this) {
-      if (clients.contains(client)) {
-        clients.remove(client);
-      }
-      if (client instanceof ExceptionListener) {
-        exceptionListeners.remove(client);
-      }
-    }
-  }
-
-  public void invalidate() {
-    // avoid multiple calls to this method
-    if (invalidating.get())
-      return;
-    invalidating.set(true);
-
-    try {
-      // invalidate all clients
-      LOGGER.info("Invalidating %d clients", clients.size());
-      for (JMSBase client : new ArrayList<>(clients)) {
-        try {
-          client.invalidate();
-        } catch (Exception e) {
-          //do nothing
-        }
-      }
-    } finally {
-      invalidating.set(false);
-      // finally reset connection
-      clients.clear();
-      exceptionListeners.clear();
-      // close this connection
-      try {
-        if (connection.get() != null)
-          connection.get().close();
-      } catch (JMSException e) {
-        //do nothing
-      }
-      try {
-        if (initialContext.get() != null)
-          initialContext.get().close();
-      } catch (NamingException e) {
-        //do nothing
-      }
-      connection.set(null);
-      initialContext.set(null);
-      invalidating.set(false);
-    }
-  }
-
-  public void close() {
-    invalidate();
-  }
-
-  // private methods
 
   private void invalidateInSeparateThread() {
     executor.submit(this::invalidate);
@@ -341,7 +328,7 @@ public class JMSConnectionImpl implements JMSConnection, ExceptionListener, Life
     }
 
     public Builder setProperties(Map<String, String> properties) {
-      this.properties = properties;
+      this.properties = map(properties);
       return this;
     }
   }

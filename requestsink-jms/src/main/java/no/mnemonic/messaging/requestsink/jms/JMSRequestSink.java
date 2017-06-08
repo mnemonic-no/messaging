@@ -2,6 +2,7 @@ package no.mnemonic.messaging.requestsink.jms;
 
 import no.mnemonic.commons.logging.Logger;
 import no.mnemonic.commons.logging.Logging;
+import no.mnemonic.commons.utilities.ClassLoaderContext;
 import no.mnemonic.commons.utilities.ObjectUtils;
 import no.mnemonic.commons.utilities.collections.CollectionUtils;
 import no.mnemonic.commons.utilities.collections.ListUtils;
@@ -47,7 +48,7 @@ public class JMSRequestSink extends JMSBase implements RequestSink, RequestListe
                          int timeToLive, int priority, boolean persistent,
                          int maxMessageSize, ProtocolVersion protocolVersion) {
     super(connections, destinationName, false,
-            failbackInterval, timeToLive, priority, persistent, false);
+            timeToLive, priority, persistent, false);
     this.maxMessageSize = maxMessageSize;
     this.protocolVersion = protocolVersion;
   }
@@ -66,7 +67,7 @@ public class JMSRequestSink extends JMSBase implements RequestSink, RequestListe
     //register for client-side notifications
     ctx.addListener(this);
 
-    checkForFragmentationAndSignal(msg, ctx, msg.getCallID(), maxWait);
+    checkForFragmentationAndSignal(msg, ctx, maxWait);
 
     return signalContext;
   }
@@ -95,19 +96,19 @@ public class JMSRequestSink extends JMSBase implements RequestSink, RequestListe
 
   // ****************** private methods ************************
 
-  private void checkForFragmentationAndSignal(Message msg, RequestContext ctx, String callID, long maxWait) {
+  private void checkForFragmentationAndSignal(Message msg, RequestContext ctx, long maxWait) {
     try {
       byte[] messageBytes = JMSUtils.serialize(msg);
       String messageType = JMSRequestProxy.MESSAGE_TYPE_SIGNAL;
       //check if we need to fragment this request message
       if (messageBytes.length > maxMessageSize) {
         //if needing to fragment, replace signal context with a wrapper client upload context and send a channel request
-        ctx = new ChannelUploadMessageContext(ctx, new ByteArrayInputStream(messageBytes), callID, maxMessageSize, protocolVersion);
+        ctx = new ChannelUploadMessageContext(ctx, new ByteArrayInputStream(messageBytes), msg.getCallID(), maxMessageSize, protocolVersion);
         messageBytes = "channel upload request".getBytes();
         messageType = JMSRequestProxy.MESSAGE_TYPE_CHANNEL_REQUEST;
       }
-      requests.putIfAbsent(callID, new ClassLoaderSignalContextPair(ctx, Thread.currentThread().getContextClassLoader()));
-      sendMessage(messageBytes, callID, messageType, maxWait);
+      requests.putIfAbsent(msg.getCallID(), new ClassLoaderSignalContextPair(ctx, Thread.currentThread().getContextClassLoader()));
+      sendMessage(messageBytes, msg.getCallID(), messageType, maxWait);
     } catch (Exception e) {
       throw new RuntimeException(e);
     }
@@ -187,7 +188,7 @@ public class JMSRequestSink extends JMSBase implements RequestSink, RequestListe
   private boolean handleSignalResponse(javax.jms.Message response) throws JMSException {
     ClassLoaderSignalContextPair ctx = getCurrentCall(response.getJMSCorrelationID());
     if (ctx == null) return false;
-    try (JMSUtils.ClassLoaderContext ignored = JMSUtils.ClassLoaderContext.of(ctx.classLoader)) {
+    try (ClassLoaderContext ignored = ClassLoaderContext.of(ctx.classLoader)) {
       ctx.requestContext.addResponse(JMSUtils.extractObject(response));
     }
     return true;
@@ -231,7 +232,7 @@ public class JMSRequestSink extends JMSBase implements RequestSink, RequestListe
     if (JMSRequestProxy.MESSAGE_TYPE_STREAM_CLOSED.equals(response.getStringProperty(JMSRequestProxy.PROPERTY_MESSAGE_TYPE))) {
       ctx.requestContext.endOfStream();
     } else {
-      try (JMSUtils.ClassLoaderContext ignored = JMSUtils.ClassLoaderContext.of(ctx.classLoader)) {
+      try (ClassLoaderContext ignored = ClassLoaderContext.of(ctx.classLoader)) {
         ExceptionMessage em = JMSUtils.extractObject(response);
         //noinspection ThrowableResultOfMethodCallIgnored
         ctx.requestContext.notifyError(em.getException());

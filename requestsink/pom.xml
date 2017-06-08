@@ -10,7 +10,9 @@
     <version>1.0.0-SNAPSHOT</version>
   </parent>
   <artifactId>requestsink</artifactId>
-  <version>1.0.0-SNAPSHOT</version>
+
+  <name>mnemonic messaging - RequestSink</name>
+  <description>RequestSink framework for asynchronous request/response pattern</description>
 
   <dependencies>
     <dependency>

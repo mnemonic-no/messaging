@@ -7,24 +7,62 @@
   <packaging>pom</packaging>
   <version>1.0.0-SNAPSHOT</version>
 
+  <name>mnemonic messaging</name>
+  <description>Messaging libraries</description>
+  <url>https://github.com/mnemonic-no/messaging</url>
+  <inceptionYear>2017</inceptionYear>
+
+  <licenses>
+    <license>
+      <name>ISC</name>
+      <url>https://opensource.org/licenses/ISC</url>
+      <distribution>repo</distribution>
+    </license>
+  </licenses>
+
+  <organization>
+    <name>mnemonic as</name>
+    <url>https://www.mnemonic.no</url>
+  </organization>
+
+  <developers>
+    <developer>
+      <name>mnemonic development team</name>
+      <email>opensource@mnemonic.no</email>
+      <url>https://github.com/mnemonic-no</url>
+      <organization>mnemonic as</organization>
+      <organizationUrl>https://www.mnemonic.no</organizationUrl>
+      <timezone>Europe/Oslo</timezone>
+    </developer>
+  </developers>
+
+  <prerequisites>
+    <maven>3.0</maven>
+  </prerequisites>
+
   <properties>
-    <maven.compiler.plugin.version>3.6.0</maven.compiler.plugin.version>
-    <maven.surefire.plugin.version>2.19.1</maven.surefire.plugin.version>
-    <maven.jar.plugin.version>3.0.2</maven.jar.plugin.version>
-    <maven.shade.plugin.version>2.4.2</maven.shade.plugin.version>
-    <maven.release.plugin.version>2.5.3</maven.release.plugin.version>
-    <maven.clean.plugin.version>3.0.0</maven.clean.plugin.version>
-    <maven.install.plugin.version>2.5.2</maven.install.plugin.version>
-    <maven.resources.plugin.version>3.0.1</maven.resources.plugin.version>
-    <maven.javadoc.plugin.version>2.10.4</maven.javadoc.plugin.version>
-    <maven.source.plugin.version>3.0.1</maven.source.plugin.version>
+    <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
 
-    <mnemonic.commons.version>0.0.23</mnemonic.commons.version>
+    <!-- mnemonic dependencies -->
+    <mnemonic.commons.version>0.0.28</mnemonic.commons.version>
+
+    <!-- external dependencies -->
     <jms.version>1.1</jms.version>
-
-    <mockito.version>2.2.8</mockito.version>
+    <mockito.version>2.8.9</mockito.version>
     <junit.version>4.12</junit.version>
     <activemq.version>5.14.1</activemq.version>
+
+    <!-- build dependencies -->
+    <maven.clean.version>3.0.0</maven.clean.version>
+    <maven.compile.version>3.6.1</maven.compile.version>
+    <maven.install.version>2.5.2</maven.install.version>
+    <maven.jar.version>3.0.2</maven.jar.version>
+    <maven.javadoc.version>2.10.4</maven.javadoc.version>
+    <maven.license.version>1.12</maven.license.version>
+    <maven.release.version>2.5.3</maven.release.version>
+    <maven.resources.version>3.0.2</maven.resources.version>
+    <maven.source.version>3.0.1</maven.source.version>
+    <maven.surefire.version>2.20</maven.surefire.version>
   </properties>
 
   <modules>
@@ -49,12 +87,25 @@
   </distributionManagement>
 
   <build>
+    <resources>
+      <!-- Always include license file in generated bundles. -->
+      <resource>
+        <directory>../</directory>
+        <includes>
+          <include>LICENSE</include>
+        </includes>
+      </resource>
+      <!-- Include resources from standard resources folder in generated bundles. -->
+      <resource>
+        <directory>src/main/resources</directory>
+      </resource>
+    </resources>
     <plugins>
       <!-- configure compiler -->
       <plugin>
         <groupId>org.apache.maven.plugins</groupId>
         <artifactId>maven-compiler-plugin</artifactId>
-        <version>${maven.compiler.plugin.version}</version>
+        <version>${maven.compile.version}</version>
         <configuration>
           <source>1.8</source>
           <target>1.8</target>
@@ -65,13 +116,13 @@
       <plugin>
         <groupId>org.apache.maven.plugins</groupId>
         <artifactId>maven-surefire-plugin</artifactId>
-        <version>${maven.surefire.plugin.version}</version>
+        <version>${maven.surefire.version}</version>
       </plugin>
       <!-- configure the jar manifest -->
       <plugin>
         <groupId>org.apache.maven.plugins</groupId>
         <artifactId>maven-jar-plugin</artifactId>
-        <version>${maven.jar.plugin.version}</version>
+        <version>${maven.jar.version}</version>
         <configuration>
           <archive>
             <manifest>
@@ -84,44 +135,39 @@
       <plugin>
         <groupId>org.apache.maven.plugins</groupId>
         <artifactId>maven-release-plugin</artifactId>
-        <version>${maven.release.plugin.version}</version>
+        <version>${maven.release.version}</version>
+        <configuration>
+          <pushChanges>false</pushChanges>
+          <localCheckout>true</localCheckout>
+        </configuration>
       </plugin>
       <!-- prepare release -->
       <plugin>
         <groupId>org.apache.maven.plugins</groupId>
         <artifactId>maven-clean-plugin</artifactId>
-        <version>${maven.clean.plugin.version}</version>
+        <version>${maven.clean.version}</version>
       </plugin>
       <plugin>
         <groupId>org.apache.maven.plugins</groupId>
         <artifactId>maven-install-plugin</artifactId>
-        <version>${maven.install.plugin.version}</version>
+        <version>${maven.install.version}</version>
       </plugin>
       <plugin>
         <groupId>org.apache.maven.plugins</groupId>
         <artifactId>maven-resources-plugin</artifactId>
-        <version>${maven.resources.plugin.version}</version>
+        <version>${maven.resources.version}</version>
       </plugin>
       <!-- create javadoc -->
       <plugin>
         <groupId>org.apache.maven.plugins</groupId>
         <artifactId>maven-javadoc-plugin</artifactId>
-        <version>${maven.javadoc.plugin.version}</version>
+        <version>${maven.javadoc.version}</version>
         <configuration>
+          <show>protected</show>
           <aggregate>true</aggregate>
           <failOnError>false</failOnError>
-          <show>protected</show>
         </configuration>
         <executions>
-          <execution>
-            <id>aggregate</id>
-            <goals>
-              <goal>aggregate</goal>
-            </goals>
-            <phase>site</phase>
-            <configuration>
-            </configuration>
-          </execution>
           <execution>
             <id>attach-javadocs</id>
             <goals>
@@ -133,7 +179,7 @@
       <plugin>
         <groupId>org.apache.maven.plugins</groupId>
         <artifactId>maven-source-plugin</artifactId>
-        <version>${maven.source.plugin.version}</version>
+        <version>${maven.source.version}</version>
         <executions>
           <execution>
             <id>attach-sources</id>
@@ -142,6 +188,36 @@
             </goals>
           </execution>
         </executions>
+      </plugin>
+      <plugin>
+        <groupId>org.codehaus.mojo</groupId>
+        <artifactId>license-maven-plugin</artifactId>
+        <version>${maven.license.version}</version>
+        <!-- Execute license check during the build process to detect violations as early as possible. -->
+        <executions>
+          <execution>
+            <id>check-licenses</id>
+            <phase>compile</phase>
+            <goals>
+              <goal>add-third-party</goal>
+            </goals>
+          </execution>
+        </executions>
+        <configuration>
+          <!-- Trust that the developers of dependencies have done their homework. -->
+          <includeTransitiveDependencies>false</includeTransitiveDependencies>
+          <!-- Fail the build if a detected license is not in the white list. -->
+          <failIfWarning>true</failIfWarning>
+          <!-- Only allow licenses which are in this list. -->
+          <includedLicenses>Apache 2|CDDL|Eclipse|ISC|MIT</includedLicenses>
+          <!-- Consolidate license names. -->
+          <licenseMerges>
+            <licenseMerge>Apache 2|Apache License 2.0|Apache Software License - Version 2.0|Apache License, Version 2.0|The Apache Software License, Version 2.0</licenseMerge>
+            <licenseMerge>CDDL|CDDL 1.1|CDDL + GPLv2 with classpath exception</licenseMerge>
+            <licenseMerge>Eclipse|Eclipse Public License 1.0|Eclipse Public License - Version 1.0</licenseMerge>
+            <licenseMerge>MIT|The MIT License</licenseMerge>
+          </licenseMerges>
+        </configuration>
       </plugin>
     </plugins>
   </build>

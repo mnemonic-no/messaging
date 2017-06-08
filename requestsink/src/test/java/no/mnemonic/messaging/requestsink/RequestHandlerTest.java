@@ -4,28 +4,21 @@ import no.mnemonic.commons.utilities.collections.SetUtils;
 import org.junit.AfterClass;
 import org.junit.Before;
 import org.junit.Test;
-import org.mockito.Mock;
 import org.mockito.MockitoAnnotations;
 
 import java.lang.reflect.InvocationTargetException;
-import java.time.Clock;
 import java.util.Collection;
 import java.util.concurrent.*;
 
 import static org.junit.Assert.*;
-import static org.mockito.Mockito.when;
 
 public class RequestHandlerTest {
 
   private static ExecutorService executor = Executors.newSingleThreadExecutor();
-  @Mock
-  private Clock clock;
 
   @Before
   public void setup() {
     MockitoAnnotations.initMocks(this);
-    RequestHandler.setClock(clock);
-    when(clock.millis()).thenAnswer(i -> System.currentTimeMillis());
   }
 
   @AfterClass

@@ -23,7 +23,7 @@ public abstract class JMSBase implements LifecycleAspect, AppendMembers {
   private static final Logger LOGGER = Logging.getLogger(JMSBase.class);
 
   static final String PROTOCOL_VERSION_KEY = "ArgusMessagingProtocol";
-  static final String PROTOCOL_VERSION_1 = "1";
+
 
   // common properties
 
@@ -31,7 +31,7 @@ public abstract class JMSBase implements LifecycleAspect, AppendMembers {
   private final List<JMSConnection> connections;
   private final String destinationName;
   private final boolean transacted;
-
+  private final boolean temporary;
   private final int timeToLive;
   private final int priority;
   private final boolean persistent;
@@ -43,7 +43,6 @@ public abstract class JMSBase implements LifecycleAspect, AppendMembers {
   private final AtomicBoolean invalidating = new AtomicBoolean();
   private final AtomicInteger connectionPointer = new AtomicInteger();
   private final AtomicLong lastFailbackTime = new AtomicLong();
-  private final boolean temporary;
 
   private final AtomicReference<JMSConnection> activeConnection = new AtomicReference<>();
   private final AtomicReference<Session> session = new AtomicReference<>();
@@ -59,7 +58,7 @@ public abstract class JMSBase implements LifecycleAspect, AppendMembers {
   // ************************* constructors ********************************
 
    JMSBase(List<JMSConnection> connections, String destinationName, boolean transacted,
-                 long failbackInterval, int timeToLive, int priority, boolean persistent, boolean temporary) {
+           int timeToLive, int priority, boolean persistent, boolean temporary) {
     this.connections = connections;
     this.destinationName = destinationName;
     this.transacted = transacted;
@@ -97,7 +96,6 @@ public abstract class JMSBase implements LifecycleAspect, AppendMembers {
     closeAllResources();
     ObjectUtils.ifNotNullDo(executor.get(), ExecutorService::shutdown);
   }
-
 
   // other public methods
 

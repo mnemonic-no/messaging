@@ -11,11 +11,11 @@ import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.*;
 
+import static no.mnemonic.commons.utilities.ObjectUtils.ifNotNullDo;
+import static no.mnemonic.commons.utilities.lambda.LambdaUtils.tryTo;
+
 /**
- * User: joakim
- * Date: 26.apr.2005
- * Time: 10:34:00
- * Id:   $Id$
+ * Package-local utilities, only to be used within this package
  */
 class JMSUtils {
 
@@ -28,7 +28,9 @@ class JMSUtils {
    * @return a JMS message created from given object
    */
   static TextMessage createTextMessage(Session session, String str, ProtocolVersion protocolVersion) throws JMSException {
-    if (protocolVersion == null) throw new IllegalArgumentException("Protocolversion not provided!");
+    assertNotNull(session, "Session not set");
+    assertNotNull(str, "String not set");
+    assertNotNull(protocolVersion, "ProtocolVersion not set");
     TextMessage m = session.createTextMessage(str);
     m.setStringProperty(JMSBase.PROTOCOL_VERSION_KEY, protocolVersion.getVersionString());
     return m;
@@ -42,6 +44,9 @@ class JMSUtils {
    * @return a JMS message created from given object
    */
   static BytesMessage createByteMessage(Session session, byte[] data, ProtocolVersion protocolVersion) throws JMSException, IOException {
+    assertNotNull(session, "Session not set");
+    assertNotNull(data, "Data not set");
+    assertNotNull(protocolVersion, "ProtocolVersion not set");
     BytesMessage m = session.createBytesMessage();
     m.writeBytes(data);
     m.setStringProperty(JMSBase.PROTOCOL_VERSION_KEY, protocolVersion.getVersionString());
@@ -51,46 +56,37 @@ class JMSUtils {
   static boolean isCompatible(Message message) throws JMSException {
     if (!message.propertyExists(JMSBase.PROTOCOL_VERSION_KEY)) return false;
     String proto = message.getStringProperty(JMSBase.PROTOCOL_VERSION_KEY);
-    return SetUtils.in(proto, JMSBase.PROTOCOL_VERSION_1);
+    return SetUtils.in(proto, ProtocolVersion.V1.getVersionString());
   }
 
   static ProtocolVersion getProtocolVersion(Message message) throws JMSException {
     String proto = message.getStringProperty(JMSBase.PROTOCOL_VERSION_KEY);
-    if (SetUtils.in(proto, JMSBase.PROTOCOL_VERSION_1)) {
+    if (SetUtils.in(proto, ProtocolVersion.V1.getVersionString())) {
       return ProtocolVersion.V1;
     }
     throw new JMSException("Received message with invalid protocol version: " + proto);
   }
 
   static void removeMessageListenerAndClose(MessageConsumer consumer) {
-    try {
-      if (consumer != null) {
-        consumer.setMessageListener(null);
-        consumer.close();
-      }
-    } catch (JMSException e) {
-      LOGGER.warning(e, "Could not close consumer");
-    }
+    ifNotNullDo(consumer, p -> tryTo(
+            () -> {
+              p.setMessageListener(null);
+              p.close();
+            },
+            e -> LOGGER.warning(e, "Could not close consumer"))
+    );
   }
 
   static void closeProducer(MessageProducer producer) {
-    try {
-      if (producer != null) {
-        producer.close();
-      }
-    } catch (JMSException e) {
-      LOGGER.warning(e, "Could not close consumer");
-    }
+    ifNotNullDo(producer,
+            p -> tryTo(p::close, e -> LOGGER.warning(e, "Could not close producer"))
+    );
   }
 
   static void deleteTemporaryQueue(TemporaryQueue queue) {
-    try {
-      if (queue != null) {
-        queue.delete();
-      }
-    } catch (JMSException e) {
-      LOGGER.warning(e, "Could not delete temporary queue");
-    }
+    ifNotNullDo(queue,
+            q -> tryTo(q::delete, e -> LOGGER.warning(e, "Could not delete temporary queue"))
+    );
   }
 
   /**
@@ -119,6 +115,90 @@ class JMSUtils {
     }
   }
 
+  static void removeExceptionListener(JMSConnection connection, ExceptionListener listener) {
+    assertNotNull(connection, "Connection not set");
+    assertNotNull(listener, "Listener not set");
+    try {
+      connection.removeExceptionListener(listener);
+    } catch (Exception e) {
+      LOGGER.warning(e, "Could not deregister exception listener");
+    }
+  }
+
+  static byte[] serialize(Serializable object) throws IOException {
+    assertNotNull(object, "Object not set");
+    ByteArrayOutputStream baos = new ByteArrayOutputStream();
+    ObjectOutputStream oos = new ObjectOutputStream(baos);
+    oos.writeObject(object);
+    oos.close();
+    return baos.toByteArray();
+  }
+
+  static <T extends Serializable> T unserialize(byte[] data) throws IOException, ClassNotFoundException {
+    assertNotNull(data, "Data not set");
+    ObjectInputStream ois = new ObjectInputStream(new ByteArrayInputStream(data));
+    //noinspection unchecked
+    return (T) ois.readObject();
+  }
+
+  static <T extends Serializable> T unserialize(byte[] data, ClassLoader classLoader) throws IOException, ClassNotFoundException {
+    assertNotNull(data, "Data not set");
+    assertNotNull(classLoader, "ClassLoader not set");
+    ObjectInputStream ois = new ClassLoaderAwareObjectInputStream(new ByteArrayInputStream(data), classLoader);
+    //noinspection unchecked
+    return (T) ois.readObject();
+  }
+
+  static String hex(byte[] data) {
+    assertNotNull(data, "Data not set");
+    StringBuilder sb = new StringBuilder(data.length * 2);
+    for (byte b : data) {
+      sb.append(String.format("%02x", b & 0xff));
+    }
+    return sb.toString();
+  }
+
+  static String md5(byte[] data) {
+    assertNotNull(data, "Data not set");
+    return hex(md5().digest(data));
+  }
+
+  static MessageDigest md5() {
+    try {
+      return MessageDigest.getInstance("MD5");
+    } catch (NoSuchAlgorithmException e) {
+      throw new RuntimeException(e);
+    }
+  }
+
+  static byte[] arraySubSeq(byte[] a, int off, int len) {
+    if (a == null || a.length == 0) throw new RuntimeException("a can't be empty or null");
+    return Arrays.copyOfRange(a, off, off + len);
+  }
+
+  static <T> T assertNotNull(T obj, String msg) {
+    if (obj != null) return obj;
+    throw new IllegalArgumentException(msg);
+  }
+
+  /**
+   * @param bytes bytes to splitArray
+   * @return list of byte arrays, each at most <code>maxlen</code> bytes, or null if bytes are null.
+   */
+  static List<byte[]> splitArray(byte[] bytes, int maxlen) {
+    if (bytes == null) return null;
+    List<byte[]> result = new ArrayList<>();
+    int off = 0;
+    while (off + maxlen < bytes.length) {
+      result.add(arraySubSeq(bytes, off, maxlen));
+      off += maxlen;
+    }
+    result.add(arraySubSeq(bytes, off, bytes.length - off));
+    return result;
+  }
+
+  //private methods
+
   private static Serializable extractSerializableFromBytesMessage(BytesMessage msg) throws JMSException {
     try {
       byte[] data = new byte[(int) msg.getBodyLength()];
@@ -138,107 +218,5 @@ class JMSUtils {
       map.put(key, msg.getObject(key));
     }
     return map;
-  }
-
-  static void removeExceptionListener(JMSConnection connection, ExceptionListener lst) {
-    try {
-      connection.removeExceptionListener(lst);
-    } catch (Exception e) {
-      LOGGER.warning(e, "Could not deregister exception listener");
-    }
-  }
-
-  static byte[] serialize(Serializable object) throws IOException {
-    ByteArrayOutputStream baos = new ByteArrayOutputStream();
-    ObjectOutputStream oos = new ObjectOutputStream(baos);
-    oos.writeObject(object);
-    oos.close();
-    return baos.toByteArray();
-  }
-
-  static <T extends Serializable> T unserialize(byte[] data) throws IOException, ClassNotFoundException {
-    ObjectInputStream ois = new ObjectInputStream(new ByteArrayInputStream(data));
-    //noinspection unchecked
-    return (T) ois.readObject();
-  }
-
-  static <T extends Serializable> T unserialize(byte[] data, ClassLoader cl) throws IOException, ClassNotFoundException {
-    ObjectInputStream ois = new ClassLoaderAwareObjectInputStream(new ByteArrayInputStream(data), cl);
-    //noinspection unchecked
-    return (T) ois.readObject();
-  }
-
-  static String hex(byte[] data) {
-    StringBuilder sb = new StringBuilder(data.length * 2);
-    for (byte b : data)
-      sb.append(String.format("%02x", b & 0xff));
-    return sb.toString();
-  }
-
-  static String md5(byte[] data) {
-    try {
-      return hex(MessageDigest.getInstance("MD5").digest(data));
-    } catch (NoSuchAlgorithmException e) {
-      throw new RuntimeException(e);
-    }
-  }
-
-  static MessageDigest md5() {
-    try {
-      return MessageDigest.getInstance("MD5");
-    } catch (NoSuchAlgorithmException e) {
-      throw new RuntimeException(e);
-    }
-  }
-
-  static byte[] arraySubSeq(byte[] a, int off, int len) {
-    if (a == null || a.length == 0) throw new RuntimeException("a can't be empty or null");
-    return Arrays.copyOfRange(a, off, off + len);
-  }
-
-  /**
-   * @param bytes bytes to splitArray
-   * @return list of byte arrays, each at most <code>maxlen</code> bytes, or null if bytes are null.
-   */
-  static List<byte[]> splitArray(byte[] bytes, int maxlen) {
-    if (bytes == null) return null;
-    List<byte[]> result = new ArrayList<>();
-    int off = 0;
-    while (off + maxlen < bytes.length) {
-      result.add(arraySubSeq(bytes, off, maxlen));
-      off += maxlen;
-    }
-    result.add(arraySubSeq(bytes, off, bytes.length - off));
-    return result;
-  }
-
-  //TODO: Move to commons
-  static class ClassLoaderContext implements AutoCloseable {
-
-    private final ClassLoader contextClassLoader;
-    private final ClassLoader originalClassloader;
-
-    public ClassLoaderContext(ClassLoader requestedClassloader) {
-      this.contextClassLoader = requestedClassloader;
-      this.originalClassloader = Thread.currentThread().getContextClassLoader();
-      Thread.currentThread().setContextClassLoader(requestedClassloader);
-    }
-
-    @Override
-    public void close() {
-      Thread.currentThread().setContextClassLoader(originalClassloader);
-    }
-
-    public static ClassLoaderContext of(ClassLoader cl) {
-      return new ClassLoaderContext(cl);
-    }
-
-    public static ClassLoaderContext of(Object obj) {
-      return new ClassLoaderContext(obj.getClass().getClassLoader());
-    }
-
-    public ClassLoader getContextClassLoader() {
-      return contextClassLoader;
-    }
   }
 }

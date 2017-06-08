@@ -19,8 +19,10 @@ import java.util.concurrent.atomic.AtomicReference;
  * After making an asynchronous call, this requesthandler may be used for tracking responses
  * from the requestsink.
  */
+@SuppressWarnings({"WeakerAccess", "SameParameterValue"})
 public class RequestHandler implements RequestContext {
 
+  static final int KEEPALIVE_PERIOD = 10000;
   private static Clock clock = Clock.systemUTC();
   private static final Logger LOGGER = Logging.getLogger(RequestHandler.class);
 
@@ -38,9 +40,11 @@ public class RequestHandler implements RequestContext {
   }
 
   public static RequestHandler signal(RequestSink sink, Message msg, boolean allowKeepAlive, long maxWait) {
+    if (sink == null) throw new IllegalArgumentException("RequestSink cannot be null");
+    if (msg == null) throw new IllegalArgumentException("Message cannot be null");
     RequestHandler handler = new RequestHandler(allowKeepAlive, msg.getCallID());
     sink.signal(msg, handler, maxWait);
-    handler.keepAlive(System.currentTimeMillis() + maxWait);
+    handler.keepAlive(clock.millis() + maxWait);
     return handler;
   }
 
@@ -55,14 +59,11 @@ public class RequestHandler implements RequestContext {
   }
 
   public boolean keepAlive(long until) {
-    if (isClosed()) return false;
-    if (allowKeepAlive) {
-      if (timeout.getAndUpdate(prev -> until > prev ? until : prev) < until) {
-        LOGGER.info("Keeping session open until %s", new Date(until));
-      }
-      return true;
+    if (isClosed() || !allowKeepAlive) return false;
+    if (timeout.getAndUpdate(prev -> until > prev ? until : prev) < until) {
+      LOGGER.info("Keeping session open until %s", new Date(until));
     }
-    return false;
+    return true;
   }
 
   public void endOfStream() {
@@ -79,10 +80,10 @@ public class RequestHandler implements RequestContext {
 
   public boolean addResponse(Message msg) {
     synchronized (this) {
-      if (closed.get()) return false;
+      if (isClosed()) return false;
       responses.add(msg);
       //whenever receiving another response, this is an implicit 10sec keepalive
-      keepAlive(clock.millis() + 10000);
+      keepAlive(clock.millis() + KEEPALIVE_PERIOD);
       this.notifyAll();
     }
     return true;
@@ -93,12 +94,12 @@ public class RequestHandler implements RequestContext {
   }
 
   /**
-   * Wait for end-of-stream. Method will return true when end-of-stream is received.
-   * It will return false if maxWait millis pass without receiving end-of-stream,
-   * and will also return false if an error is received.
+   * Wait for end-of-stream. Method will return true when end-of-stream is received, or timeout has occurred.
+   * If handler accepts keepalives, this means that waitForEndOfStream may return false when waiting for the configured
+   * maxwait millis, because timeout is extended. However, method will return (true or false) no later than maxWait.
    *
    * @param maxWait do not wait longer than maxWait ms
-   * @return true if end-of-stream is returned, false otherwise
+   * @return true if handler is closed (end of stream or timeout), false otherwise
    */
   public boolean waitForEndOfStream(long maxWait) {
     long localTimeout = clock.millis() + maxWait;
@@ -107,11 +108,12 @@ public class RequestHandler implements RequestContext {
         //do not wait if EOS has already been received
         if (isClosed()) return true;
         //wait until timeout, but never longer
-        while (clock.millis() < localTimeout) {
-          this.wait(maxWait);
+        long now;
+        while ((now = clock.millis()) < localTimeout) {
+          this.wait(localTimeout - now);
           if (isClosed() || hasReceivedError()) return isClosed();
         }
-        //close and return true if timeout is exceeded (no keepalive is received)
+        //close and return true if handler timeout is exceeded
         if (clock.millis() > this.timeout.get()) {
           close();
         }
@@ -195,11 +197,8 @@ public class RequestHandler implements RequestContext {
    */
   public <T extends Message> Collection<T> getResponses(long maxWait, int maxResults) throws InvocationTargetException {
     // determine timeout
-    long timeout = clock.millis() + maxWait;
-    if (maxWait == 0) {
-      timeout = 0;
-    }
-
+    long timeout = maxWait > 0 ? clock.millis() + maxWait : 0;
+    //wait for timeout (or enough responses)
     while (timeout > 0 && clock.millis() < timeout) {
       // if enough responses have come, return responses (so far)
       synchronized (this) {
@@ -222,10 +221,6 @@ public class RequestHandler implements RequestContext {
     if (hasReceivedError()) {
       throw new InvocationTargetException(error.get());
     }
-  }
-
-  static void setClock(Clock clk) {
-    clock = clk;
   }
 
 }

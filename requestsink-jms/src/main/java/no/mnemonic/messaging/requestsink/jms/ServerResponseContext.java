@@ -12,12 +12,16 @@ import javax.jms.JMSException;
 import javax.jms.MessageProducer;
 import javax.jms.Session;
 import javax.naming.NamingException;
+import java.time.Clock;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 
+import static no.mnemonic.messaging.requestsink.jms.JMSUtils.assertNotNull;
+
 class ServerResponseContext implements RequestContext, JMSRequestProxy.ServerContext {
 
-  private static Logger LOGGER = Logging.getLogger(ServerResponseContext.class);
+  private static final Logger LOGGER = Logging.getLogger(ServerResponseContext.class);
+  private static Clock clock = Clock.systemUTC();
 
   private final Session session;
   private final MessageProducer replyTo;
@@ -27,21 +31,33 @@ class ServerResponseContext implements RequestContext, JMSRequestProxy.ServerCon
   private final ProtocolVersion protocolVersion;
 
   ServerResponseContext(String callID, Session session, Destination replyTo, long timeout, ProtocolVersion protocolVersion) throws NamingException, JMSException {
-    this.callID = callID;
-    this.protocolVersion = protocolVersion;
+    this.callID = assertNotNull(callID, "CallID not set");
+    this.session = assertNotNull(session, "Session not set");
+    this.protocolVersion = assertNotNull(protocolVersion, "ProtocolVersion not set");
+    if (timeout <= 0) throw new IllegalArgumentException("Timeout must be a positive integer");
     this.timeout.set(timeout);
-    this.session = session;
+    //create a producer to send responses back to client
     this.replyTo = session.createProducer(replyTo);
   }
 
+  /**
+   * Method to implement {@link ServerChannelUploadContext.UploadHandler}
+   */
   void handle(RequestSink requestSink, Message request) throws JMSException {
-    requestSink.signal(request, this, System.currentTimeMillis() - timeout.get());
+    assertNotNull(requestSink, "RequestSink not set");
+    assertNotNull(request, "Message not set");
+    requestSink.signal(request, this, clock.millis() - timeout.get());
   }
 
   public boolean keepAlive(long until) {
-    if (isClosed()) return false;
+    //if channel is closed, do not accept keepalive request
+    if (isClosed()) {
+      return false;
+    }
+      //if keepalive requests to extend timeout, relay that request back to client
     else if (until > timeout.get()) {
       try {
+        //create a extend-wait message to client
         javax.jms.Message closeMessage = JMSUtils.createTextMessage(session, "please wait", protocolVersion);
         closeMessage.setJMSCorrelationID(callID);
         closeMessage.setStringProperty(JMSRequestProxy.PROPERTY_MESSAGE_TYPE, JMSRequestProxy.MESSAGE_TYPE_EXTEND_WAIT);
@@ -57,8 +73,9 @@ class ServerResponseContext implements RequestContext, JMSRequestProxy.ServerCon
 
   public boolean addResponse(Message msg) {
     // drop message if we're closed
-    if (isClosed())
+    if (isClosed()) {
       return false;
+    }
 
     try {
       // construct return message

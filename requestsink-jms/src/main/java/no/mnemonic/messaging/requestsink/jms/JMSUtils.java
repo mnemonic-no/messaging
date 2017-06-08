@@ -102,14 +102,10 @@ class JMSUtils {
   @SuppressWarnings("unchecked")
   static <T extends Serializable> T extractObject(Message msg) throws JMSException {
     //noinspection ChainOfInstanceofChecks
-    if (msg instanceof ObjectMessage) {
-      return (T) ((ObjectMessage) msg).getObject();
-    } else if (msg instanceof TextMessage) {
+    if (msg instanceof TextMessage) {
       return (T) ((TextMessage) msg).getText();
     } else if (msg instanceof BytesMessage) {
       return (T) extractSerializableFromBytesMessage((BytesMessage) msg);
-    } else if (msg instanceof MapMessage) {
-      return (T) extractMapMessage((MapMessage) msg);
     } else {
       throw new MessagingException("message is not of an allowable type: " + msg.getClass().getName());
     }
@@ -118,11 +114,7 @@ class JMSUtils {
   static void removeExceptionListener(JMSConnection connection, ExceptionListener listener) {
     assertNotNull(connection, "Connection not set");
     assertNotNull(listener, "Listener not set");
-    try {
-      connection.removeExceptionListener(listener);
-    } catch (Exception e) {
-      LOGGER.warning(e, "Could not deregister exception listener");
-    }
+    tryTo(()->connection.removeExceptionListener(listener), e->LOGGER.warning(e, "Could not deregister exception listener"));
   }
 
   static byte[] serialize(Serializable object) throws IOException {
@@ -150,7 +142,7 @@ class JMSUtils {
   }
 
   static String hex(byte[] data) {
-    assertNotNull(data, "Data not set");
+    if (data == null) return null;
     StringBuilder sb = new StringBuilder(data.length * 2);
     for (byte b : data) {
       sb.append(String.format("%02x", b & 0xff));
@@ -172,7 +164,7 @@ class JMSUtils {
   }
 
   static byte[] arraySubSeq(byte[] a, int off, int len) {
-    if (a == null || a.length == 0) throw new RuntimeException("a can't be empty or null");
+    if (a == null || a.length == 0) throw new IllegalArgumentException("a can't be empty or null");
     return Arrays.copyOfRange(a, off, off + len);
   }
 
@@ -210,13 +202,4 @@ class JMSUtils {
     }
   }
 
-  private static Serializable extractMapMessage(MapMessage msg) throws JMSException {
-    Enumeration e = msg.getMapNames();
-    HashMap<String, Object> map = new HashMap<>();
-    while (e.hasMoreElements()) {
-      String key = (String) e.nextElement();
-      map.put(key, msg.getObject(key));
-    }
-    return map;
-  }
 }

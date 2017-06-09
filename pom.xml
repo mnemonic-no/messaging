@@ -204,6 +204,8 @@
           </execution>
         </executions>
         <configuration>
+          <!-- the javax.jms:jms:1.1 misses a pom-file, is licenced under CDDL -->
+          <excludedGroups>javax.jms</excludedGroups>
           <!-- Trust that the developers of dependencies have done their homework. -->
           <includeTransitiveDependencies>false</includeTransitiveDependencies>
           <!-- Fail the build if a detected license is not in the white list. -->

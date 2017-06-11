@@ -24,9 +24,9 @@ import java.util.concurrent.atomic.AtomicReference;
  * communicating over JMS to a corresponding JMSRequestProxy.
  *
  * <pre>
- *   ------------        ------------------                          -------------------      ---------------
- *   | Client   |  -->   | JMSRequestSink | <-------> JMS <------->  | JMSRequestProxy |  --> | RequestSink |
- *   ------------        ------------------                          -------------------      ---------------
+ *   ------------        ------------------                     -------------------     ---------------
+ *   | Client   |  --   | JMSRequestSink | ------- JMS -------  | JMSRequestProxy |  -- | RequestSink |
+ *   ------------        ------------------                     -------------------     ---------------
  * </pre>
  *
  * The messages must implement the {@link Message} interface, and contain a <code>callID</code> and a <code>timestamp</code>.

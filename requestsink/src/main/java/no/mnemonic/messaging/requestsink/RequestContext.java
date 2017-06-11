@@ -1,7 +1,9 @@
 package no.mnemonic.messaging.requestsink;
 
 /**
- * @author joakim
+ * A request context is the asynchronous interface for working with a pending request.
+ * The context must be provided when sending a signal, and the RequestSink is obligated to send all
+ * replies to this context. The context will also be notified if the RequestSink closes the request, or notifies about an error.
  */
 public interface RequestContext {
 

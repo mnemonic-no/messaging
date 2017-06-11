@@ -6,7 +6,7 @@ import no.mnemonic.commons.logging.Logger;
 import no.mnemonic.commons.logging.Logging;
 import no.mnemonic.commons.utilities.AppendMembers;
 import no.mnemonic.commons.utilities.AppendUtils;
-import no.mnemonic.commons.utilities.ObjectUtils;
+import no.mnemonic.commons.utilities.lambda.LambdaUtils;
 import no.mnemonic.messaging.requestsink.MessagingException;
 
 import javax.jms.*;
@@ -15,6 +15,7 @@ import java.lang.IllegalStateException;
 import java.util.List;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.*;
 
 @SuppressWarnings({"ClassReferencesSubclass"})
@@ -57,8 +58,8 @@ public abstract class JMSBase implements LifecycleAspect, AppendMembers {
 
   // ************************* constructors ********************************
 
-   JMSBase(List<JMSConnection> connections, String destinationName, boolean transacted,
-           int timeToLive, int priority, boolean persistent, boolean temporary) {
+  JMSBase(List<JMSConnection> connections, String destinationName, boolean transacted,
+          int timeToLive, int priority, boolean persistent, boolean temporary) {
     this.connections = connections;
     this.destinationName = destinationName;
     this.transacted = transacted;
@@ -94,7 +95,8 @@ public abstract class JMSBase implements LifecycleAspect, AppendMembers {
   public void stopComponent() {
     closed.set(true);
     closeAllResources();
-    ObjectUtils.ifNotNullDo(executor.get(), ExecutorService::shutdown);
+    executor.get().shutdown();
+    LambdaUtils.tryTo(() -> executor.get().awaitTermination(10, TimeUnit.SECONDS));
   }
 
   // other public methods

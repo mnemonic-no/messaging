@@ -19,9 +19,14 @@ import java.util.concurrent.atomic.AtomicLong;
 import static no.mnemonic.messaging.requestsink.jms.JMSUtils.assertNotNull;
 
 /**
- * This listener listens for incoming reply messages and adds them to the correct responsehandler
+ * This context handles fragmented uploading of the signal message on the JMSRequestProxy (server) side.
+ * <ul>
+ *   <li>Set up temporary upload channel</li>
+ *   <li>Signal client with upload channel</li>
+ *   <li>Accept fragments and end-of-stream from client</li>
+ *   <li>Reassemble fragments, verify and submit reassembled message to RequestSink</li>
+ * </ul>
  *
- * @author joakim
  */
 class ServerChannelUploadContext implements JMSRequestProxy.ServerContext {
 
@@ -62,7 +67,7 @@ class ServerChannelUploadContext implements JMSRequestProxy.ServerContext {
     this.channelConsumer.setMessageListener(this::onMessage);
     //create producer to send feedback to the client
     this.replyTo = session.createProducer(responseDestination);
-    //send a channel setup message to the client
+    //send a channel setup message to the client (message text has no meaning)
     Message setupMessage = JMSUtils.createTextMessage(session, "channel setup", protocolVersion);
     setupMessage.setJMSCorrelationID(callID);
     setupMessage.setStringProperty(JMSRequestProxy.PROPERTY_MESSAGE_TYPE, JMSRequestProxy.MESSAGE_TYPE_CHANNEL_SETUP);

@@ -18,6 +18,14 @@ import java.util.concurrent.atomic.AtomicLong;
 
 import static no.mnemonic.messaging.requestsink.jms.JMSUtils.assertNotNull;
 
+/**
+ * The server response context is the context object sent to the server side RequestSink along with the signal received from the client.
+ * It will encode all responses into JMS messages and submit back to client.
+ * When RequestSink closes stream or notifies an exception, this will also be notified to the client.
+ *
+ * Multiple responses will be encoded as multiple messages, creating a response stream back to the client.
+ * When channel is closed, responses will be ignored.
+ */
 class ServerResponseContext implements RequestContext, JMSRequestProxy.ServerContext {
 
   private static final Logger LOGGER = Logging.getLogger(ServerResponseContext.class);
@@ -57,7 +65,7 @@ class ServerResponseContext implements RequestContext, JMSRequestProxy.ServerCon
       //if keepalive requests to extend timeout, relay that request back to client
     else if (until > timeout.get()) {
       try {
-        //create a extend-wait message to client
+        //create a extend-wait message to client (message content has no meaning)
         javax.jms.Message closeMessage = JMSUtils.createTextMessage(session, "please wait", protocolVersion);
         closeMessage.setJMSCorrelationID(callID);
         closeMessage.setStringProperty(JMSRequestProxy.PROPERTY_MESSAGE_TYPE, JMSRequestProxy.MESSAGE_TYPE_EXTEND_WAIT);
@@ -132,6 +140,7 @@ class ServerResponseContext implements RequestContext, JMSRequestProxy.ServerCon
   public void endOfStream() {
     if (!isClosed()) {
       try {
+        //send EndOfStream message (message text has no meaning)
         javax.jms.Message closeMessage = JMSUtils.createTextMessage(session, "stream closed", protocolVersion);
         closeMessage.setJMSCorrelationID(callID);
         closeMessage.setStringProperty(JMSRequestProxy.PROPERTY_MESSAGE_TYPE, JMSRequestProxy.MESSAGE_TYPE_STREAM_CLOSED);

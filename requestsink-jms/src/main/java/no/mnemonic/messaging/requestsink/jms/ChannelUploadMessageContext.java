@@ -6,13 +6,20 @@ import no.mnemonic.messaging.requestsink.RequestContext;
 import no.mnemonic.messaging.requestsink.RequestListener;
 
 import javax.jms.*;
-import java.io.IOException;
 import java.io.InputStream;
 import java.security.MessageDigest;
 import java.time.Clock;
 
 import static no.mnemonic.messaging.requestsink.jms.JMSUtils.assertNotNull;
 
+/**
+ * This context handles fragmented upload of the signal message on the JMSRequestSink (client) side
+ * <ul>
+ *   <li>Send a channel request message to the server, and wait for reply</li>
+ *   <li>Fragment the message into suitable fragments, and submit to upload channel</li>
+ *   <li>Finish stream with end-of-stream, and close the upload channel</li>
+ * </ul>
+ */
 class ChannelUploadMessageContext implements RequestContext {
 
   private static final Logger LOGGER = Logging.getLogger(ServerResponseContext.class);
@@ -63,7 +70,7 @@ class ChannelUploadMessageContext implements RequestContext {
           //send fragment to upload channel
           producer.send(uploadChannel, fragment);
         }
-        //prepare EOS message
+        //prepare EOS message (message text has no meaning)
         javax.jms.Message eos = JMSUtils.createTextMessage(session, "End-Of-Stream", protocolVersion);
         eos.setJMSCorrelationID(callID);
         eos.setStringProperty(JMSRequestProxy.PROPERTY_MESSAGE_TYPE, JMSRequestProxy.MESSAGE_TYPE_STREAM_CLOSED);
@@ -78,7 +85,7 @@ class ChannelUploadMessageContext implements RequestContext {
       } finally {
         producer.close();
       }
-    } catch (IOException e) {
+    } catch (Exception e) {
       throw new JMSException("Error reading from message data stream: " + e.getMessage());
     }
   }

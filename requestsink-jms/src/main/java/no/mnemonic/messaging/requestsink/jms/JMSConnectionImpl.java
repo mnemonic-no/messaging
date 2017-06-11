@@ -7,14 +7,17 @@ import no.mnemonic.commons.utilities.AppendMembers;
 import no.mnemonic.commons.utilities.AppendUtils;
 import no.mnemonic.commons.utilities.StringUtils;
 import no.mnemonic.commons.utilities.collections.MapUtils;
+import no.mnemonic.commons.utilities.lambda.LambdaUtils;
 import no.mnemonic.messaging.requestsink.MessagingException;
 
 import javax.jms.*;
 import javax.naming.InitialContext;
 import javax.naming.NamingException;
+import java.lang.IllegalStateException;
 import java.util.*;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 
@@ -35,7 +38,7 @@ public class JMSConnectionImpl implements JMSConnection, ExceptionListener, Life
   private final String username;
   private final String password;
   private final Properties properties;
-  private final ExecutorService executor = Executors.newSingleThreadExecutor();
+  private final AtomicReference<ExecutorService> executor = new AtomicReference<>();
 
   // variables
 
@@ -79,13 +82,15 @@ public class JMSConnectionImpl implements JMSConnection, ExceptionListener, Life
 
   @Override
   public void startComponent() {
+    executor.set(Executors.newSingleThreadExecutor());
   }
 
   @Override
   public void stopComponent() {
     closed.set(true);
     invalidateInSeparateThread();
-    executor.shutdown();
+    executor.get().shutdown();
+    LambdaUtils.tryTo(() -> executor.get().awaitTermination(10, TimeUnit.SECONDS));
   }
 
   @Override
@@ -111,6 +116,7 @@ public class JMSConnectionImpl implements JMSConnection, ExceptionListener, Life
 
   @Override
   public Destination lookupDestination(String destinationName) throws JMSException, NamingException {
+    if (StringUtils.isBlank(destinationName)) throw new NamingException("Destination name not set");
     try {
       Object obj = getInitialContext().lookup(destinationName);
       // error if no such destination
@@ -144,13 +150,15 @@ public class JMSConnectionImpl implements JMSConnection, ExceptionListener, Life
 
   @Override
   public void register(JMSBase client) {
-    if (LOGGER.isDebug()) LOGGER.debug("Registering JMS client");
+    if (client == null) return;
+    LOGGER.info("Registering JMS client " + client);
     clients.add(client);
   }
 
   @Override
   public void deregister(JMSBase client) {
-    if (LOGGER.isDebug()) LOGGER.debug("Deregistering JMS client");
+    if (client == null) return;
+    LOGGER.info("Deregistering JMS client " + client);
     clients.remove(client);
     if (client instanceof ExceptionListener) {
       exceptionListeners.remove(client);
@@ -160,9 +168,9 @@ public class JMSConnectionImpl implements JMSConnection, ExceptionListener, Life
   @Override
   public void invalidate() {
     // avoid multiple calls to this method
-    if (invalidating.get())
+    if (!invalidating.compareAndSet(false, true)) {
       return;
-    invalidating.set(true);
+    }
 
     try {
       // invalidate all clients
@@ -203,36 +211,37 @@ public class JMSConnectionImpl implements JMSConnection, ExceptionListener, Life
   private Connection getConnection(JMSBase client) throws JMSException, NamingException {
     if (isClosed()) throw new RuntimeException("closed");
     register(client);
-    if (connection.get() == null) {
-      LOGGER.info("Creating new JMS connection to %s", contextURL);
-      // fetch factory from JNDI
-      Object obj = getInitialContext().lookup(connectionFactoryName);
-      if (obj == null) {
-        throw new NamingException(connectionFactoryName + ": no such ConnectionFactory");
-      }
-      if (!(obj instanceof ConnectionFactory)) {
-        throw new JMSException(connectionFactoryName + ": not a ConnectionFactory ("
-                + obj.getClass().getName() + ")");
-      }
+    Connection conn = connection.get();
+    if (conn != null) return conn;
 
-      // create connection
-      ConnectionFactory connectionFactory = (ConnectionFactory) obj;
-      Connection conn;
-      if (username != null && password != null) {
-        conn = connectionFactory.createConnection(username, password);
-      } else {
-        conn = connectionFactory.createConnection();
-      }
-      conn.setExceptionListener(this);
-
-      // prepare connection
-      if (clientID != null) {
-        conn.setClientID(clientID);
-      }
-      conn.start();
-      connection.set(conn);
+    LOGGER.info("Creating new JMS connection to %s", contextURL);
+    // fetch factory from JNDI
+    Object obj = getInitialContext().lookup(connectionFactoryName);
+    if (obj == null) {
+      throw new NamingException(connectionFactoryName + ": no such ConnectionFactory");
     }
-    return connection.get();
+    if (!(obj instanceof ConnectionFactory)) {
+      throw new JMSException(connectionFactoryName + ": not a ConnectionFactory ("
+              + obj.getClass().getName() + ")");
+    }
+
+    // create connection
+    ConnectionFactory connectionFactory = (ConnectionFactory) obj;
+    if (username != null && password != null) {
+      conn = connectionFactory.createConnection(username, password);
+    } else {
+      conn = connectionFactory.createConnection();
+    }
+    conn.setExceptionListener(this);
+
+    // prepare connection
+    if (clientID != null) {
+      conn.setClientID(clientID);
+    }
+    conn.start();
+    connection.set(conn);
+
+    return conn;
   }
 
   /**
@@ -257,7 +266,8 @@ public class JMSConnectionImpl implements JMSConnection, ExceptionListener, Life
   }
 
   private void invalidateInSeparateThread() {
-    executor.submit(this::invalidate);
+    if (executor.get() == null) throw new IllegalStateException("Component not started");
+    executor.get().submit(this::invalidate);
   }
 
   //builder
@@ -278,6 +288,9 @@ public class JMSConnectionImpl implements JMSConnection, ExceptionListener, Life
     private String username;
     private String password;
     private Map<String, String> properties = new HashMap<>();
+
+    private Builder() {
+    }
 
     public JMSConnectionImpl build() {
       if (StringUtils.isBlank(contextFactoryName)) throw new IllegalArgumentException("contextFactoryName not set");

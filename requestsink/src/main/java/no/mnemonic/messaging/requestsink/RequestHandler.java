@@ -3,6 +3,7 @@ package no.mnemonic.messaging.requestsink;
 import no.mnemonic.commons.logging.Logger;
 import no.mnemonic.commons.logging.Logging;
 import no.mnemonic.commons.utilities.collections.ListUtils;
+import no.mnemonic.commons.utilities.lambda.LambdaUtils;
 
 import java.lang.reflect.InvocationTargetException;
 import java.time.Clock;
@@ -42,6 +43,7 @@ public class RequestHandler implements RequestContext {
   public static RequestHandler signal(RequestSink sink, Message msg, boolean allowKeepAlive, long maxWait) {
     if (sink == null) throw new IllegalArgumentException("RequestSink cannot be null");
     if (msg == null) throw new IllegalArgumentException("Message cannot be null");
+    if (maxWait <= 0) throw new IllegalArgumentException("MaxWait must be a positive integer");
     RequestHandler handler = new RequestHandler(allowKeepAlive, msg.getCallID());
     sink.signal(msg, handler, maxWait);
     handler.keepAlive(clock.millis() + maxWait);
@@ -144,7 +146,10 @@ public class RequestHandler implements RequestContext {
     synchronized (this) {
       closed.set(true);
       this.notifyAll();
-      requestListeners.forEach(l -> l.close(callID));
+      requestListeners.forEach(l -> LambdaUtils.tryTo(
+              () -> l.close(callID),
+              e -> LOGGER.warning(e, "Error invoking RequestListener")
+      ));
     }
   }
 
@@ -207,7 +212,7 @@ public class RequestHandler implements RequestContext {
           return getResponsesNoWait();
         }
         try {
-          this.wait(timeout - clock.millis());
+          this.wait(Math.max(1, timeout - clock.millis()));
         } catch (InterruptedException e) {
           throw new RuntimeException(e);
         }

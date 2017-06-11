@@ -26,6 +26,18 @@ import java.util.concurrent.Semaphore;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.LongAdder;
 
+/**
+ * A JMSRequestProxy is the listener component handling messages sent from a
+ * {@link JMSRequestSink}, dispatching them to the configured {@link RequestSink}.
+ *
+ * The JMSRequestProxy listens to messages on a JMS queue or topic, and will
+ * unpack the message, signal the downstream RequestSink, and handle any replies.
+ *
+ * Each request will be run in a separate thread, and the <code>maxConcurrentCalls</code> parameter
+ * puts a limit on the maximum requests being handled. If more messages are sent to the JMS queue, these will
+ * not be consumed by the JMS Request Sink until a thread is available.
+ * This allows multiple JMSRequestProxies to share the load from a queue, and acts as a resource limitation.
+ */
 public class JMSRequestProxy extends JMSBase implements MessageListener, ExceptionListener {
 
   private static final Logger LOGGER = Logging.getLogger(JMSRequestProxy.class);
@@ -159,7 +171,7 @@ public class JMSRequestProxy extends JMSBase implements MessageListener, Excepti
    *
    * @param message message to process
    */
-  private void process(final javax.jms.Message message) {
+  private void process(javax.jms.Message message) {
     totalCallsCounter.increment();
     try {
       if (!JMSUtils.isCompatible(message)) {
@@ -230,8 +242,8 @@ public class JMSRequestProxy extends JMSBase implements MessageListener, Excepti
     Destination responseDestination = message.getJMSReplyTo();
     //ignore requests without a clear response destination/call ID
     if (callID == null || responseDestination == null) {
-      if (LOGGER.isDebug())
-        LOGGER.debug("Request without return information ignored: " + message);
+      LOGGER.info("Request without return information ignored: " + message);
+      ignoredCallsCounter.increment();
       return;
     }
     setupChannel(callID, responseDestination, timeout, JMSUtils.getProtocolVersion(message));
@@ -320,6 +332,9 @@ public class JMSRequestProxy extends JMSBase implements MessageListener, Excepti
     private int priority = DEFAULT_PRIORITY;
     private int maxConcurrentCalls = DEFAULT_MAX_CONCURRENT_CALLS;
     private long maxReconnectTime = DEFAULT_MAX_RECONNECT_TIME; //1 hour default;
+
+    private Builder() {
+    }
 
     //fields
 

@@ -20,15 +20,29 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicReference;
 
 /**
- * JMSRequestSink.java:
- * <ul>
- * <li>maxWait</li>
- * <li>jmsFacade</li>
- * <li>jmsDestination</li>
- * </ul>
+ * JMSRequestSink is a JMS implementation of the RequestSink using JMS,
+ * communicating over JMS to a corresponding JMSRequestProxy.
  *
- * @author joakim Date: 17.des.2004 Time: 16:25:11
- * @version $Id$
+ * <pre>
+ *   ------------        ------------------                          -------------------      ---------------
+ *   | Client   |  -->   | JMSRequestSink | <-------> JMS <------->  | JMSRequestProxy |  --> | RequestSink |
+ *   ------------        ------------------                          -------------------      ---------------
+ * </pre>
+ *
+ * The messages must implement the {@link Message} interface, and contain a <code>callID</code> and a <code>timestamp</code>.
+ * Other than this, the JMSRequestSink does not care about the format of the sent messages, but will deliver them to the
+ * RequestSink on the other side, where they must be handled.
+ *
+ * The messaging protocol between a JMSRequestSink and JMSRequestProxy is private between these entities, and should be
+ * concidered transparent.
+ *
+ * The implementation will serialize messages to bytes. If upstream messages are above the configured maxMessageSize,
+ * the JMSRequestSink will create an upload channel to establish a temporary queue for uploading, and will fragment the upload
+ * message into multiple messages on the upload channel. This avoids very large JMS messages for upload.
+ *
+ * For download, the server RequestSink can choose to send multiple replies on the same reply channel, and can use this
+ * to stream the results back to the client.
+ *
  */
 public class JMSRequestSink extends JMSBase implements RequestSink, RequestListener {
 
@@ -351,6 +365,9 @@ public class JMSRequestSink extends JMSBase implements RequestSink, RequestListe
     private boolean persistent = false;
     private int maxMessageSize = DEFAULT_MAX_MESSAGE_SIZE;
     private ProtocolVersion protocolVersion = ProtocolVersion.V1;
+
+    private Builder() {
+    }
 
     public JMSRequestSink build() {
       if (protocolVersion == null) throw new IllegalArgumentException("protocolVersion not set");

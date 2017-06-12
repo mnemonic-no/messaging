@@ -5,7 +5,7 @@
   <groupId>no.mnemonic.messaging</groupId>
   <artifactId>parent</artifactId>
   <packaging>pom</packaging>
-  <version>1.0.0-SNAPSHOT</version>
+  <version>1.0.0</version>
 
   <name>mnemonic messaging</name>
   <description>Messaging libraries</description>
@@ -72,7 +72,7 @@
 
   <scm>
     <developerConnection>scm:git:ssh://stash.mnemonic.no:8022/joss/messaging.git</developerConnection>
-    <tag>HEAD</tag>
+    <tag>parent-1.0.0</tag>
   </scm>
 
   <distributionManagement>

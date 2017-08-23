@@ -35,18 +35,18 @@ public class RequestHandler implements RequestContext {
   private final String callID;
   private final AtomicLong timeout = new AtomicLong();
 
-  public RequestHandler(boolean allowKeepAlive, String callID) {
+  public RequestHandler(boolean allowKeepAlive, String callID, long maxWait) {
     this.allowKeepAlive = allowKeepAlive;
     this.callID = callID;
+    this.timeout.set(clock.millis() + maxWait);
   }
 
   public static RequestHandler signal(RequestSink sink, Message msg, boolean allowKeepAlive, long maxWait) {
     if (sink == null) throw new IllegalArgumentException("RequestSink cannot be null");
     if (msg == null) throw new IllegalArgumentException("Message cannot be null");
     if (maxWait <= 0) throw new IllegalArgumentException("MaxWait must be a positive integer");
-    RequestHandler handler = new RequestHandler(allowKeepAlive, msg.getCallID());
+    RequestHandler handler = new RequestHandler(allowKeepAlive, msg.getCallID(), maxWait);
     sink.signal(msg, handler, maxWait);
-    handler.keepAlive(clock.millis() + maxWait);
     return handler;
   }
 
@@ -92,6 +92,10 @@ public class RequestHandler implements RequestContext {
   }
 
   public boolean isClosed() {
+    //close and return true if handler timeout is exceeded
+    if (clock.millis() > this.timeout.get()) {
+      close();
+    }
     return closed.get();
   }
 
@@ -114,10 +118,6 @@ public class RequestHandler implements RequestContext {
         while ((now = clock.millis()) < localTimeout) {
           this.wait(localTimeout - now);
           if (isClosed() || hasReceivedError()) return isClosed();
-        }
-        //close and return true if handler timeout is exceeded
-        if (clock.millis() > this.timeout.get()) {
-          close();
         }
         return isClosed();
       }
@@ -167,12 +167,28 @@ public class RequestHandler implements RequestContext {
     return ListUtils.list(result, v -> (T) v);
   }
 
+
+  /**
+   * Wait for the next response to show up (since the last time this method was called).
+   * Similar to {@link #getNextResponse(long)}, but will continue waiting until a response is received, or until end of stream/stream timeout.
+   * If stream is kept alive, this may wait indefinetely
+   *
+   * @return the first response to show up, or null if the stream was closed before any responses show up
+   */
+  public <T extends Message> T getNextResponse() throws InvocationTargetException {
+    T response = getNextResponse(1000);
+    while (response == null && !isClosed()) {
+      response = getNextResponse(1000);
+    }
+    return response;
+  }
+
   /**
    * Wait for the next response to show up (since the last time this method was called).
    *
    * @param maxWait max millis to wait before returning
    * @return the first response to show up, or null if no responses were
-   * recorded within maxWait millis.
+   * recorded within maxWait millis or end of stream.
    */
   public <T extends Message> T getNextResponse(long maxWait) throws InvocationTargetException {
     try {

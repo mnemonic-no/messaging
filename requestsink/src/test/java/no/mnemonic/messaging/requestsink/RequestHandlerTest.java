@@ -28,7 +28,7 @@ public class RequestHandlerTest {
 
   @Test
   public void testCloseHandler() {
-    RequestHandler handler = new RequestHandler(false, "callid");
+    RequestHandler handler = new RequestHandler(false, "callid", 10000);
     assertFalse(handler.isClosed());
     handler.close();
     assertTrue(handler.isClosed());
@@ -36,13 +36,13 @@ public class RequestHandlerTest {
 
   @Test
   public void testGetResponsesNoWaitWithoutResults() throws InvocationTargetException {
-    RequestHandler handler = new RequestHandler(false, "callid");
+    RequestHandler handler = new RequestHandler(false, "callid", 10000);
     assertTrue(handler.getResponsesNoWait().isEmpty());
   }
 
   @Test
   public void testGetResponsesNoWaitWithResult() throws InvocationTargetException {
-    RequestHandler handler = new RequestHandler(false, "callid");
+    RequestHandler handler = new RequestHandler(false, "callid", 10000);
     assertTrue(handler.addResponse(new TestMessage("msg")));
     Collection<TestMessage> response = handler.getResponsesNoWait();
     assertEquals(1, response.size());
@@ -51,7 +51,7 @@ public class RequestHandlerTest {
 
   @Test
   public void testGetResponsesNoWaitWithMultipleResults() throws InvocationTargetException {
-    RequestHandler handler = new RequestHandler(false, "callid");
+    RequestHandler handler = new RequestHandler(false, "callid", 10000);
     assertTrue(handler.addResponse(new TestMessage("msg1")));
     assertTrue(handler.addResponse(new TestMessage("msg2")));
     assertTrue(handler.addResponse(new TestMessage("msg3")));
@@ -60,7 +60,7 @@ public class RequestHandlerTest {
 
   @Test
   public void testGetResponsesNoWaitEnqueuesMoreResults() throws InvocationTargetException {
-    RequestHandler handler = new RequestHandler(false, "callid");
+    RequestHandler handler = new RequestHandler(false, "callid", 10000);
     assertTrue(handler.addResponse(new TestMessage("msg1")));
     assertTrue(handler.addResponse(new TestMessage("msg2")));
     assertEquals(SetUtils.set("msg1", "msg2"), SetUtils.set(handler.getResponsesNoWait(), m -> ((TestMessage) m).getMsgID()));
@@ -70,7 +70,7 @@ public class RequestHandlerTest {
 
   @Test(expected = InvocationTargetException.class)
   public void testGetResponsesNoWaitWithError() throws InvocationTargetException {
-    RequestHandler handler = new RequestHandler(false, "callid");
+    RequestHandler handler = new RequestHandler(false, "callid", 10000);
     assertTrue(handler.addResponse(new TestMessage("msg")));
     handler.notifyError(new IllegalArgumentException("invalid"));
     handler.getResponsesNoWait();
@@ -78,7 +78,7 @@ public class RequestHandlerTest {
 
   @Test
   public void testGetNextResponse() throws InterruptedException, ExecutionException, TimeoutException {
-    RequestHandler handler = new RequestHandler(false, "callid");
+    RequestHandler handler = new RequestHandler(false, "callid", 10000);
     Future<TestMessage> msg = executor.submit(() -> handler.getNextResponse(1000));
     assertFalse(msg.isDone());
     handler.addResponse(new TestMessage("msg"));
@@ -87,15 +87,35 @@ public class RequestHandlerTest {
 
   @Test
   public void testGetResponsesWaitForTimeout() throws InterruptedException, ExecutionException, TimeoutException {
-    RequestHandler handler = new RequestHandler(false, "callid");
+    RequestHandler handler = new RequestHandler(false, "callid", 10000);
     Future<Collection<TestMessage>> msg = executor.submit(() -> handler.getResponses(200, 3));
     handler.addResponse(new TestMessage("msg1"));
     assertEquals(1, msg.get(500, TimeUnit.MILLISECONDS).size());
   }
 
+  @Test
+  public void testGetResponsesWaitForEndOfStream() throws InterruptedException, ExecutionException, TimeoutException {
+    RequestHandler handler = new RequestHandler(true, "callid", 10000);
+    Future<TestMessage> msg = executor.submit((Callable<TestMessage>) handler::getNextResponse);
+    Thread.sleep(300);
+    assertFalse(msg.isDone());
+    handler.endOfStream();
+    assertNull(msg.get(500, TimeUnit.MILLISECONDS));
+  }
+
+  @Test
+  public void testGetResponsesWaitForMessage() throws InterruptedException, ExecutionException, TimeoutException {
+    RequestHandler handler = new RequestHandler(true, "callid", 10000);
+    Future<TestMessage> msg = executor.submit((Callable<TestMessage>) handler::getNextResponse);
+    Thread.sleep(300);
+    assertFalse(msg.isDone());
+    handler.addResponse(new TestMessage("msg1"));
+    assertEquals("msg1", msg.get(500, TimeUnit.MILLISECONDS).getMsgID());
+  }
+
   @Test(expected = InvocationTargetException.class)
   public void testGetResponsesReturnError() throws Throwable {
-    RequestHandler handler = new RequestHandler(false, "callid");
+    RequestHandler handler = new RequestHandler(false, "callid", 10000);
     Future<Collection<TestMessage>> msg = executor.submit(() -> handler.getResponses(200, 3));
     assertFalse(msg.isDone());
     handler.addResponse(new TestMessage("msg1"));
@@ -110,7 +130,7 @@ public class RequestHandlerTest {
 
   @Test
   public void testGetResponsesReturnsPendingResultsWhenClosed() throws Throwable {
-    RequestHandler handler = new RequestHandler(false, "callid");
+    RequestHandler handler = new RequestHandler(false, "callid", 10000);
     handler.addResponse(new TestMessage("msg3"));
     handler.endOfStream();
     assertNotNull(executor.submit(() -> handler.getNextResponse(100)).get(100, TimeUnit.MILLISECONDS));
@@ -118,7 +138,7 @@ public class RequestHandlerTest {
 
   @Test
   public void testGetResponsesReturnsNullWhenClosedAndNoMoreResults() throws Throwable {
-    RequestHandler handler = new RequestHandler(false, "callid");
+    RequestHandler handler = new RequestHandler(false, "callid", 10000);
     handler.addResponse(new TestMessage("msg3"));
     handler.endOfStream();
     assertNotNull(executor.submit(() -> handler.getNextResponse(100)).get(100, TimeUnit.MILLISECONDS));
@@ -127,7 +147,7 @@ public class RequestHandlerTest {
 
   @Test
   public void testGetResponsesWaitForResults() throws InterruptedException, ExecutionException, TimeoutException {
-    RequestHandler handler = new RequestHandler(false, "callid");
+    RequestHandler handler = new RequestHandler(false, "callid", 10000);
     Future<Collection<TestMessage>> msg = executor.submit(() -> handler.getResponses(1000, 3));
     assertFalse(msg.isDone());
     handler.addResponse(new TestMessage("msg1"));
@@ -142,7 +162,7 @@ public class RequestHandlerTest {
 
   @Test(expected = InvocationTargetException.class)
   public void testGetNextResponseWhenError() throws Throwable {
-    RequestHandler handler = new RequestHandler(false, "callid");
+    RequestHandler handler = new RequestHandler(false, "callid", 10000);
     Future<TestMessage> msg = executor.submit(() -> handler.getNextResponse(1000));
     assertFalse(msg.isDone());
     handler.notifyError(new IllegalArgumentException("invalid"));
@@ -155,7 +175,7 @@ public class RequestHandlerTest {
 
   @Test
   public void testGetNextResponseReturnsWhenEOS() throws InvocationTargetException, InterruptedException, ExecutionException, TimeoutException {
-    RequestHandler handler = new RequestHandler(false, "callid");
+    RequestHandler handler = new RequestHandler(false, "callid", 10000);
     Future<TestMessage> msg = executor.submit(() -> handler.getNextResponse(1000));
     assertFalse(msg.isDone());
     handler.endOfStream();
@@ -164,7 +184,7 @@ public class RequestHandlerTest {
 
   @Test
   public void testGetNextResponseTimeout() throws InterruptedException, ExecutionException, TimeoutException {
-    RequestHandler handler = new RequestHandler(false, "callid");
+    RequestHandler handler = new RequestHandler(false, "callid", 10000);
     Future<TestMessage> msg = executor.submit(() -> handler.getNextResponse(100));
     assertFalse(msg.isDone());
     assertNull(msg.get(1000, TimeUnit.MILLISECONDS));
@@ -172,7 +192,7 @@ public class RequestHandlerTest {
 
   @Test
   public void testWaitForEndOfStream() throws InterruptedException, ExecutionException, TimeoutException {
-    RequestHandler handler = new RequestHandler(false, "callid");
+    RequestHandler handler = new RequestHandler(false, "callid", 10000);
     Future<Boolean> msg = executor.submit(() -> handler.waitForEndOfStream(1000));
     assertFalse(msg.isDone());
     handler.endOfStream();
@@ -181,7 +201,7 @@ public class RequestHandlerTest {
 
   @Test
   public void testWaitForEndOfStreamTimeout() throws InterruptedException, ExecutionException, TimeoutException {
-    RequestHandler handler = new RequestHandler(false, "callid");
+    RequestHandler handler = new RequestHandler(false, "callid", 100);
     Future<Boolean> msg = executor.submit(() -> handler.waitForEndOfStream(100));
     assertFalse(msg.isDone());
     assertTrue(msg.get(1000, TimeUnit.MILLISECONDS));
@@ -189,7 +209,7 @@ public class RequestHandlerTest {
 
   @Test
   public void testWaitForEndOfStreamKeepAliveNotEnabled() throws InterruptedException, ExecutionException, TimeoutException {
-    RequestHandler handler = new RequestHandler(false, "callid");
+    RequestHandler handler = new RequestHandler(false, "callid", 100);
     //wait for end of stream, wait at most 100ms before closing
     Future<Boolean> msg = executor.submit(() -> handler.waitForEndOfStream(100));
     assertFalse(msg.isDone());
@@ -201,12 +221,10 @@ public class RequestHandlerTest {
 
   @Test
   public void testWaitForEndOfStreamKeepAlive() throws InterruptedException, ExecutionException, TimeoutException {
-    RequestHandler handler = new RequestHandler(true, "callid");
+    RequestHandler handler = new RequestHandler(true, "callid", 200);
     //wait for end of stream, wait at most 100ms before closing
     Future<Boolean> msg = executor.submit(() -> handler.waitForEndOfStream(100));
     assertFalse(msg.isDone());
-    //send a keepalive to handler, which will cause channel to stay open until this time
-    handler.keepAlive(System.currentTimeMillis() + 200);
     //when waitForEndOfStream resolves, it should return false (channel was kept open due to keepalive)
     assertFalse(msg.get(1000, TimeUnit.MILLISECONDS));
     //wait more for end of stream, wait at most 200ms before closing

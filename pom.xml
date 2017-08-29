@@ -36,21 +36,17 @@
     </developer>
   </developers>
 
-  <prerequisites>
-    <maven>3.0</maven>
-  </prerequisites>
-
   <properties>
     <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
 
     <!-- mnemonic dependencies -->
-    <mnemonic.commons.version>0.1.1</mnemonic.commons.version>
+    <mnemonic.commons.version>0.1.7</mnemonic.commons.version>
 
     <!-- external dependencies -->
-    <activemq.version>5.14.1</activemq.version>
+    <activemq.version>5.15.0</activemq.version>
     <jms.version>2.0.1</jms.version>
     <junit.version>4.12</junit.version>
-    <mockito.version>2.8.9</mockito.version>
+    <mockito.version>2.9.0</mockito.version>
 
     <!-- build dependencies -->
     <maven.clean.version>3.0.0</maven.clean.version>

@@ -5,7 +5,8 @@ mnemonic messaging
 
 ## Usage
 
-TODO: Link to javadoc.
+[![Javadocs](https://javadoc.io/badge/no.mnemonic.messaging/requestsink.svg?color=orange&label=requestsink)](https://javadoc.io/doc/no.mnemonic.messaging/requestsink)
+[![Javadocs](https://javadoc.io/badge/no.mnemonic.messaging/requestsink-jms.svg?color=orange&label=requestsink-jms)](https://javadoc.io/doc/no.mnemonic.messaging/requestsink-jms)
 
 ## Installation
 

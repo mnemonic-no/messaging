@@ -63,7 +63,7 @@ public class RequestHandler implements RequestContext {
   public boolean keepAlive(long until) {
     if (isClosed() || !allowKeepAlive) return false;
     if (timeout.getAndUpdate(prev -> until > prev ? until : prev) < until) {
-      LOGGER.info("Keeping session open until %s", new Date(until));
+      LOGGER.debug("Keeping session open until %s", new Date(until));
     }
     return true;
   }

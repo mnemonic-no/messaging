@@ -11,10 +11,12 @@ import org.mockito.MockitoAnnotations;
 
 import javax.jms.*;
 import javax.naming.NamingException;
+import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.Serializable;
 import java.security.MessageDigest;
+import java.util.UUID;
 import java.util.concurrent.*;
 
 import static org.junit.Assert.*;
@@ -52,16 +54,27 @@ public class JMSRequestSinkTest extends AbstractJMSRequestTest {
 
   @Test
   public void testSignalSubmitsMessage() throws Exception {
-    setupSinkAndContainer(65536);
+    setupSinkAndContainer(65536, ProtocolVersion.V2);
+    TestMessage testMessage = new TestMessage("test1");
+    //send testmessage
+    requestSink.signal(testMessage, requestContext, 10000);
+    //wait for message to come through and validate
+    Message receivedMessage = expectMessage(JMSRequestProxy.MESSAGE_TYPE_SIGNAL);
+    Assert.assertEquals(ProtocolVersion.V2.getVersionString(), receivedMessage.getStringProperty(JMSBase.PROTOCOL_VERSION_KEY));
+    Assert.assertEquals(JMSRequestProxy.MESSAGE_TYPE_SIGNAL, receivedMessage.getStringProperty(JMSRequestProxy.PROPERTY_MESSAGE_TYPE));
+    assertEquals(testMessage, JMSUtils.extractObject(receivedMessage));
+    assertTrue(receivedMessage instanceof BytesMessage);
+  }
+
+  @Test
+  public void testSignalWithProtocolLevelV1() throws Exception {
+    setupSinkAndContainer(65536, ProtocolVersion.V1);
     TestMessage testMessage = new TestMessage("test1");
     //send testmessage
     requestSink.signal(testMessage, requestContext, 10000);
     //wait for message to come through and validate
     Message receivedMessage = expectMessage(JMSRequestProxy.MESSAGE_TYPE_SIGNAL);
     Assert.assertEquals(ProtocolVersion.V1.getVersionString(), receivedMessage.getStringProperty(JMSBase.PROTOCOL_VERSION_KEY));
-    Assert.assertEquals(JMSRequestProxy.MESSAGE_TYPE_SIGNAL, receivedMessage.getStringProperty(JMSRequestProxy.PROPERTY_MESSAGE_TYPE));
-    assertEquals(testMessage, JMSUtils.extractObject(receivedMessage));
-    assertTrue(receivedMessage instanceof BytesMessage);
   }
 
   @Test
@@ -75,8 +88,61 @@ public class JMSRequestSinkTest extends AbstractJMSRequestTest {
   }
 
   @Test
+  public void testSignalReceivesFragmentedResponse() throws Exception {
+    setupSinkAndContainer(65536, ProtocolVersion.V2);
+    TestMessage testMessage = new TestMessage("test1");
+    TestMessage responseMessage = new TestMessage("huge response");
+
+    //signal message
+    requestSink.signal(testMessage, requestContext, 10000);
+    //wait for message to come through
+    Message receivedMessage = expectMessage(JMSRequestProxy.MESSAGE_TYPE_SIGNAL);
+    UUID responseID = UUID.randomUUID();
+
+    //fragment response message into fragments of 3 bytes
+    JMSUtils.fragment(new ByteArrayInputStream(JMSUtils.serialize(responseMessage)), 3, new JMSUtils.FragmentConsumer() {
+      @Override
+      public void fragment(byte[] data, int idx) throws JMSException, IOException {
+        try {
+          //each fragment is marked with responseID, fragment index and type "signal fragment"
+          BytesMessage msg = byteMsg(data, JMSRequestProxy.MESSAGE_TYPE_SIGNAL_FRAGMENT, receivedMessage.getJMSCorrelationID());
+          msg.setIntProperty(JMSRequestProxy.PROPERTY_FRAGMENTS_IDX, idx);
+          msg.setStringProperty(JMSRequestProxy.PROPERTY_RESPONSE_ID, responseID.toString());
+          sendTo(receivedMessage.getJMSReplyTo(), msg);
+        } catch (NamingException e) {
+          throw new RuntimeException(e);
+        }
+      }
+
+      @Override
+      public void end(int fragments, byte[] digest) throws JMSException {
+        try {
+          //end-of-fragment message contains responseID, fragment count and md5 checksum
+          sendTo(
+                  receivedMessage.getJMSReplyTo(),
+                  textMsg("end-of-fragments", JMSRequestProxy.MESSAGE_TYPE_END_OF_FRAGMENTED_MESSAGE, receivedMessage.getJMSCorrelationID(),
+                          msg -> msg.setStringProperty(JMSRequestProxy.PROPERTY_RESPONSE_ID, responseID.toString()),
+                          msg -> msg.setIntProperty(JMSRequestProxy.PROPERTY_FRAGMENTS_TOTAL, fragments),
+                          msg -> msg.setStringProperty(JMSRequestProxy.PROPERTY_DATA_CHECKSUM_MD5, JMSUtils.hex(digest))
+                  )
+          );
+        } catch (Exception e) {
+          throw new RuntimeException(e);
+        }
+      }
+    });
+    //end of stream for the request
+    eos(receivedMessage);
+    //wait for EOS
+    waitForEOS();
+    //verify that the response got through as well
+    verify(requestContext).addResponse(eq(responseMessage));
+  }
+
+
+  @Test
   public void testSignalKeepalive() throws Exception {
-    setupSinkAndContainer(65536);
+    setupSinkAndContainer(65536, ProtocolVersion.V2);
     TestMessage testMessage = new TestMessage("test1");
     //signal message with short lifetime
     requestSink.signal(testMessage, requestContext, 1000);
@@ -90,7 +156,7 @@ public class JMSRequestSinkTest extends AbstractJMSRequestTest {
 
   @Test
   public void testChannelUploadWithResponse() throws Exception {
-    setupSinkAndContainer(100);
+    setupSinkAndContainer(100, ProtocolVersion.V2);
 
     TestMessage testMessage = new TestMessage(generateCookie(500));
     requestSink.signal(testMessage, requestContext, 1000);
@@ -113,7 +179,7 @@ public class JMSRequestSinkTest extends AbstractJMSRequestTest {
   //helper methods
 
   private void doTestSignalReceiveResults(int resultCount) throws Exception {
-    setupSinkAndContainer(65536);
+    setupSinkAndContainer(65536, ProtocolVersion.V2);
     TestMessage testMessage = new TestMessage("test1");
     TestMessage responseMessage = new TestMessage("response");
 
@@ -131,10 +197,11 @@ public class JMSRequestSinkTest extends AbstractJMSRequestTest {
     verify(requestContext, times(resultCount)).addResponse(eq(responseMessage));
   }
 
-  private void setupSinkAndContainer(int maxMessageSize) {
+  private void setupSinkAndContainer(int maxMessageSize, ProtocolVersion protocolVersion) {
     requestSink = JMSRequestSink.builder()
             .addConnection(connection)
             .setDestinationName(queueName)
+            .setProtocolVersion(protocolVersion)
             .setMaxMessageSize(maxMessageSize)
             .build();
     container = ComponentContainer.create(requestSink, connection);

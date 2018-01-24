@@ -7,6 +7,7 @@ import java.io.IOException;
 import java.io.Serializable;
 import java.nio.CharBuffer;
 import java.security.SecureRandom;
+import java.util.Arrays;
 import java.util.Hashtable;
 import java.util.Random;
 
@@ -17,6 +18,12 @@ abstract class AbstractJMSRequestTest {
 
   Connection testConnection;
   Session session;
+
+  TestMessage createBigResponse() {
+    char[] msg = new char[1500];
+    Arrays.fill(msg, 'c');
+    return new TestMessage(new String(msg));
+  }
 
   public interface JMSAction {
     void action(Message msg) throws Exception;

@@ -6,8 +6,8 @@ import no.mnemonic.messaging.requestsink.RequestContext;
 import no.mnemonic.messaging.requestsink.RequestListener;
 
 import javax.jms.*;
+import java.io.IOException;
 import java.io.InputStream;
-import java.security.MessageDigest;
 import java.time.Clock;
 
 import static no.mnemonic.messaging.requestsink.jms.JMSUtils.assertNotNull;
@@ -44,49 +44,42 @@ class ChannelUploadMessageContext implements RequestContext {
   void upload(Session session, Destination uploadChannel) throws JMSException {
     assertNotNull(session, "Session not provided");
     assertNotNull(uploadChannel, "UploadChannel not provided");
-    try {
-      if (LOGGER.isDebug()) {
-        LOGGER.debug(String.format("Initializing channel upload for callID %s to destination %s", callID, uploadChannel));
-      }
-      //create producer to send fragments
-      MessageProducer producer = session.createProducer(uploadChannel);
-      try {
-        //create buffer for fragments
-        byte[] bytes = new byte[fragmentSize];
-        int size;
-        int fragmentIndex = 0;
-        //create a MD5 digester to calculate a checksum
-        MessageDigest digester = JMSUtils.md5();
 
-        //read each fragment
-        while ((size = messageData.read(bytes)) >= 0) {
-          digester.update(bytes, 0, size);
-          //create fragment message with correlationID, messagetype, fragment index
-          BytesMessage fragment = JMSUtils.createByteMessage(session, JMSUtils.arraySubSeq(bytes, 0, size), protocolVersion);
+    if (LOGGER.isDebug()) {
+      LOGGER.debug(String.format("Initializing channel upload for callID %s to destination %s", callID, uploadChannel));
+    }
+
+    //create producer to send fragments
+    try (MessageProducer producer = session.createProducer(uploadChannel)) {
+
+      JMSUtils.fragment(messageData, fragmentSize, new JMSUtils.FragmentConsumer() {
+        @Override
+        public void fragment(byte[] data, int idx) throws JMSException, IOException {
+          BytesMessage fragment = JMSUtils.createByteMessage(session, data, protocolVersion);
           fragment.setJMSCorrelationID(callID);
           fragment.setStringProperty(JMSRequestProxy.PROPERTY_MESSAGE_TYPE, JMSRequestProxy.MESSAGE_TYPE_SIGNAL_FRAGMENT);
-          fragment.setIntProperty(JMSRequestProxy.PROPERTY_FRAGMENTS_IDX, fragmentIndex++);
+          fragment.setIntProperty(JMSRequestProxy.PROPERTY_FRAGMENTS_IDX, idx);
           fragment.setLongProperty(JMSRequestProxy.PROPERTY_REQ_TIMEOUT, clock.millis() + KEEPALIVE_PERIOD);
           //send fragment to upload channel
           producer.send(uploadChannel, fragment);
         }
-        //prepare EOS message (message text has no meaning)
-        javax.jms.Message eos = JMSUtils.createTextMessage(session, "End-Of-Stream", protocolVersion);
-        eos.setJMSCorrelationID(callID);
-        eos.setStringProperty(JMSRequestProxy.PROPERTY_MESSAGE_TYPE, JMSRequestProxy.MESSAGE_TYPE_STREAM_CLOSED);
-        //send total number of fragments and message digest with EOS message, to allow receiver to verify
-        eos.setIntProperty(JMSRequestProxy.PROPERTY_FRAGMENTS_TOTAL, fragmentIndex);
-        eos.setStringProperty(JMSRequestProxy.PROPERTY_DATA_CHECKSUM_MD5, JMSUtils.hex(digester.digest()));
-        //send EOS
-        producer.send(uploadChannel, eos);
-        if (LOGGER.isDebug()) {
-          LOGGER.debug(String.format("Completed sending %d fragments for callID %s", fragmentIndex, callID));
+
+        @Override
+        public void end(int fragments, byte[] digest) throws JMSException {
+          //prepare EOS message (message text has no meaning)
+          javax.jms.Message eos = JMSUtils.createTextMessage(session, "End-Of-Stream", protocolVersion);
+          eos.setJMSCorrelationID(callID);
+          eos.setStringProperty(JMSRequestProxy.PROPERTY_MESSAGE_TYPE, JMSRequestProxy.MESSAGE_TYPE_STREAM_CLOSED);
+          //send total number of fragments and message digest with EOS message, to allow receiver to verify
+          eos.setIntProperty(JMSRequestProxy.PROPERTY_FRAGMENTS_TOTAL, fragments);
+          eos.setStringProperty(JMSRequestProxy.PROPERTY_DATA_CHECKSUM_MD5, JMSUtils.hex(digest));
+          //send EOS
+          producer.send(uploadChannel, eos);
+          if (LOGGER.isDebug()) {
+            LOGGER.debug(String.format("Completed sending %d fragments for callID %s", fragments, callID));
+          }
         }
-      } finally {
-        producer.close();
-      }
-    } catch (Exception e) {
-      throw new JMSException("Error reading from message data stream: " + e.getMessage());
+      });
     }
   }
 

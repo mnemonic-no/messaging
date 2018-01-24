@@ -5,12 +5,6 @@ import no.mnemonic.commons.logging.Logging;
 
 import javax.jms.*;
 import javax.naming.NamingException;
-import java.io.ByteArrayOutputStream;
-import java.lang.IllegalStateException;
-import java.security.MessageDigest;
-import java.util.ArrayList;
-import java.util.Comparator;
-import java.util.List;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.LinkedBlockingDeque;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -21,12 +15,11 @@ import static no.mnemonic.messaging.requestsink.jms.JMSUtils.assertNotNull;
 /**
  * This context handles fragmented uploading of the signal message on the JMSRequestProxy (server) side.
  * <ul>
- *   <li>Set up temporary upload channel</li>
- *   <li>Signal client with upload channel</li>
- *   <li>Accept fragments and end-of-stream from client</li>
- *   <li>Reassemble fragments, verify and submit reassembled message to RequestSink</li>
+ * <li>Set up temporary upload channel</li>
+ * <li>Signal client with upload channel</li>
+ * <li>Accept fragments and end-of-stream from client</li>
+ * <li>Reassemble fragments, verify and submit reassembled message to RequestSink</li>
  * </ul>
- *
  */
 class ServerChannelUploadContext implements JMSRequestProxy.ServerContext {
 
@@ -36,7 +29,7 @@ class ServerChannelUploadContext implements JMSRequestProxy.ServerContext {
   private final Session session;
   private final Destination responseDestination;
   private final AtomicBoolean closed = new AtomicBoolean();
-  private final BlockingQueue<Message> fragments = new LinkedBlockingDeque<>();
+  private final BlockingQueue<MessageFragment> fragments = new LinkedBlockingDeque<>();
   private final AtomicLong timeout = new AtomicLong();
   private final ProtocolVersion protocolVersion;
 
@@ -54,7 +47,6 @@ class ServerChannelUploadContext implements JMSRequestProxy.ServerContext {
   }
 
   /**
-   *
    * @param handler handler to receive the reassembled uploaded message
    * @throws JMSException on error receiving from JMS
    */
@@ -110,8 +102,8 @@ class ServerChannelUploadContext implements JMSRequestProxy.ServerContext {
     }
     //extend timeout if client is requesting timeout extention
     long reqTimeout = message.getLongProperty(JMSRequestProxy.PROPERTY_REQ_TIMEOUT);
-    timeout.updateAndGet(v->v < reqTimeout ? reqTimeout : v);
-    fragments.add(message);
+    timeout.updateAndGet(v -> v < reqTimeout ? reqTimeout : v);
+    fragments.add(new MessageFragment((BytesMessage) message));
   }
 
   private void handleSignalEndOfStream(Message message) {
@@ -123,7 +115,7 @@ class ServerChannelUploadContext implements JMSRequestProxy.ServerContext {
         LOGGER.warning("Ignoring empty channel upload: " + callID);
         return;
       }
-      uploadHandler.handleRequest(callID, messageData, responseDestination, timeout.get());
+      uploadHandler.handleRequest(callID, messageData, responseDestination, timeout.get(), protocolVersion);
     } catch (Exception e) {
       notifyError(e);
     }
@@ -139,49 +131,9 @@ class ServerChannelUploadContext implements JMSRequestProxy.ServerContext {
   }
 
   private byte[] prepareData(Message eosMessage) throws Exception {
-    ByteArrayOutputStream baos = new ByteArrayOutputStream();
     int expectedFragments = eosMessage.getIntProperty(JMSRequestProxy.PROPERTY_FRAGMENTS_TOTAL);
     String transmittedChecksum = eosMessage.getStringProperty(JMSRequestProxy.PROPERTY_DATA_CHECKSUM_MD5);
-
-    if (fragments.size() != expectedFragments) {
-      throw new IllegalStateException(String.format("Expected %d fragments, received %d", expectedFragments, fragments.size()));
-    }
-
-    //sort fragments in case they are out-of-order
-    List<Message> fragmentList = new ArrayList<>();
-    fragments.drainTo(fragmentList);
-    fragmentList.sort(Comparator.comparing(m -> {
-      try {
-        return m.getIntProperty(JMSRequestProxy.PROPERTY_FRAGMENTS_IDX);
-      } catch (JMSException e) {
-        throw new RuntimeException(e);
-      }
-    }));
-
-    int fragmentIndex = 0;
-    MessageDigest digest = JMSUtils.md5();
-    for (Message m : fragmentList) {
-      //verify that fragment makes sense
-      if (fragmentIndex != m.getIntProperty(JMSRequestProxy.PROPERTY_FRAGMENTS_IDX))
-        throw new IllegalStateException("Expected fragment index " + fragmentIndex);
-      //extract data and write to BAOS
-      BytesMessage bytesMessage = (BytesMessage) m;
-      byte[] data = new byte[(int) bytesMessage.getBodyLength()];
-      bytesMessage.readBytes(data);
-      baos.write(data);
-      digest.update(data);
-      //increment expected fragment index
-      fragmentIndex++;
-    }
-    baos.close();
-
-    //verify checksum
-    String computedChecksum = JMSUtils.hex(digest.digest());
-    if (!computedChecksum.equals(transmittedChecksum)) {
-      throw new IllegalStateException("Data checksum mismatch");
-    }
-
-    return baos.toByteArray();
+    return JMSUtils.reassembleFragments(fragments, expectedFragments, transmittedChecksum);
   }
 
   private void notifyError(Throwable e) {
@@ -214,6 +166,6 @@ class ServerChannelUploadContext implements JMSRequestProxy.ServerContext {
   }
 
   public interface UploadHandler {
-    void handleRequest(String callID, byte[] message, Destination replyTo, long timeout) throws Exception;
+    void handleRequest(String callID, byte[] message, Destination replyTo, long timeout, ProtocolVersion protocolVersion) throws Exception;
   }
 }

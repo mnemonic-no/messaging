@@ -4,45 +4,60 @@ import no.mnemonic.commons.logging.Logger;
 import no.mnemonic.commons.logging.Logging;
 import no.mnemonic.commons.utilities.ClassLoaderContext;
 import no.mnemonic.commons.utilities.ObjectUtils;
-import no.mnemonic.commons.utilities.collections.CollectionUtils;
 import no.mnemonic.commons.utilities.collections.ListUtils;
 import no.mnemonic.commons.utilities.lambda.LambdaUtils;
 import no.mnemonic.messaging.requestsink.*;
 
+import javax.jms.BytesMessage;
 import javax.jms.JMSException;
 import javax.jms.MessageConsumer;
 import javax.jms.TemporaryQueue;
 import javax.naming.NamingException;
 import java.io.ByteArrayInputStream;
+import java.io.IOException;
+import java.util.Collection;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.LinkedBlockingDeque;
 import java.util.concurrent.atomic.AtomicReference;
+
+import static no.mnemonic.commons.utilities.collections.CollectionUtils.isEmpty;
+import static no.mnemonic.messaging.requestsink.jms.JMSRequestProxy.*;
 
 /**
  * JMSRequestSink is a JMS implementation of the RequestSink using JMS,
  * communicating over JMS to a corresponding JMSRequestProxy.
- *
+ * <p>
  * <pre>
  *   ------------        ------------------                     -------------------     ---------------
  *   | Client   |  --   | JMSRequestSink | ------- JMS -------  | JMSRequestProxy |  -- | RequestSink |
  *   ------------        ------------------                     -------------------     ---------------
  * </pre>
- *
+ * <p>
  * The messages must implement the {@link Message} interface, and contain a <code>callID</code> and a <code>timestamp</code>.
  * Other than this, the JMSRequestSink does not care about the format of the sent messages, but will deliver them to the
  * RequestSink on the other side, where they must be handled.
- *
+ * <p>
  * The messaging protocol between a JMSRequestSink and JMSRequestProxy is private between these entities, and should be
  * concidered transparent.
- *
+ * <p>
  * The implementation will serialize messages to bytes. If upstream messages are above the configured maxMessageSize,
  * the JMSRequestSink will create an upload channel to establish a temporary queue for uploading, and will fragment the upload
  * message into multiple messages on the upload channel. This avoids very large JMS messages for upload.
- *
+ * <p>
  * For download, the server RequestSink can choose to send multiple replies on the same reply channel, and can use this
  * to stream the results back to the client.
+ * <p>
+ * The protocol between the sink and the proxy is versioned. The proxy must support the version used by the sink, or the
+ * request will fail. The sink can specify a lesser protocol version, allowing a rolling upgrade by upgrading the code first, but keep
+ * using previous version until all components are supporting the new protocol version.
  *
+ * The default protocol version is V1, so clients must explicitly enable higher protocol versions.
+ *
+ * Protocol change history:
+ * V1 - Initial version, supports requests with multiple replies (streaming result) and upload channel for fragmented request (for large request messages)
+ * V2 - Added support for fragmented response (for large single-object response messages)
  */
 public class JMSRequestSink extends JMSBase implements RequestSink, RequestListener {
 
@@ -50,15 +65,17 @@ public class JMSRequestSink extends JMSBase implements RequestSink, RequestListe
   private static final Logger LOGGER = Logging.getLogger(JMSRequestSink.class);
   static final int DEFAULT_TTL = 1000;
   static final int DEFAULT_PRIORITY = 1;
+  private static final String RECEIVED_END_OF_FRAGMENTS_WITHOUT = "Received end-of-fragments without ";
+  private static final String RECEIVED_FRAGMENT_WITHOUT = "Received fragment without ";
 
   // variables
 
-  private final ConcurrentHashMap<String, ClassLoaderSignalContextPair> requests = new ConcurrentHashMap<>();
+  private final ConcurrentHashMap<String, OngoingCallState> requests = new ConcurrentHashMap<>();
   private final AtomicReference<ResponseListener> responseListener = new AtomicReference<>();
   private final int maxMessageSize;
   private final ProtocolVersion protocolVersion;
 
-  private JMSRequestSink(List<JMSConnection> connections, String destinationName, long failbackInterval,
+  private JMSRequestSink(List<JMSConnection> connections, String destinationName,
                          int timeToLive, int priority, boolean persistent,
                          int maxMessageSize, ProtocolVersion protocolVersion) {
     super(connections, destinationName, false,
@@ -121,13 +138,12 @@ public class JMSRequestSink extends JMSBase implements RequestSink, RequestListe
         messageBytes = "channel upload request".getBytes();
         messageType = JMSRequestProxy.MESSAGE_TYPE_CHANNEL_REQUEST;
       }
-      requests.putIfAbsent(msg.getCallID(), new ClassLoaderSignalContextPair(ctx, Thread.currentThread().getContextClassLoader()));
+      requests.putIfAbsent(msg.getCallID(), new OngoingCallState(ctx, Thread.currentThread().getContextClassLoader()));
       sendMessage(messageBytes, msg.getCallID(), messageType, maxWait);
-    } catch (Exception e) {
-      throw new RuntimeException(e);
+    } catch (IOException e) {
+      throw new IllegalStateException(e);
     }
   }
-
 
   private synchronized void ensureResponseListenerClosedIfRequestsEmpty() {
     if (!requests.isEmpty()) return;
@@ -137,16 +153,6 @@ public class JMSRequestSink extends JMSBase implements RequestSink, RequestListe
   private synchronized void ensureResponseListenerClosed() {
     ResponseListener l = responseListener.getAndSet(null);
     if (l != null) runInSeparateThread(l::close);
-  }
-
-  private void cleanResponseSinks() {
-    for (Map.Entry<String, ClassLoaderSignalContextPair> e : requests.entrySet()) {
-      ClassLoaderSignalContextPair c = e.getValue();
-      if (c.requestContext.isClosed()) {
-        requests.remove(e.getKey());
-      }
-    }
-    ensureResponseListenerClosedIfRequestsEmpty();
   }
 
   private ResponseListener checkResponseListener() {
@@ -166,12 +172,12 @@ public class JMSRequestSink extends JMSBase implements RequestSink, RequestListe
     }
   }
 
-  private ClassLoaderSignalContextPair getCurrentCall(String callID) {
+  private OngoingCallState getCurrentCall(String callID) {
     if (callID == null) {
       LOGGER.warning("Message received without callID");
       return null;
     }
-    ClassLoaderSignalContextPair ctx = requests.get(callID);
+    OngoingCallState ctx = requests.get(callID);
     if (ctx == null) {
       LOGGER.warning("Discarding signal response: " + callID);
     }
@@ -185,6 +191,10 @@ public class JMSRequestSink extends JMSBase implements RequestSink, RequestListe
     switch (responseType) {
       case JMSRequestProxy.MESSAGE_TYPE_SIGNAL_RESPONSE:
         return handleSignalResponse(message);
+      case JMSRequestProxy.MESSAGE_TYPE_SIGNAL_FRAGMENT:
+        return handleSignalResponseFragment(message);
+      case JMSRequestProxy.MESSAGE_TYPE_END_OF_FRAGMENTED_MESSAGE:
+        return handleEndOfFragmentedResponse(message);
       case JMSRequestProxy.MESSAGE_TYPE_CHANNEL_SETUP:
         return handleChannelSetup(message);
       case JMSRequestProxy.MESSAGE_TYPE_EXCEPTION:
@@ -199,8 +209,18 @@ public class JMSRequestSink extends JMSBase implements RequestSink, RequestListe
     }
   }
 
+  private boolean handleSignalResponseFragment(javax.jms.Message fragment) throws JMSException {
+    OngoingCallState ctx = getCurrentCall(fragment.getJMSCorrelationID());
+    return ctx != null && ctx.addFragment((BytesMessage) fragment);
+  }
+
+  private boolean handleEndOfFragmentedResponse(javax.jms.Message message) throws JMSException {
+    OngoingCallState ctx = getCurrentCall(message.getJMSCorrelationID());
+    return ctx != null && ctx.assembleFragments(message);
+  }
+
   private boolean handleSignalResponse(javax.jms.Message response) throws JMSException {
-    ClassLoaderSignalContextPair ctx = getCurrentCall(response.getJMSCorrelationID());
+    OngoingCallState ctx = getCurrentCall(response.getJMSCorrelationID());
     if (ctx == null) return false;
     try (ClassLoaderContext ignored = ClassLoaderContext.of(ctx.classLoader)) {
       ctx.requestContext.addResponse(JMSUtils.extractObject(response));
@@ -209,7 +229,7 @@ public class JMSRequestSink extends JMSBase implements RequestSink, RequestListe
   }
 
   private boolean handleChannelSetup(javax.jms.Message response) throws JMSException {
-    ClassLoaderSignalContextPair ctx = getCurrentCall(response.getJMSCorrelationID());
+    OngoingCallState ctx = getCurrentCall(response.getJMSCorrelationID());
     if (ctx == null) return false;
     try {
       if (ctx.requestContext instanceof ChannelUploadMessageContext) {
@@ -227,21 +247,21 @@ public class JMSRequestSink extends JMSBase implements RequestSink, RequestListe
   }
 
   private boolean handleSignalEndOfStream(javax.jms.Message response) throws JMSException {
-    ClassLoaderSignalContextPair ctx = getCurrentCall(response.getJMSCorrelationID());
+    OngoingCallState ctx = getCurrentCall(response.getJMSCorrelationID());
     if (ctx == null) return false;
     ctx.requestContext.endOfStream();
     return true;
   }
 
   private boolean handleSignalExtendWait(javax.jms.Message response) throws JMSException {
-    ClassLoaderSignalContextPair ctx = getCurrentCall(response.getJMSCorrelationID());
+    OngoingCallState ctx = getCurrentCall(response.getJMSCorrelationID());
     if (ctx == null) return false;
     ctx.requestContext.keepAlive(response.getLongProperty(JMSRequestProxy.PROPERTY_REQ_TIMEOUT));
     return true;
   }
 
   private boolean handleSignalError(javax.jms.Message response) throws JMSException {
-    ClassLoaderSignalContextPair ctx = getCurrentCall(response.getJMSCorrelationID());
+    OngoingCallState ctx = getCurrentCall(response.getJMSCorrelationID());
     if (ctx == null) return false;
     if (JMSRequestProxy.MESSAGE_TYPE_STREAM_CLOSED.equals(response.getStringProperty(JMSRequestProxy.PROPERTY_MESSAGE_TYPE))) {
       ctx.requestContext.endOfStream();
@@ -317,6 +337,16 @@ public class JMSRequestSink extends JMSBase implements RequestSink, RequestListe
       }
     }
 
+    private void cleanResponseSinks() {
+      for (Map.Entry<String, OngoingCallState> e : requests.entrySet()) {
+        OngoingCallState c = e.getValue();
+        if (c.requestContext.isClosed()) {
+          requests.remove(e.getKey());
+        }
+      }
+      ensureResponseListenerClosedIfRequestsEmpty();
+    }
+
   }
 
   private static class NullRequestContext implements RequestContext {
@@ -359,7 +389,6 @@ public class JMSRequestSink extends JMSBase implements RequestSink, RequestListe
     //fields
     private List<JMSConnection> connections;
     private String destinationName;
-    private long failbackInterval;
     private int timeToLive = DEFAULT_TTL;
     private int priority = DEFAULT_PRIORITY;
     private boolean persistent = false;
@@ -371,9 +400,9 @@ public class JMSRequestSink extends JMSBase implements RequestSink, RequestListe
 
     public JMSRequestSink build() {
       if (protocolVersion == null) throw new IllegalArgumentException("protocolVersion not set");
-      if (CollectionUtils.isEmpty(connections)) throw new IllegalArgumentException("No connections defined");
+      if (isEmpty(connections)) throw new IllegalArgumentException("No connections defined");
       if (destinationName == null) throw new IllegalArgumentException("No destination name provided");
-      return new JMSRequestSink(connections, destinationName, failbackInterval, timeToLive, priority, persistent,
+      return new JMSRequestSink(connections, destinationName, timeToLive, priority, persistent,
               maxMessageSize, protocolVersion);
     }
 
@@ -391,11 +420,6 @@ public class JMSRequestSink extends JMSBase implements RequestSink, RequestListe
 
     public Builder setDestinationName(String destinationName) {
       this.destinationName = destinationName;
-      return this;
-    }
-
-    public Builder setFailbackInterval(long failbackInterval) {
-      this.failbackInterval = failbackInterval;
       return this;
     }
 
@@ -428,13 +452,61 @@ public class JMSRequestSink extends JMSBase implements RequestSink, RequestListe
 
   //inner classes
 
-  private class ClassLoaderSignalContextPair {
+  static class OngoingCallState {
     private final RequestContext requestContext;
     private final ClassLoader classLoader;
+    private final Map<String, Collection<MessageFragment>> fragments = new ConcurrentHashMap<>();
 
-    private ClassLoaderSignalContextPair(RequestContext requestContext, ClassLoader classLoader) {
+    OngoingCallState(RequestContext requestContext, ClassLoader classLoader) {
       this.requestContext = requestContext;
       this.classLoader = classLoader;
+    }
+
+    boolean addFragment(BytesMessage fragment) throws JMSException {
+      if (fragment == null) throw new IllegalArgumentException("fragment was null");
+      if (!fragment.propertyExists(PROPERTY_RESPONSE_ID)) {
+        LOGGER.warning(RECEIVED_FRAGMENT_WITHOUT + PROPERTY_RESPONSE_ID);
+        return false;
+      }
+      if (!fragment.propertyExists(PROPERTY_FRAGMENTS_IDX)) {
+        LOGGER.warning(RECEIVED_FRAGMENT_WITHOUT + PROPERTY_FRAGMENTS_IDX);
+        return false;
+      }
+      fragments
+              .computeIfAbsent(fragment.getStringProperty(PROPERTY_RESPONSE_ID), id -> new LinkedBlockingDeque<>())
+              .add(new MessageFragment(fragment));
+      return true;
+    }
+
+    boolean assembleFragments(javax.jms.Message endMessage) {
+      if (endMessage == null) throw new IllegalArgumentException("end-message was null");
+      try {
+        if (!endMessage.propertyExists(PROPERTY_RESPONSE_ID)) {
+          LOGGER.warning(RECEIVED_END_OF_FRAGMENTS_WITHOUT + PROPERTY_RESPONSE_ID);
+          return false;
+        }
+        if (!endMessage.propertyExists(PROPERTY_FRAGMENTS_TOTAL)) {
+          LOGGER.warning(RECEIVED_END_OF_FRAGMENTS_WITHOUT + PROPERTY_FRAGMENTS_TOTAL);
+          return false;
+        }
+        if (!endMessage.propertyExists(PROPERTY_DATA_CHECKSUM_MD5)) {
+          LOGGER.warning(RECEIVED_END_OF_FRAGMENTS_WITHOUT + PROPERTY_DATA_CHECKSUM_MD5);
+          return false;
+        }
+        String responseID = endMessage.getStringProperty(PROPERTY_RESPONSE_ID);
+        int totalFragments = endMessage.getIntProperty(PROPERTY_FRAGMENTS_TOTAL);
+        String checksum = endMessage.getStringProperty(PROPERTY_DATA_CHECKSUM_MD5);
+        Collection<MessageFragment> responseFragments = this.fragments.get(responseID);
+        if (isEmpty(responseFragments)) {
+          LOGGER.warning("Received fragment end-message without preceding fragments");
+          return false;
+        }
+        byte[] reassembledData = JMSUtils.reassembleFragments(responseFragments, totalFragments, checksum);
+        return requestContext.addResponse(JMSUtils.unserialize(reassembledData, classLoader));
+      } catch (JMSException | IOException | ClassNotFoundException e) {
+        LOGGER.warning(e,"Error unpacking fragments");
+        return false;
+      }
     }
   }
 }

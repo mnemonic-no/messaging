@@ -2,7 +2,6 @@ package no.mnemonic.messaging.requestsink.jms;
 
 import no.mnemonic.commons.logging.Logger;
 import no.mnemonic.commons.logging.Logging;
-import no.mnemonic.commons.utilities.collections.SetUtils;
 import no.mnemonic.messaging.requestsink.MessagingException;
 
 import javax.jms.*;
@@ -53,18 +52,85 @@ class JMSUtils {
     return m;
   }
 
+  static byte[] reassembleFragments(Collection<MessageFragment> fragments, int expectedFragments, String md5Checksum) throws IOException, JMSException {
+    if (fragments == null) throw new IllegalArgumentException("message was null");
+    if (md5Checksum == null) throw new IllegalArgumentException("md5Checksum was null");
+
+    try (ByteArrayOutputStream baos = new ByteArrayOutputStream()) {
+      if (fragments.size() != expectedFragments) {
+        throw new JMSException(String.format("Expected %d fragments, received %d", expectedFragments, fragments.size()));
+      }
+
+      //sort fragments in case they are out-of-order
+      List<MessageFragment> fragmentList = new ArrayList<>(fragments);
+      fragmentList.sort(Comparator.comparing(MessageFragment::getIdx));
+
+      int fragmentIndex = 0;
+      MessageDigest digest = JMSUtils.md5();
+
+      for (MessageFragment m : fragmentList) {
+        //verify that fragment makes sense
+        if (fragmentIndex != m.getIdx()) {
+          throw new JMSException(String.format("Got fragment with index %d, expected index %d", m.getIdx(), fragmentIndex));
+        }
+        //extract data and write to BAOS
+        baos.write(m.getData());
+        digest.update(m.getData());
+        //increment expected fragment index
+        fragmentIndex++;
+      }
+      baos.flush();
+
+      //verify checksum
+      String computedChecksum = JMSUtils.hex(digest.digest());
+      if (!Objects.equals(computedChecksum, md5Checksum)) {
+        throw new JMSException("Data checksum mismatch");
+      }
+      return baos.toByteArray();
+    }
+
+  }
+
+  static void fragment(InputStream messageData, int fragmentSize, FragmentConsumer consumer) throws JMSException {
+    if (messageData == null) throw new IllegalArgumentException("messageData was null");
+    if (consumer == null) throw new IllegalArgumentException("consumer was null");
+    try {
+      //create buffer for fragments
+      byte[] bytes = new byte[fragmentSize];
+      int size;
+      int fragmentIndex = 0;
+      //create a MD5 digester to calculate a checksum
+      MessageDigest digester = JMSUtils.md5();
+      //read each fragment
+      while ((size = messageData.read(bytes)) >= 0) {
+        digester.update(bytes, 0, size);
+        consumer.fragment(arraySubSeq(bytes, 0, size), fragmentIndex++);
+      }
+      consumer.end(fragmentIndex, digester.digest());
+    } catch (IOException e) {
+      throw new JMSException("Error reading data", e.getMessage());
+    }
+  }
+
+  interface FragmentConsumer {
+    void fragment(byte[] data, int idx) throws JMSException, IOException;
+
+    void end(int fragments, byte[] digest) throws JMSException;
+  }
+
   static boolean isCompatible(Message message) throws JMSException {
     if (!message.propertyExists(JMSBase.PROTOCOL_VERSION_KEY)) return false;
     String proto = message.getStringProperty(JMSBase.PROTOCOL_VERSION_KEY);
-    return SetUtils.in(proto, ProtocolVersion.V1.getVersionString());
+    try {
+      ProtocolVersion.versionOf(proto);
+      return true;
+    } catch (JMSException e) {
+      return false;
+    }
   }
 
   static ProtocolVersion getProtocolVersion(Message message) throws JMSException {
-    String proto = message.getStringProperty(JMSBase.PROTOCOL_VERSION_KEY);
-    if (SetUtils.in(proto, ProtocolVersion.V1.getVersionString())) {
-      return ProtocolVersion.V1;
-    }
-    throw new JMSException("Received message with invalid protocol version: " + proto);
+    return ProtocolVersion.versionOf(message.getStringProperty(JMSBase.PROTOCOL_VERSION_KEY));
   }
 
   static void removeMessageListenerAndClose(MessageConsumer consumer) {
@@ -114,7 +180,7 @@ class JMSUtils {
   static void removeExceptionListener(JMSConnection connection, ExceptionListener listener) {
     assertNotNull(connection, "Connection not set");
     assertNotNull(listener, "Listener not set");
-    tryTo(()->connection.removeExceptionListener(listener), e->LOGGER.warning(e, "Could not deregister exception listener"));
+    tryTo(() -> connection.removeExceptionListener(listener), e -> LOGGER.warning(e, "Could not deregister exception listener"));
   }
 
   static byte[] serialize(Serializable object) throws IOException {

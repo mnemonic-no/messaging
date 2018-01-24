@@ -49,6 +49,7 @@ public class JMSRequestSinkProxyTest extends AbstractJMSRequestTest {
     JMSConnection serverConnection = createConnection();
     requestProxy = JMSRequestProxy.builder()
             .addConnection(serverConnection)
+            .setMaxMessageSize(1000)
             .setDestinationName(queueName)
             .setRequestSink(endpoint)
             .build();
@@ -71,7 +72,7 @@ public class JMSRequestSinkProxyTest extends AbstractJMSRequestTest {
     //mock client handling of response
     Future<List<TestMessage>> response = mockReceiveResponse();
     //when endpoint receives signal, it replies with a single reply, before closing channel
-    Future<TestMessage> signal = mockEndpointSignal(new TestMessage("reply"));
+    mockEndpointSignal(new TestMessage("reply"));
     //whenever SignalContext.isClosed() is called, return the state of the AtomicBoolean
     when(requestContext.isClosed()).thenAnswer(i -> response.isDone());
 
@@ -167,7 +168,7 @@ public class JMSRequestSinkProxyTest extends AbstractJMSRequestTest {
     serverContainer.initialize();
     clientContainer.initialize();
     //when endpoint receives signal, it replies with three replies, before closing channel
-    Future<TestMessage> signal = mockEndpointSignal(new TestMessage("reply1"), new TestMessage("reply2"), new TestMessage("reply3"));
+    mockEndpointSignal(new TestMessage("reply1"), new TestMessage("reply2"), new TestMessage("reply3"));
     //mock client handling of response
     Future<List<TestMessage>> response = mockReceiveResponse();
     //whenever SignalContext.isClosed() is called, return the state of the AtomicBoolean
@@ -179,6 +180,21 @@ public class JMSRequestSinkProxyTest extends AbstractJMSRequestTest {
     assertEquals(3, response.get(1000, TimeUnit.MILLISECONDS).size());
     //verify that client was given resultsby request sink, and that context was closed
     verify(requestContext, times(3)).addResponse(isA(Message.class));
+  }
+
+  @Test
+  public void testFragmentedResponse() throws InterruptedException, TimeoutException, ExecutionException {
+    serverContainer.initialize();
+    clientContainer.initialize();
+    //when endpoint receives signal, it replies with a huge reply
+    mockEndpointSignal(createBigResponse());
+    //mock client handling of response
+    Future<List<TestMessage>> response = mockReceiveResponse();
+
+    //do request
+    requestSink.signal(new TestMessage("request"), requestContext, 10000);
+    //wait for replies
+    assertEquals(1, response.get(1000, TimeUnit.MILLISECONDS).size());
   }
 
   @Test

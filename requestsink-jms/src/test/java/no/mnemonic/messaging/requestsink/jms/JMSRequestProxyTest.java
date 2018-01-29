@@ -13,7 +13,6 @@ import org.mockito.MockitoAnnotations;
 import javax.jms.*;
 import javax.naming.NamingException;
 import java.io.IOException;
-import java.util.Arrays;
 import java.util.Date;
 import java.util.List;
 import java.util.concurrent.*;
@@ -304,15 +303,14 @@ public class JMSRequestProxyTest extends AbstractJMSRequestTest {
     return responseQueue;
   }
 
-  private void createContainer(JMSConnection connection) {
-    container = ComponentContainer.create(requestProxy, connection);
+  private void createContainer() {
+    container = ComponentContainer.create(requestProxy);
     container.initialize();
   }
 
-  private void setupProxy(JMSConnection connection, String queueName) {
+  private void setupProxy(String queueName) {
     //set up request sink pointing at a vm-local topic
-    requestProxy = JMSRequestProxy.builder()
-            .addConnection(connection)
+    requestProxy = addConnection(JMSRequestProxy.builder())
             .setDestinationName(queueName)
             .setRequestSink(endpoint)
             .setMaxMessageSize(1000)
@@ -321,14 +319,13 @@ public class JMSRequestProxyTest extends AbstractJMSRequestTest {
 
   private void setupEnvironment() throws NamingException, JMSException, InterruptedException, ExecutionException, TimeoutException {
     //set up a real JMS connection to a vm-local activemq
-    JMSConnection connection = createConnection();
     String queueName = "dynamicQueues/" + generateCookie(10);
 
-    setupProxy(connection, queueName);
+    setupProxy(queueName);
     Future<Void> proxyConnected = listenForProxyConnection();
-    createContainer(connection);
+    createContainer();
 
-    session = createSession(false);
+    session = createSession();
     queue = createDestination(queueName);
     //wait for proxy to connect
     proxyConnected.get(1000, TimeUnit.MILLISECONDS);

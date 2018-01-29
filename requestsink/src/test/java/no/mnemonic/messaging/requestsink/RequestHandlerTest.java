@@ -209,12 +209,12 @@ public class RequestHandlerTest {
 
   @Test
   public void testWaitForEndOfStreamKeepAliveNotEnabled() throws InterruptedException, ExecutionException, TimeoutException {
-    RequestHandler handler = new RequestHandler(false, "callid", 100);
+    RequestHandler handler = new RequestHandler(false, "callid", 500);
     //wait for end of stream, wait at most 100ms before closing
-    Future<Boolean> msg = executor.submit(() -> handler.waitForEndOfStream(100));
+    Future<Boolean> msg = executor.submit(() -> handler.waitForEndOfStream(500));
     assertFalse(msg.isDone());
     //send a keepalive to handler, which should be ignored (allowKeepAlive is false)
-    handler.keepAlive(System.currentTimeMillis() + 200);
+    assertFalse(handler.keepAlive(System.currentTimeMillis() + 1000));
     //when waitForEndOfStream resolves, it should return true (channel was closed anyway)
     assertTrue(msg.get(1000, TimeUnit.MILLISECONDS));
   }

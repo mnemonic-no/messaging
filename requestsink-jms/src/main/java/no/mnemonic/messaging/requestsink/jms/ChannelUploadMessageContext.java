@@ -45,10 +45,6 @@ class ChannelUploadMessageContext implements RequestContext {
     assertNotNull(session, "Session not provided");
     assertNotNull(uploadChannel, "UploadChannel not provided");
 
-    if (LOGGER.isDebug()) {
-      LOGGER.debug(String.format("Initializing channel upload for callID %s to destination %s", callID, uploadChannel));
-    }
-
     //create producer to send fragments
     try (MessageProducer producer = session.createProducer(uploadChannel)) {
 
@@ -62,6 +58,9 @@ class ChannelUploadMessageContext implements RequestContext {
           fragment.setLongProperty(JMSRequestProxy.PROPERTY_REQ_TIMEOUT, clock.millis() + KEEPALIVE_PERIOD);
           //send fragment to upload channel
           producer.send(uploadChannel, fragment);
+          if (LOGGER.isDebug()) {
+            LOGGER.debug(">> upload fragment [callID=%s idx=%d size=%d]", callID, idx, data.length);
+          }
         }
 
         @Override
@@ -76,7 +75,7 @@ class ChannelUploadMessageContext implements RequestContext {
           //send EOS
           producer.send(uploadChannel, eos);
           if (LOGGER.isDebug()) {
-            LOGGER.debug(String.format("Completed sending %d fragments for callID %s", fragments, callID));
+            LOGGER.debug(">> upload EOF [callID=%s fragments=%d]", callID, fragments);
           }
         }
       });

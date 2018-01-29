@@ -177,12 +177,6 @@ class JMSUtils {
     }
   }
 
-  static void removeExceptionListener(JMSConnection connection, ExceptionListener listener) {
-    assertNotNull(connection, "Connection not set");
-    assertNotNull(listener, "Listener not set");
-    tryTo(() -> connection.removeExceptionListener(listener), e -> LOGGER.warning(e, "Could not deregister exception listener"));
-  }
-
   static byte[] serialize(Serializable object) throws IOException {
     assertNotNull(object, "Object not set");
     ByteArrayOutputStream baos = new ByteArrayOutputStream();

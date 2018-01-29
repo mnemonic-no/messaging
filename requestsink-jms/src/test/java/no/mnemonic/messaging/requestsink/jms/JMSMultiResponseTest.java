@@ -49,22 +49,19 @@ public class JMSMultiResponseTest extends AbstractJMSRequestTest {
   public void setUp() throws Exception {
     MockitoAnnotations.initMocks(this);
 
-    JMSConnection connection = createConnection();
     String queueName = "dynamicQueues/" + generateCookie(10);
 
-    requestSink = JMSRequestSink.builder()
-            .addConnection(connection)
+    requestSink = addConnection(JMSRequestSink.builder())
             .setDestinationName(queueName)
             .build();
 
     //set up request sink pointing at a vm-local topic
-    requestProxy = JMSRequestProxy.builder()
-            .addConnection(connection)
+    requestProxy = addConnection(JMSRequestProxy.builder())
             .setDestinationName(queueName)
             .setRequestSink(endpoint)
             .build();
 
-    container = ComponentContainer.create(connection, requestProxy, requestSink);
+    container = ComponentContainer.create(requestProxy, requestSink);
     container.initialize();
 
     //mock common

@@ -58,11 +58,11 @@ abstract class AbstractJMSRequestTest {
     return msg;
   }
 
-  Session createSession(boolean transacted) throws NamingException, JMSException {
+  Session createSession() throws NamingException, JMSException {
     ConnectionFactory connectionFactory = (ConnectionFactory) createInitialContext().lookup("ConnectionFactory");
     testConnection = connectionFactory.createConnection();
     testConnection.start();
-    return testConnection.createSession(transacted, transacted ? Session.SESSION_TRANSACTED : Session.AUTO_ACKNOWLEDGE);
+    return testConnection.createSession(false, Session.AUTO_ACKNOWLEDGE);
   }
 
   Destination createDestination(String name) throws NamingException {
@@ -72,7 +72,7 @@ abstract class AbstractJMSRequestTest {
   private InitialContext createInitialContext() throws NamingException {
     Hashtable<String, String> env = new Hashtable<>();
     env.put(InitialContext.INITIAL_CONTEXT_FACTORY, "org.apache.activemq.jndi.ActiveMQInitialContextFactory");
-    env.put(InitialContext.PROVIDER_URL, "vm://localhost?broker.persistent=false");
+    env.put(InitialContext.PROVIDER_URL, "vm://localhost?broker.persistent=false&broker.useJmx=false");
     //noinspection unchecked
     env.put("trustAllPackages", "true");
     return new InitialContext(env);
@@ -90,15 +90,12 @@ abstract class AbstractJMSRequestTest {
     return new String(buf.array());
   }
 
-  JMSConnection createConnection() {
+  <T extends JMSBase.BaseBuilder<T>> T addConnection(T builder) {
     //set up a real JMS connection to a vm-local activemq
-    return JMSConnectionImpl.builder()
+    return builder
             .setContextFactoryName("org.apache.activemq.jndi.ActiveMQInitialContextFactory")
-            .setContextURL("vm://localhost?broker.persistent=false")
+            .setContextURL("vm://localhost?broker.persistent=false&broker.useJmx=false")
             .setConnectionFactoryName("ConnectionFactory")
-            .setProperty("trustAllPackages", "true")
-            .build();
+            .setConnectionProperty("trustAllPackages", "true");
   }
-
-
 }

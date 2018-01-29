@@ -39,23 +39,19 @@ public class JMSRequestSinkProxyTest extends AbstractJMSRequestTest {
     queueName = "dynamicQueues/" + generateCookie(10);
 
     //set up request sink pointing at a vm-local topic
-    JMSConnection clientConnection = createConnection();
-    requestSink = JMSRequestSink.builder()
-            .addConnection(clientConnection)
+    requestSink = addConnection(JMSRequestSink.builder())
             .setDestinationName(queueName)
             .build();
 
     //set up request proxy listening to the vm-local topic, and pointing to mock endpoint
-    JMSConnection serverConnection = createConnection();
-    requestProxy = JMSRequestProxy.builder()
-            .addConnection(serverConnection)
+    requestProxy = addConnection(JMSRequestProxy.builder())
             .setMaxMessageSize(1000)
             .setDestinationName(queueName)
             .setRequestSink(endpoint)
             .build();
 
-    clientContainer = ComponentContainer.create(requestSink, clientConnection);
-    serverContainer = ComponentContainer.create(requestProxy, serverConnection);
+    clientContainer = ComponentContainer.create(requestSink);
+    serverContainer = ComponentContainer.create(requestProxy);
   }
 
   @After
@@ -73,7 +69,7 @@ public class JMSRequestSinkProxyTest extends AbstractJMSRequestTest {
     Future<List<TestMessage>> response = mockReceiveResponse();
     //when endpoint receives signal, it replies with a single reply, before closing channel
     mockEndpointSignal(new TestMessage("reply"));
-    //whenever SignalContext.isClosed() is called, return the state of the AtomicBoolean
+    //whenever SignalContext.isClientClosed() is called, return the state of the AtomicBoolean
     when(requestContext.isClosed()).thenAnswer(i -> response.isDone());
 
     requestSink.signal(new TestMessage("request"), requestContext, 10000);
@@ -122,32 +118,18 @@ public class JMSRequestSinkProxyTest extends AbstractJMSRequestTest {
   }
 
   @Test
-  public void testInvalidation() throws InterruptedException {
-    serverContainer.initialize();
-    clientContainer.initialize();
-    requestProxy.invalidate();
-    assertFalse(requestProxy.hasSession());
-    Thread.sleep(1500);
-    //requestProxy.setDestinationName("dynamicTopics/testtopic");
-    Thread.sleep(1500);
-    assertTrue(requestProxy.hasSession());
-  }
-
-  @Test
   public void testChannelUpload() throws InterruptedException, TimeoutException, ExecutionException {
     serverContainer.initialize();
 
     //set up request sink pointing at a vm-local topic
-    JMSConnection clientConnection = createConnection();
-    requestSink = JMSRequestSink.builder()
-            .addConnection(clientConnection)
+    requestSink = addConnection(JMSRequestSink.builder())
             .setDestinationName(queueName)
             //set protocol V16 to enable channel upload
             .setProtocolVersion(ProtocolVersion.V1)
             //set max message size to 100 bytes, to force channel upload with message fragments
             .setMaxMessageSize(100)
             .build();
-    clientContainer = ComponentContainer.create(requestSink, clientConnection);
+    clientContainer = ComponentContainer.create(requestSink);
     clientContainer.initialize();
 
     //send message bigger than max message size
@@ -171,7 +153,7 @@ public class JMSRequestSinkProxyTest extends AbstractJMSRequestTest {
     mockEndpointSignal(new TestMessage("reply1"), new TestMessage("reply2"), new TestMessage("reply3"));
     //mock client handling of response
     Future<List<TestMessage>> response = mockReceiveResponse();
-    //whenever SignalContext.isClosed() is called, return the state of the AtomicBoolean
+    //whenever SignalContext.isClientClosed() is called, return the state of the AtomicBoolean
     when(requestContext.isClosed()).thenAnswer(i -> response.isDone());
 
     //do request

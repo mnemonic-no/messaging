@@ -32,16 +32,14 @@ public class JMSRequestSinkTest extends AbstractJMSRequestTest {
 
   private Future<Void> endOfStream;
   private BlockingQueue<Message> queue;
-  private JMSConnection connection;
   private String queueName;
 
   @Before
   public void setUp() throws Exception {
     MockitoAnnotations.initMocks(this);
 
-    connection = createConnection();
     queueName = "dynamicQueues/" + generateCookie(10);
-    session = createSession(false);
+    session = createSession();
     endOfStream = expectEndOfStream();
     queue = receiveFrom(queueName);
   }
@@ -198,13 +196,12 @@ public class JMSRequestSinkTest extends AbstractJMSRequestTest {
   }
 
   private void setupSinkAndContainer(int maxMessageSize, ProtocolVersion protocolVersion) {
-    requestSink = JMSRequestSink.builder()
-            .addConnection(connection)
+    requestSink = addConnection(JMSRequestSink.builder())
             .setDestinationName(queueName)
             .setProtocolVersion(protocolVersion)
             .setMaxMessageSize(maxMessageSize)
             .build();
-    container = ComponentContainer.create(requestSink, connection);
+    container = ComponentContainer.create(requestSink);
     container.initialize();
   }
 

@@ -4,9 +4,8 @@ import no.mnemonic.commons.component.Dependency;
 import no.mnemonic.commons.logging.Logger;
 import no.mnemonic.commons.logging.Logging;
 import no.mnemonic.commons.utilities.ClassLoaderContext;
-import no.mnemonic.commons.utilities.collections.CollectionUtils;
-import no.mnemonic.commons.utilities.collections.ListUtils;
 import no.mnemonic.commons.utilities.collections.SetUtils;
+import no.mnemonic.commons.utilities.lambda.LambdaUtils;
 import no.mnemonic.messaging.requestsink.Message;
 import no.mnemonic.messaging.requestsink.RequestSink;
 
@@ -17,23 +16,19 @@ import javax.jms.MessageListener;
 import javax.naming.NamingException;
 import java.io.IOException;
 import java.util.HashSet;
-import java.util.List;
 import java.util.Map;
 import java.util.Set;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
-import java.util.concurrent.Semaphore;
+import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.LongAdder;
 
 /**
  * A JMSRequestProxy is the listener component handling messages sent from a
  * {@link JMSRequestSink}, dispatching them to the configured {@link RequestSink}.
- *
+ * <p>
  * The JMSRequestProxy listens to messages on a JMS queue or topic, and will
  * unpack the message, signal the downstream RequestSink, and handle any replies.
- *
+ * <p>
  * Each request will be run in a separate thread, and the <code>maxConcurrentCalls</code> parameter
  * puts a limit on the maximum requests being handled. If more messages are sent to the JMS queue, these will
  * not be consumed by the JMS Request Sink until a thread is available.
@@ -43,33 +38,10 @@ public class JMSRequestProxy extends JMSBase implements MessageListener, Excepti
 
   private static final Logger LOGGER = Logging.getLogger(JMSRequestProxy.class);
 
-  static final String PROPERTY_MESSAGE_TYPE = "MessageType";
-  static final String MESSAGE_TYPE_STREAM_CLOSED = "JMSStreamClosed";
-  static final String MESSAGE_TYPE_END_OF_FRAGMENTED_MESSAGE = "JMSFragmentedMessageEnd";
-  static final String MESSAGE_TYPE_EXCEPTION = "JMSException";
-  static final String MESSAGE_TYPE_SIGNAL = "JMSSignal";
-  static final String MESSAGE_TYPE_CHANNEL_REQUEST = "JMSChannelRequest";
-  static final String MESSAGE_TYPE_CHANNEL_SETUP = "JMSChannelSetup";
-  static final String MESSAGE_TYPE_SIGNAL_FRAGMENT = "JMSSignalFragment";
-  static final String MESSAGE_TYPE_SIGNAL_RESPONSE = "JMSSignalResponse";
-  static final String MESSAGE_TYPE_EXTEND_WAIT = "JMSExtendWait";
-  static final String PROPERTY_REQ_TIMEOUT = "RequestTimeout";
-  static final String PROPERTY_FRAGMENTS_TOTAL = "TotalFragments";
-  static final String PROPERTY_FRAGMENTS_IDX = "FragmentIndex";
-  static final String PROPERTY_RESPONSE_ID = "ResponseID";
-  static final String PROPERTY_DATA_CHECKSUM_MD5 = "DataChecksumMD5";
-
   static final int DEFAULT_MAX_CONCURRENT_CALLS = 10;
-  static final int DEFAULT_MAX_RECONNECT_TIME = 3600000;
-  static final int DEFAULT_MAX_MAX_MESSAGE_SIZE = 100000;
-  static final int DEFAULT_TTL = 1000;
-  static final int DEFAULT_PRIORITY = 1;
-  static final int MINIMUM_RECONNECT_TIME = 1000;
 
   // properties
-  private final long maxReconnectTime;
-  private final int maxConcurrentCalls;
-  private final int maxMessageSize;
+
   @Dependency
   private final RequestSink requestSink;
 
@@ -81,26 +53,37 @@ public class JMSRequestProxy extends JMSBase implements MessageListener, Excepti
   private final LongAdder totalCallsCounter = new LongAdder();
   private final LongAdder ignoredCallsCounter = new LongAdder();
   private final LongAdder errorCallsCounter = new LongAdder();
-  private final LongAdder reconnectCounter = new LongAdder();
+  private final ExecutorService executor;
 
   private final Set<JMSRequestProxyConnectionListener> connectionListeners = new HashSet<>();
 
-  private JMSRequestProxy(List<JMSConnection> connections, String destinationName,
-                          int timeToLive, int priority, int maxConcurrentCalls,
-                          long maxReconnectTime, int maxMessageSize, RequestSink requestSink) {
-    super(connections, destinationName, false, timeToLive,
-            priority, false, false);
-    this.maxReconnectTime = maxReconnectTime;
-    this.maxMessageSize = maxMessageSize;
+  private JMSRequestProxy(String contextFactoryName, String contextURL, String connectionFactoryName,
+                          String username, String password, Map<String, String> connectionProperties,
+                          String destinationName, int priority, int maxConcurrentCalls,
+                          int maxMessageSize, RequestSink requestSink) {
+    super(contextFactoryName, contextURL, connectionFactoryName,
+            username, password, connectionProperties, destinationName,
+            priority, maxMessageSize);
+
+    if (requestSink == null) throw new IllegalArgumentException("No requestSink provided");
+    if (maxConcurrentCalls < 1)
+      throw new IllegalArgumentException("maxConcurrentCalls cannot be lower than 1");
     this.requestSink = requestSink;
-    this.maxConcurrentCalls = maxConcurrentCalls;
+    this.executor = Executors.newFixedThreadPool(
+            maxConcurrentCalls,
+            new ThreadFactoryBuilder().setNamePrefix("JMSRequestProxy").build()
+            );
     this.semaphore = new Semaphore(maxConcurrentCalls);
   }
 
   @Override
   public void startComponent() {
-    super.startComponent();
-    reconnectInSeparateThread();
+    try {
+      getMessageConsumer().setMessageListener(this);
+      SetUtils.set(connectionListeners).forEach(l -> l.connected(this));
+    } catch (JMSException | NamingException e) {
+      throw new IllegalStateException(e);
+    }
   }
 
   @Override
@@ -108,38 +91,23 @@ public class JMSRequestProxy extends JMSBase implements MessageListener, Excepti
     try {
       //stop accepting messages
       getMessageConsumer().setMessageListener(null);
-      long timeout = System.currentTimeMillis() + 10000;
-      //wait for all current calls to end
-      while (System.currentTimeMillis() < timeout && semaphore.availablePermits() < maxConcurrentCalls) {
-        LOGGER.info("Waiting for all requests to finish...");
-        Thread.sleep(1000);
-      }
-      if (semaphore.availablePermits() < maxConcurrentCalls) {
-        LOGGER.info("Still %d unfinished requests, forcing shutdown", (maxConcurrentCalls - semaphore.availablePermits()));
-      }
+      //stop executor
+      executor.shutdown();
+      //wait for ongoing requests to finish
+      LambdaUtils.tryTo(
+              ()->executor.awaitTermination(10, TimeUnit.SECONDS),
+              e->LOGGER.warning("Error waiting for executor termination")
+      );
     } catch (Exception e) {
-      LOGGER.warning(e, "Error deregistering message listener");
+      LOGGER.warning(e, "Error stopping request proxy");
     }
-
     //now do cleanup of resources
     super.stopComponent();
   }
 
-  @Override
-  public void invalidate() {
-    try {
-      super.invalidate();
-    } catch (Exception e) {
-      LOGGER.error(e, "Error in invalidate()");
-    }
-    reconnectInSeparateThread();
-  }
-
   public void onException(JMSException e) {
-    //tear down connection
     errorCallsCounter.increment();
-    LOGGER.error(e, "Caught error");
-    invalidateInSeparateThread();
+    super.onException(e);
   }
 
   @SuppressWarnings("WeakerAccess")
@@ -153,23 +121,6 @@ public class JMSRequestProxy extends JMSBase implements MessageListener, Excepti
   }
 
   //private and protected methods
-
-  @Override
-  ExecutorService createExecutor() {
-    return Executors.newFixedThreadPool(maxConcurrentCalls);
-  }
-
-  private void reconnectInSeparateThread() {
-    if (isReconnecting()) return;
-    runInSeparateThread(() -> doReconnect(maxReconnectTime, this, this));
-  }
-
-  @Override
-  void doReconnect(long maxReconnectTime, MessageListener messageListener, ExceptionListener exceptionListener) {
-    reconnectCounter.increment();
-    super.doReconnect(maxReconnectTime, messageListener, exceptionListener);
-    SetUtils.set(connectionListeners).forEach(l -> l.connected(this));
-  }
 
   /**
    * Processor method, handles an incoming message by forking up a new handler thread
@@ -193,20 +144,24 @@ public class JMSRequestProxy extends JMSBase implements MessageListener, Excepti
         return;
       }
 
+      String messageType = message.getStringProperty(PROPERTY_MESSAGE_TYPE);
+      if (LOGGER.isDebug()) {
+        LOGGER.debug("<< process [callID=%s type=%s]", message.getJMSCorrelationID(), messageType);
+      }
+
       //avoid enqueueing a lot of messages into the executor queue, we rather want them to stay in JMS
       //if semaphore is depleted, this should block the activemq consumer, causing messages to queue up in JMS
       semaphore.acquire();
-      runInSeparateThread(() -> doProcessMessage(message, timeout));
-    } catch (Throwable e) {
+      executor.submit(() -> doProcessMessage(message, messageType, timeout));
+    } catch (Exception e) {
       errorCallsCounter.increment();
       LOGGER.warning(e, "Error handling message");
     }
   }
 
-  private void doProcessMessage(javax.jms.Message message, long timeout) {
+  private void doProcessMessage(javax.jms.Message message, String messageType, long timeout) {
     try {
       // get reply address and call lifetime
-      String messageType = message.getStringProperty(PROPERTY_MESSAGE_TYPE);
       if (MESSAGE_TYPE_SIGNAL.equals(messageType)) {
         handleSignalMessage(message, timeout);
       } else if (MESSAGE_TYPE_CHANNEL_REQUEST.equals(messageType)) {
@@ -215,11 +170,14 @@ public class JMSRequestProxy extends JMSBase implements MessageListener, Excepti
         ignoredCallsCounter.increment();
         LOGGER.warning("Ignoring unrecognized request type: " + messageType);
       }
-    } catch (Throwable e) {
+    } catch (Exception e) {
       errorCallsCounter.increment();
       LOGGER.error(e, "Error handling JMS call");
     } finally {
       semaphore.release();
+      if (LOGGER.isDebug()) {
+        LOGGER.debug("# end process [type=%s]", messageType);
+      }
     }
   }
 
@@ -231,6 +189,9 @@ public class JMSRequestProxy extends JMSBase implements MessageListener, Excepti
       if (LOGGER.isDebug())
         LOGGER.debug("Request without return information ignored: " + message);
       return;
+    }
+    if (LOGGER.isDebug()) {
+      LOGGER.debug("<< handleSignal [callID=%s]", message.getJMSCorrelationID());
     }
     // create a response context to handle response messages
     ServerResponseContext ctx = setupServerContext(callID, responseDestination, timeout, JMSUtils.getProtocolVersion(message));
@@ -251,12 +212,15 @@ public class JMSRequestProxy extends JMSBase implements MessageListener, Excepti
       ignoredCallsCounter.increment();
       return;
     }
+    if (LOGGER.isDebug()) {
+      LOGGER.debug("<< channelRequest [callID=%s]", message.getJMSCorrelationID());
+    }
     setupChannel(callID, responseDestination, timeout, JMSUtils.getProtocolVersion(message));
   }
 
   private void handleChannelUploadCompleted(String callID, byte[] data, Destination replyTo, long timeout, ProtocolVersion protocolVersion) throws IOException, ClassNotFoundException, JMSException, NamingException {
     // create a response context to handle response messages
-    ServerResponseContext r = new ServerResponseContext(callID, getSession(), replyTo, timeout, protocolVersion, maxMessageSize);
+    ServerResponseContext r = new ServerResponseContext(callID, getSession(), replyTo, timeout, protocolVersion, getMaxMessageSize());
     // overwrite channel upload context with a server response context
     calls.put(callID, r);
     //send uploaded signal to requestSink
@@ -295,7 +259,7 @@ public class JMSRequestProxy extends JMSBase implements MessageListener, Excepti
     ServerContext ctx = calls.get(callID);
     if (ctx != null) return (ServerResponseContext) ctx;
     //create new response context
-    ServerResponseContext context = new ServerResponseContext(callID, getSession(), replyTo, timeout, protocolVersion, maxMessageSize);
+    ServerResponseContext context = new ServerResponseContext(callID, getSession(), replyTo, timeout, protocolVersion, getMaxMessageSize());
     // register this responsesink
     calls.put(callID, context);
     // and return it
@@ -327,16 +291,10 @@ public class JMSRequestProxy extends JMSBase implements MessageListener, Excepti
   }
 
   @SuppressWarnings({"WeakerAccess", "unused"})
-  public static class Builder {
+  public static class Builder extends JMSBase.BaseBuilder<Builder> {
 
-    private List<JMSConnection> connections;
     private RequestSink requestSink;
-    private String destinationName;
-    private int timeToLive = DEFAULT_TTL;
-    private int maxMessageSize = DEFAULT_MAX_MAX_MESSAGE_SIZE;
-    private int priority = DEFAULT_PRIORITY;
     private int maxConcurrentCalls = DEFAULT_MAX_CONCURRENT_CALLS;
-    private long maxReconnectTime = DEFAULT_MAX_RECONNECT_TIME; //1 hour default;
 
     private Builder() {
     }
@@ -344,37 +302,15 @@ public class JMSRequestProxy extends JMSBase implements MessageListener, Excepti
     //fields
 
     public JMSRequestProxy build() {
-      if (CollectionUtils.isEmpty(connections)) throw new IllegalArgumentException("No connections defined");
-      if (requestSink == null) throw new IllegalArgumentException("No requestSink provided");
-      if (destinationName == null) throw new IllegalArgumentException("No destination name provided");
-      if (maxConcurrentCalls < 1)
-        throw new IllegalArgumentException("maxConcurrentCalls cannot be lower than 1");
-      if (maxMessageSize < 1)
-        throw new IllegalArgumentException("maxMessageSize cannot be lower than 1");
-      if (maxReconnectTime < MINIMUM_RECONNECT_TIME)
-        throw new IllegalArgumentException("Invalid value for maxReconnectTime, proxy will not be able to connect");
-      return new JMSRequestProxy(connections, destinationName, timeToLive, priority, maxConcurrentCalls, maxReconnectTime, maxMessageSize, requestSink);
+      return new JMSRequestProxy(contextFactoryName, contextURL, connectionFactoryName, username, password,
+              connectionProperties, destinationName, priority, maxConcurrentCalls, maxMessageSize, requestSink);
     }
 
     //setters
 
-    public Builder setMaxMessageSize(int maxMessageSize) {
-      this.maxMessageSize = maxMessageSize;
-      return this;
-    }
 
     public Builder setMaxConcurrentCalls(int maxConcurrentCalls) {
       this.maxConcurrentCalls = maxConcurrentCalls;
-      return this;
-    }
-
-    public Builder addConnection(JMSConnection c) {
-      this.connections = ListUtils.addToList(this.connections, c);
-      return this;
-    }
-
-    public Builder setConnections(List<JMSConnection> connections) {
-      this.connections = connections;
       return this;
     }
 
@@ -382,28 +318,7 @@ public class JMSRequestProxy extends JMSBase implements MessageListener, Excepti
       this.requestSink = requestSink;
       return this;
     }
-
-    public Builder setDestinationName(String destinationName) {
-      this.destinationName = destinationName;
-      return this;
-    }
-
-    public Builder setTimeToLive(int timeToLive) {
-      this.timeToLive = timeToLive;
-      return this;
-    }
-
-    public Builder setPriority(int priority) {
-      this.priority = priority;
-      return this;
-    }
-
-    public Builder setMaxReconnectTime(long maxReconnectTime) {
-      this.maxReconnectTime = maxReconnectTime;
-      return this;
-    }
   }
-
 
   //accessors
 

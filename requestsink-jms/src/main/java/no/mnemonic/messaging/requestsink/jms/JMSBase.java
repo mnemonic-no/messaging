@@ -1,72 +1,106 @@
 package no.mnemonic.messaging.requestsink.jms;
 
-import no.mnemonic.commons.component.Dependency;
 import no.mnemonic.commons.component.LifecycleAspect;
 import no.mnemonic.commons.logging.Logger;
 import no.mnemonic.commons.logging.Logging;
 import no.mnemonic.commons.utilities.AppendMembers;
 import no.mnemonic.commons.utilities.AppendUtils;
-import no.mnemonic.commons.utilities.lambda.LambdaUtils;
+import no.mnemonic.commons.utilities.StringUtils;
+import no.mnemonic.commons.utilities.collections.MapUtils;
 import no.mnemonic.messaging.requestsink.MessagingException;
 
 import javax.jms.*;
+import javax.naming.InitialContext;
 import javax.naming.NamingException;
 import java.lang.IllegalStateException;
-import java.util.List;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
-import java.util.concurrent.TimeUnit;
-import java.util.concurrent.atomic.*;
+import java.util.HashMap;
+import java.util.Hashtable;
+import java.util.Map;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
 
 @SuppressWarnings({"ClassReferencesSubclass"})
-public abstract class JMSBase implements LifecycleAspect, AppendMembers {
+public abstract class JMSBase implements LifecycleAspect, AppendMembers, ExceptionListener {
 
   private static final Logger LOGGER = Logging.getLogger(JMSBase.class);
 
+  static final int DEFAULT_MAX_MAX_MESSAGE_SIZE = 100000;
+  static final int DEFAULT_PRIORITY = 1;
   static final String PROTOCOL_VERSION_KEY = "ArgusMessagingProtocol";
+  static final String PROPERTY_MESSAGE_TYPE = "MessageType";
+  static final String MESSAGE_TYPE_STREAM_CLOSED = "JMSStreamClosed";
+  static final String MESSAGE_TYPE_END_OF_FRAGMENTED_MESSAGE = "JMSFragmentedMessageEnd";
+  static final String MESSAGE_TYPE_EXCEPTION = "JMSException";
+  static final String MESSAGE_TYPE_SIGNAL = "JMSSignal";
+  static final String MESSAGE_TYPE_CHANNEL_REQUEST = "JMSChannelRequest";
+  static final String MESSAGE_TYPE_CHANNEL_SETUP = "JMSChannelSetup";
+  static final String MESSAGE_TYPE_SIGNAL_FRAGMENT = "JMSSignalFragment";
+  static final String MESSAGE_TYPE_SIGNAL_RESPONSE = "JMSSignalResponse";
+  static final String MESSAGE_TYPE_EXTEND_WAIT = "JMSExtendWait";
+  static final String PROPERTY_REQ_TIMEOUT = "RequestTimeout";
+  static final String PROPERTY_FRAGMENTS_TOTAL = "TotalFragments";
+  static final String PROPERTY_FRAGMENTS_IDX = "FragmentIndex";
+  static final String PROPERTY_RESPONSE_ID = "ResponseID";
+  static final String PROPERTY_DATA_CHECKSUM_MD5 = "DataChecksumMD5";
 
+  private static final String ERROR_CLOSED = "closed";
 
   // common properties
 
-  @Dependency
-  private final List<JMSConnection> connections;
+  private final String contextFactoryName;
+  private final String contextURL;
+  private final String connectionFactoryName;
+  private final String username;
+  private final String password;
+  private final Map<String, String> connectionProperties;
   private final String destinationName;
-  private final boolean transacted;
-  private final boolean temporary;
-  private final int timeToLive;
   private final int priority;
-  private final boolean persistent;
+  private final int maxMessageSize;
 
   // variables
 
-  private final LongAdder errorCount = new LongAdder();
+  private final AtomicReference<InitialContext> initialContext = new AtomicReference<>();
   private final AtomicBoolean closed = new AtomicBoolean();
-  private final AtomicBoolean invalidating = new AtomicBoolean();
-  private final AtomicInteger connectionPointer = new AtomicInteger();
-  private final AtomicLong lastFailbackTime = new AtomicLong();
-
-  private final AtomicReference<JMSConnection> activeConnection = new AtomicReference<>();
+  private final AtomicReference<Connection> connection = new AtomicReference<>();
   private final AtomicReference<Session> session = new AtomicReference<>();
-  private final AtomicReference<Message> latestMessage = new AtomicReference<>();
   private final AtomicReference<Destination> destination = new AtomicReference<>();
   private final AtomicReference<MessageConsumer> consumer = new AtomicReference<>();
   private final AtomicReference<MessageProducer> producer = new AtomicReference<>();
-  private final AtomicReference<Thread> reconnectingThread = new AtomicReference<>();
-
-  private final AtomicReference<ExecutorService> executor = new AtomicReference<>();
-
 
   // ************************* constructors ********************************
 
-  JMSBase(List<JMSConnection> connections, String destinationName, boolean transacted,
-          int timeToLive, int priority, boolean persistent, boolean temporary) {
-    this.connections = connections;
+  JMSBase(String contextFactoryName, String contextURL, String connectionFactoryName,
+          String username, String password, Map<String, String> connectionProperties,
+          String destinationName, int priority, int maxMessageSize) {
+
+    if (StringUtils.isBlank(contextFactoryName)) {
+      throw new IllegalArgumentException("contextFactoryName not set");
+    }
+    if (StringUtils.isBlank(contextURL)) {
+      throw new IllegalArgumentException("contextURL not set");
+    }
+    if (StringUtils.isBlank(connectionFactoryName)) {
+      throw new IllegalArgumentException("connectionFactoryName not set");
+    }
+    if (destinationName == null) {
+      throw new IllegalArgumentException("No destination name provided");
+    }
+    if (maxMessageSize < 1) {
+      throw new IllegalArgumentException("maxMessageSize cannot be lower than 1");
+    }
+    if (priority < 1) {
+      throw new IllegalArgumentException("priority cannot be lower than 1");
+    }
+
+    this.contextFactoryName = contextFactoryName;
+    this.contextURL = contextURL;
+    this.connectionFactoryName = connectionFactoryName;
+    this.username = username;
+    this.password = password;
+    this.connectionProperties = connectionProperties;
     this.destinationName = destinationName;
-    this.transacted = transacted;
-    this.timeToLive = timeToLive;
     this.priority = priority;
-    this.persistent = persistent;
-    this.temporary = temporary;
+    this.maxMessageSize = maxMessageSize;
   }
 
   // ************************ interface methods ***********************************
@@ -74,11 +108,10 @@ public abstract class JMSBase implements LifecycleAspect, AppendMembers {
 
   @Override
   public void appendMembers(StringBuilder buf) {
+    AppendUtils.appendField(buf, "contextURL", contextURL);
+    AppendUtils.appendField(buf, "connectionFactoryName", connectionFactoryName);
     AppendUtils.appendField(buf, "destinationName", destinationName);
     AppendUtils.appendField(buf, "priority", priority);
-    AppendUtils.appendField(buf, "timeToLive", timeToLive);
-    AppendUtils.appendField(buf, "temporary", temporary);
-    AppendUtils.appendField(buf, "persistent", persistent);
   }
 
   @Override
@@ -87,51 +120,33 @@ public abstract class JMSBase implements LifecycleAspect, AppendMembers {
   }
 
   @Override
-  public void startComponent() {
-    this.executor.set(createExecutor());
-  }
-
-  @Override
   public void stopComponent() {
     closed.set(true);
     closeAllResources();
-    executor.get().shutdown();
-    LambdaUtils.tryTo(() -> executor.get().awaitTermination(10, TimeUnit.SECONDS));
-  }
-
-  // other public methods
-
-  public void invalidate() {
-    //if another thread is doing reconnect, do not interfere!
-    if (reconnectingThread.get() != null && reconnectingThread.get() != Thread.currentThread()) return;
-    //if someone else is already invalidating, leave it
-    if (!invalidating.compareAndSet(false, true)) return;
-    try {
-      //don`t do invalidation if not connected
-      LOGGER.info("Invalidating client: %s (%s)", getClass().getSimpleName(), getDestinationName());
-      closeAllResources();
-    } finally {
-      invalidating.set(false);
-    }
   }
 
   public boolean isClosed() {
     return closed.get();
   }
 
+  public int getMaxMessageSize() {
+    return maxMessageSize;
+  }
+
   // ******************** protected and private methods ***********************
 
-  ExecutorService createExecutor() {
-    return Executors.newSingleThreadExecutor();
+  @Override
+  public void onException(JMSException e) {
+    LOGGER.warning(e, "Exception received");
   }
 
   private void closeAllResources() {
     try {
       // try to nicely shut down all resources
-      executeAndReset(activeConnection, c -> c.deregister(this), "Error deregistering connection");
       executeAndReset(consumer, MessageConsumer::close, "Error closing consumer");
       executeAndReset(producer, MessageProducer::close, "Error closing producer");
       executeAndReset(session, Session::close, "Error closing session");
+      executeAndReset(connection, Connection::close, "Error closing connection");
     } finally {
       resetState();
     }
@@ -148,98 +163,89 @@ public abstract class JMSBase implements LifecycleAspect, AppendMembers {
     }
   }
 
-  void doReconnect(long maxReconnectTime, MessageListener messageListener, ExceptionListener exceptionListener) {
-    //if someone else is already reconnecting, drop this
-    if (!reconnectingThread.compareAndSet(null, Thread.currentThread())) return;
-    try {
-      long timeout = System.currentTimeMillis() + maxReconnectTime;
-      //retry until successful or timeout occurs (or component is shut down
-      while (!isClosed() && System.currentTimeMillis() < timeout) {
-        try {
-          getMessageConsumer().setMessageListener(messageListener);
-          getConnection().addExceptionListener(exceptionListener);
-          LOGGER.info("Reconnected JMS proxy to %s/%s", getConnection(), getDestinationName());
-          return;
-        } catch (Exception ex) {
-          LOGGER.error(ex, "Error in reconnect");
-          closeAllResources();
-        }
-        //sleep between attempts
-        try {
-          Thread.sleep(1000);
-        } catch (Exception ignored) {
-        }
-      }
-      //no luck in reconnect, shut down
-      LOGGER.warning("Timeout in reconnect(), shutting down");
-      stopComponent();
-    } finally {
-      reconnectingThread.set(null);
-    }
-  }
-
-  void runInSeparateThread(Runnable task) {
-    //noinspection unchecked
-    if (executor.get() == null) throw new IllegalStateException("Component not started");
-    executor.get().submit(task);
-  }
-
-  void invalidateInSeparateThread() {
-    //if someone else is already invalidating, skip it
-    if (isInvalidating()) return;
-    runInSeparateThread(() -> {
-      try {
-        invalidate();
-      } catch (Exception e) {
-        LOGGER.error(e, "Error in invalidate");
-      }
-    });
-  }
-
   private void resetState() {
     session.set(null);
     destination.set(null);
-    latestMessage.set(null);
     consumer.set(null);
     producer.set(null);
-    activeConnection.set(null);
   }
 
-  JMSConnection getConnection() throws JMSException, NamingException {
-    synchronized (this) {
-      if (activeConnection.get() != null) {
-        return activeConnection.get();
-      }
-      if (connections == null || connections.size() == 0) {
-        throw new JMSException("No JMS connections defined");
-      }
-      activeConnection.set(connections.get(connectionPointer.get()));
-      connectionPointer.set((connectionPointer.get() + 1) % connections.size());
-      //start failback timer now
-      lastFailbackTime.set(System.currentTimeMillis());
-      LOGGER.info("Using connection %s", activeConnection.get());
-      return activeConnection.get();
-    }
+  private InitialContext getInitialContext() throws NamingException, JMSException {
+    if (isClosed()) throw new IllegalStateException(ERROR_CLOSED);
+    return getOrUpdateSynchronized(initialContext, this::createInitialContext);
   }
 
   Destination getDestination() throws JMSException, NamingException {
-    if (isClosed()) throw new RuntimeException("closed");
-    return getOrUpdateSynchronized(destination, () -> getConnection().lookupDestination(destinationName));
+    if (isClosed()) throw new IllegalStateException(ERROR_CLOSED);
+    return getOrUpdateSynchronized(destination, () -> lookupDestination(destinationName));
+  }
+
+  Connection getConnection() throws JMSException, NamingException {
+    if (isClosed()) throw new IllegalStateException(ERROR_CLOSED);
+    return getOrUpdateSynchronized(connection, this::createConnection);
   }
 
   Session getSession() throws JMSException, NamingException {
-    if (isClosed()) throw new RuntimeException("closed");
-    return getOrUpdateSynchronized(session, () -> getConnection().getSession(this, transacted));
+    if (isClosed()) throw new IllegalStateException(ERROR_CLOSED);
+    return getOrUpdateSynchronized(session, () -> getConnection().createSession(false, Session.AUTO_ACKNOWLEDGE));
   }
 
   MessageConsumer getMessageConsumer() throws JMSException, NamingException {
-    if (isClosed()) throw new RuntimeException("closed");
+    if (isClosed()) throw new IllegalStateException(ERROR_CLOSED);
     return getOrUpdateSynchronized(consumer, () -> getSession().createConsumer(getDestination()));
   }
 
-  private MessageProducer getMessageProducer() throws JMSException, NamingException {
-    if (isClosed()) throw new RuntimeException("closed");
+  MessageProducer getMessageProducer() throws JMSException, NamingException {
+    if (isClosed()) throw new IllegalStateException(ERROR_CLOSED);
     return getOrUpdateSynchronized(producer, () -> getSession().createProducer(getDestination()));
+  }
+
+  private InitialContext createInitialContext() throws NamingException {
+    LOGGER.debug("Creating initial context for %s", contextURL);
+    Hashtable<String, String> env = new Hashtable<>();
+    env.put(InitialContext.INITIAL_CONTEXT_FACTORY, contextFactoryName);
+    env.put(InitialContext.PROVIDER_URL, contextURL);
+    connectionProperties.forEach((k, v) -> env.put((String) k, (String) v));
+    return new InitialContext(env);
+  }
+
+  private Destination lookupDestination(String destinationName) throws JMSException, NamingException {
+    if (StringUtils.isBlank(destinationName)) throw new NamingException("Destination name not set");
+    Object obj = getInitialContext().lookup(destinationName);
+    // error if no such destination
+    if (obj == null) {
+      throw new NamingException(destinationName + ": no such Destination");
+    }
+    // sanity check
+    if (!(obj instanceof Destination)) {
+      throw new JMSException(destinationName + ": not a destination (" + obj.getClass().getName() + ")");
+    }
+    return (Destination) obj;
+  }
+
+  private Connection createConnection() throws JMSException, NamingException {
+    LOGGER.info("Creating new JMS connection to %s", contextURL);
+    // fetch factory from JNDI
+    Object obj = getInitialContext().lookup(connectionFactoryName);
+    if (obj == null) {
+      throw new NamingException(connectionFactoryName + ": no such ConnectionFactory");
+    }
+    if (!(obj instanceof ConnectionFactory)) {
+      throw new JMSException(connectionFactoryName + ": not a ConnectionFactory (" + obj.getClass() + ")");
+    }
+
+    // create connection
+    ConnectionFactory connectionFactory = (ConnectionFactory) obj;
+    Connection conn;
+    if (username != null && password != null) {
+      conn = connectionFactory.createConnection(username, password);
+    } else {
+      conn = connectionFactory.createConnection();
+    }
+    conn.setExceptionListener(this);
+    conn.start();
+
+    return conn;
   }
 
   private <U> U getOrUpdateSynchronized(AtomicReference<U> ref, JMSSupplier<U> task) throws NamingException, JMSException {
@@ -249,7 +255,7 @@ public abstract class JMSBase implements LifecycleAspect, AppendMembers {
         try {
           return task.get();
         } catch (Exception e) {
-          throw new RuntimeException(e);
+          throw new IllegalStateException(e);
         }
       });
     } catch (RuntimeException e) {
@@ -267,63 +273,89 @@ public abstract class JMSBase implements LifecycleAspect, AppendMembers {
     void apply(T val) throws JMSException, NamingException;
   }
 
-  /**
-   * Send JMS message to producer, using this objects settings
-   *
-   * @param msg message to send
-   */
-  void sendJMSMessage(final Message msg) {
-    try {
-      getMessageProducer().send(msg, (isPersistent() ? DeliveryMode.PERSISTENT : DeliveryMode.NON_PERSISTENT),
-              getPriority(), getTimeToLive());
-    } catch (Exception e) {
-      throw handleMessagingException(e);
-    }
-  }
-
-  MessagingException handleMessagingException(Exception e) {
-    if (!temporary) {
-      invalidate();
-      errorCount.increment();
-    }
-    throw new MessagingException(e);
-  }
-
   // ************************* property accessors ********************************
 
-  public boolean hasSession() {
+  public static class BaseBuilder<T extends BaseBuilder> {
+    String contextFactoryName;
+    String contextURL;
+    String connectionFactoryName;
+    String username;
+    String password;
+    final Map<String, String> connectionProperties = new HashMap<>();
+    String destinationName;
+    int maxMessageSize = DEFAULT_MAX_MAX_MESSAGE_SIZE;
+    int priority = DEFAULT_PRIORITY;
+
+    public T setContextFactoryName(String contextFactoryName) {
+      this.contextFactoryName = contextFactoryName;
+      //noinspection unchecked
+      return (T) this;
+    }
+
+    public T setContextURL(String contextURL) {
+      this.contextURL = contextURL;
+      //noinspection unchecked
+      return (T) this;
+    }
+
+    public T setConnectionFactoryName(String connectionFactoryName) {
+      this.connectionFactoryName = connectionFactoryName;
+      //noinspection unchecked
+      return (T) this;
+    }
+
+    public T setUsername(String username) {
+      this.username = username;
+      //noinspection unchecked
+      return (T) this;
+    }
+
+    public T setPassword(String password) {
+      this.password = password;
+      //noinspection unchecked
+      return (T) this;
+    }
+
+    public T setConnectionProperties(Map<String, String> connectionProperties) {
+      this.connectionProperties.putAll(connectionProperties);
+      //noinspection unchecked
+      return (T) this;
+    }
+
+    public T setConnectionProperty(String key, String value) {
+      this.connectionProperties.put(key, value);
+      //noinspection unchecked
+      return (T) this;
+    }
+
+    public T setDestinationName(String destinationName) {
+      this.destinationName = destinationName;
+      //noinspection unchecked
+      return (T) this;
+    }
+
+    public T setMaxMessageSize(int maxMessageSize) {
+      this.maxMessageSize = maxMessageSize;
+      //noinspection unchecked
+      return (T) this;
+    }
+
+    public T setPriority(int priority) {
+      this.priority = priority;
+      //noinspection unchecked
+      return (T) this;
+    }
+  }
+
+  boolean hasSession() {
     return session.get() != null;
   }
 
-  public boolean isInvalidating() {
-    return invalidating.get();
-  }
-
-  public boolean isReconnecting() {
-    return reconnectingThread.get() != null;
-  }
-
-  public boolean isPersistent() {
-    return persistent;
+  boolean hasConnection() {
+    return connection.get() != null;
   }
 
   public int getPriority() {
     return priority;
-  }
-
-  public int getTimeToLive() {
-    return timeToLive;
-  }
-
-  public JMSConnection getActiveConnection() {
-    return activeConnection.get();
-  }
-
-  public String getDestinationName() {
-    return destinationName;
-  }
-
-  public boolean isTransacted() {
-    return transacted;
   }
 }

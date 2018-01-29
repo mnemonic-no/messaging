@@ -3,9 +3,9 @@ package no.mnemonic.messaging.requestsink.jms;
 import no.mnemonic.commons.container.ComponentContainer;
 import no.mnemonic.commons.testtools.AvailablePortFinder;
 import no.mnemonic.commons.utilities.lambda.LambdaUtils;
-import no.mnemonic.messaging.requestsink.RequestSink;
 import no.mnemonic.messaging.requestsink.RequestContext;
 import no.mnemonic.messaging.requestsink.RequestHandler;
+import no.mnemonic.messaging.requestsink.RequestSink;
 import org.apache.activemq.broker.BrokerService;
 import org.junit.After;
 import org.junit.Before;
@@ -13,9 +13,11 @@ import org.junit.Test;
 import org.mockito.Mock;
 import org.mockito.MockitoAnnotations;
 
-import java.util.concurrent.*;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 
-import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyLong;
@@ -55,13 +57,6 @@ public class JMSFailoverTest {
   }
 
   @Test
-  public void testConnect() {
-    JMSConnection conn = createFailoverConnection();
-    container = ComponentContainer.create(conn);
-    container.initialize();
-  }
-
-  @Test
   public void testFailoverBetweenServers() throws Exception {
     JMSRequestSink sink = setupFailoverServerAndClient();
     System.out.println("Starting");
@@ -82,11 +77,8 @@ public class JMSFailoverTest {
   }
 
   private JMSRequestSink setupFailoverServerAndClient() throws InterruptedException, ExecutionException, TimeoutException {
-    JMSConnection serverconn = createFailoverConnection();
-    JMSConnection clientconn = createFailoverConnection();
-
-    JMSRequestProxy proxy = createProxy(serverconn, mockedSink);
-    JMSRequestSink sink = createSink(clientconn);
+    JMSRequestProxy proxy = addFailoverConnection(createProxy(mockedSink)).build();
+    JMSRequestSink sink = addFailoverConnection(createSink()).build();
 
     CompletableFuture<Void> proxyconnected = new CompletableFuture<>();
     proxy.addJMSRequestProxyConnectionListener(l->{
@@ -94,7 +86,7 @@ public class JMSFailoverTest {
       System.out.println("***** Proxy reconnected *****");
     });
 
-    container = ComponentContainer.create(serverconn, clientconn, proxy, sink);
+    container = ComponentContainer.create(proxy, sink);
     container.initialize();
     proxyconnected.get(1000, TimeUnit.MILLISECONDS);
     return sink;
@@ -102,10 +94,10 @@ public class JMSFailoverTest {
 
   //helpers
 
-
   private BrokerService setupBroker(int thisPort, int otherPort) throws Exception {
     BrokerService broker = new BrokerService();
     broker.setPersistent(false);
+    broker.setUseJmx(false);
     broker.setBrokerName("broker" + thisPort);
     broker.addConnector("tcp://0.0.0.0:" + thisPort);
     broker.addNetworkConnector(String.format("static:(tcp://localhost:%d)", otherPort));
@@ -114,38 +106,26 @@ public class JMSFailoverTest {
     return broker;
   }
 
-  private JMSRequestSink createSink(JMSConnection connection) {
+  private JMSRequestSink.Builder createSink() {
     return JMSRequestSink.builder()
-            .addConnection(connection)
             .setProtocolVersion(ProtocolVersion.V1)
-            .setDestinationName("dynamicQueues/testqueue")
-            .build();
+            .setDestinationName("dynamicQueues/testqueue");
   }
 
 
-  private JMSRequestProxy createProxy(JMSConnection connection, RequestSink endpoint) {
+  private JMSRequestProxy.Builder createProxy(RequestSink endpoint) {
     //set up request sink pointing at a vm-local topic
     return JMSRequestProxy.builder()
-            .addConnection(connection)
             .setDestinationName("dynamicQueues/testqueue")
-            .setRequestSink(endpoint)
-            .build();
+            .setRequestSink(endpoint);
   }
 
-  private JMSConnection createFailoverConnection() {
+  private <T extends JMSBase.BaseBuilder<T>> T addFailoverConnection(T builder) {
     //set up a real JMS connection to a vm-local activemq
-    return JMSConnectionImpl.builder()
+    return builder
             .setContextFactoryName("org.apache.activemq.jndi.ActiveMQInitialContextFactory")
-            .setContextURL(String.format("failover:(tcp://localhost:%d,tcp://localhost:%d)?initialReconnectDelay=100", port1, port2))
-            .setConnectionFactoryName("ConnectionFactory")
-            .build();
+            .setContextURL(String.format("failover:(tcp://localhost:%d,tcp://localhost:%d)?initialReconnectDelay=100&maxReconnectAttempts=2&timeout=100", port1, port2))
+            .setConnectionFactoryName("ConnectionFactory");
   }
-  private JMSConnection createSingleConnection(int port) {
-    //set up a real JMS connection to a vm-local activemq
-    return JMSConnectionImpl.builder()
-            .setContextFactoryName("org.apache.activemq.jndi.ActiveMQInitialContextFactory")
-            .setContextURL(String.format("tcp://localhost:%d", port))
-            .setConnectionFactoryName("ConnectionFactory")
-            .build();
-  }
+
 }

@@ -66,6 +66,9 @@ class ServerChannelUploadContext implements JMSRequestProxy.ServerContext {
     setupMessage.setLongProperty(JMSRequestProxy.PROPERTY_REQ_TIMEOUT, timeout.get());
     setupMessage.setJMSReplyTo(channelQueue);
     replyTo.send(setupMessage);
+    if (LOGGER.isDebug()) {
+      LOGGER.debug(">> setupChannel [callID=%s channelQueue=%s replyTo=%s]", callID, channelQueue, replyTo);
+    }
   }
 
   //private methods
@@ -77,6 +80,9 @@ class ServerChannelUploadContext implements JMSRequestProxy.ServerContext {
         return;
       }
       String messageType = message.getStringProperty(JMSRequestProxy.PROPERTY_MESSAGE_TYPE);
+      if (LOGGER.isDebug()) {
+        LOGGER.debug("<< uploadChannel serverCtx [callID=%s type=%s channelQueue=%s replyTo=%s]", callID, messageType, channelQueue, replyTo);
+      }
       if (JMSRequestProxy.MESSAGE_TYPE_EXCEPTION.equals(messageType)) {
         abortUpload();
       } else if (JMSRequestProxy.MESSAGE_TYPE_SIGNAL_FRAGMENT.equals(messageType)) {
@@ -88,35 +94,40 @@ class ServerChannelUploadContext implements JMSRequestProxy.ServerContext {
       } else {
         LOGGER.warning("Ignoring invalid channel message type: " + messageType);
       }
-    } catch (Throwable e) {
+    } catch (Exception e) {
       LOGGER.error(e, "Error receiving message");
     }
   }
 
   private void handleUploadFragment(Message message) throws JMSException {
-    if (LOGGER.isDebug()) LOGGER.debug("ServerChannelUploadContext.handleUploadFragment");
-    String callID = message.getJMSCorrelationID();
-    if (!callID.equals(this.callID)) {
-      LOGGER.warning("Ignoring fragment with wrong callID: " + callID);
+    String msgCallID = message.getJMSCorrelationID();
+    if (!msgCallID.equals(this.callID)) {
+      LOGGER.warning("Ignoring fragment with wrong callID: " + msgCallID);
       return;
+    }
+    MessageFragment messageFragment = new MessageFragment((BytesMessage) message);
+    if (LOGGER.isDebug()) {
+      LOGGER.debug("<< uploadFragment [callID=%s idx=%d size=%d]", msgCallID, messageFragment.getIdx(), messageFragment.getData().length);
     }
     //extend timeout if client is requesting timeout extention
     long reqTimeout = message.getLongProperty(JMSRequestProxy.PROPERTY_REQ_TIMEOUT);
     timeout.updateAndGet(v -> v < reqTimeout ? reqTimeout : v);
-    fragments.add(new MessageFragment((BytesMessage) message));
+    fragments.add(messageFragment);
   }
 
-  private void handleSignalEndOfStream(Message message) {
-    if (LOGGER.isDebug()) LOGGER.debug("ServerChannelUploadContext.handleSignalEndOfStream");
+  private void handleSignalEndOfStream(Message eosMessage) {
     close();
     try {
-      byte[] messageData = prepareData(message);
+      int expectedFragments = eosMessage.getIntProperty(JMSRequestProxy.PROPERTY_FRAGMENTS_TOTAL);
+      String transmittedChecksum = eosMessage.getStringProperty(JMSRequestProxy.PROPERTY_DATA_CHECKSUM_MD5);
+      byte[] messageData = JMSUtils.reassembleFragments(fragments, expectedFragments, transmittedChecksum);
       if (messageData == null) {
         LOGGER.warning("Ignoring empty channel upload: " + callID);
         return;
       }
       uploadHandler.handleRequest(callID, messageData, responseDestination, timeout.get(), protocolVersion);
     } catch (Exception e) {
+      LOGGER.warning("Error handling end-of-stream: " + callID);
       notifyError(e);
     }
   }
@@ -130,12 +141,6 @@ class ServerChannelUploadContext implements JMSRequestProxy.ServerContext {
     close();
   }
 
-  private byte[] prepareData(Message eosMessage) throws Exception {
-    int expectedFragments = eosMessage.getIntProperty(JMSRequestProxy.PROPERTY_FRAGMENTS_TOTAL);
-    String transmittedChecksum = eosMessage.getStringProperty(JMSRequestProxy.PROPERTY_DATA_CHECKSUM_MD5);
-    return JMSUtils.reassembleFragments(fragments, expectedFragments, transmittedChecksum);
-  }
-
   private void notifyError(Throwable e) {
     try {
       ExceptionMessage ex = new ExceptionMessage(callID, e);
@@ -144,6 +149,9 @@ class ServerChannelUploadContext implements JMSRequestProxy.ServerContext {
       exMessage.setJMSCorrelationID(callID);
       exMessage.setStringProperty(JMSRequestProxy.PROPERTY_MESSAGE_TYPE, JMSRequestProxy.MESSAGE_TYPE_EXCEPTION);
       replyTo.send(exMessage);
+      if (LOGGER.isDebug()) {
+        LOGGER.debug(">> notifyErrorToClient [callID=%s]", callID);
+      }
     } catch (Exception e1) {
       LOGGER.warning("Could not send error notification for " + callID);
       close();

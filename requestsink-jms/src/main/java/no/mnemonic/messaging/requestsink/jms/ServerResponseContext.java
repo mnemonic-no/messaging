@@ -13,10 +13,12 @@ import java.io.ByteArrayInputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.time.Clock;
+import java.util.Date;
 import java.util.UUID;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 
+import static no.mnemonic.messaging.requestsink.jms.JMSRequestProxy.*;
 import static no.mnemonic.messaging.requestsink.jms.JMSUtils.assertNotNull;
 
 /**
@@ -27,7 +29,7 @@ import static no.mnemonic.messaging.requestsink.jms.JMSUtils.assertNotNull;
  * Multiple responses will be encoded as multiple messages, creating a response stream back to the client.
  * When channel is closed, responses will be ignored.
  */
-class ServerResponseContext implements RequestContext, JMSRequestProxy.ServerContext {
+class ServerResponseContext implements RequestContext, ServerContext {
 
   private static final Logger LOGGER = Logging.getLogger(ServerResponseContext.class);
   private static Clock clock = Clock.systemUTC();
@@ -58,6 +60,9 @@ class ServerResponseContext implements RequestContext, JMSRequestProxy.ServerCon
   void handle(RequestSink requestSink, Message request) throws JMSException {
     assertNotNull(requestSink, "RequestSink not set");
     assertNotNull(request, "Message not set");
+    if (LOGGER.isDebug()) {
+      LOGGER.debug("<< signal [callID=%s replyTo=%s]", callID, replyTo);
+    }
     requestSink.signal(request, this, clock.millis() - timeout.get());
   }
 
@@ -67,19 +72,20 @@ class ServerResponseContext implements RequestContext, JMSRequestProxy.ServerCon
       return false;
     }
     //if keepalive requests to extend timeout, relay that request back to client
-    else if (until > timeout.get()) {
-      try {
-        //create a extend-wait message to client (message content has no meaning)
-        javax.jms.Message closeMessage = JMSUtils.createTextMessage(session, "please wait", protocolVersion);
-        closeMessage.setJMSCorrelationID(callID);
-        closeMessage.setStringProperty(JMSRequestProxy.PROPERTY_MESSAGE_TYPE, JMSRequestProxy.MESSAGE_TYPE_EXTEND_WAIT);
-        closeMessage.setLongProperty(JMSRequestProxy.PROPERTY_REQ_TIMEOUT, until);
-        replyTo.send(closeMessage);
-      } catch (Exception e) {
-        LOGGER.warning("Could not send Extend-Wait for " + callID);
+    try {
+      //create a extend-wait message to client (message content has no meaning)
+      javax.jms.Message closeMessage = JMSUtils.createTextMessage(session, "please wait", protocolVersion);
+      closeMessage.setJMSCorrelationID(callID);
+      closeMessage.setStringProperty(PROPERTY_MESSAGE_TYPE, MESSAGE_TYPE_EXTEND_WAIT);
+      closeMessage.setLongProperty(PROPERTY_REQ_TIMEOUT, until);
+      replyTo.send(closeMessage);
+      if (LOGGER.isDebug()) {
+        LOGGER.debug(">> keepalive [callID=%s until=%s replyTo=%s]", callID, new Date(until), replyTo);
       }
-      timeout.set(until);
+    } catch (Exception e) {
+      LOGGER.warning("Could not send Extend-Wait for " + callID);
     }
+    timeout.set(until);
     return true;
   }
 
@@ -95,12 +101,7 @@ class ServerResponseContext implements RequestContext, JMSRequestProxy.ServerCon
       if (protocolVersion.atLeast(ProtocolVersion.V2) && messageBytes.length > maxMessageSize) {
         sendResponseFragments(messageBytes);
       } else {
-        // construct single response message
-        javax.jms.Message returnMessage = JMSUtils.createByteMessage(session, messageBytes, protocolVersion);
-        returnMessage.setJMSCorrelationID(callID);
-        returnMessage.setStringProperty(JMSRequestProxy.PROPERTY_MESSAGE_TYPE, JMSRequestProxy.MESSAGE_TYPE_SIGNAL_RESPONSE);
-        // send return message
-        replyTo.send(returnMessage);
+        sendSingleResponse(messageBytes);
       }
       return true;
     } catch (Exception e) {
@@ -110,22 +111,35 @@ class ServerResponseContext implements RequestContext, JMSRequestProxy.ServerCon
     }
   }
 
+  private void sendSingleResponse(byte[] messageBytes) throws JMSException, IOException {
+    // construct single response message
+    javax.jms.Message returnMessage = JMSUtils.createByteMessage(session, messageBytes, protocolVersion);
+    returnMessage.setJMSCorrelationID(callID);
+    returnMessage.setStringProperty(PROPERTY_MESSAGE_TYPE, MESSAGE_TYPE_SIGNAL_RESPONSE);
+    // send return message
+    replyTo.send(returnMessage);
+    if (LOGGER.isDebug()) {
+      LOGGER.debug(">> addResponse [callID=%s size=%d replyTo=%s]", callID, messageBytes.length, replyTo);
+    }
+  }
+
   private void sendResponseFragments(byte[] messageBytes) throws JMSException, IOException {
     UUID responseID = UUID.randomUUID();
-    if (LOGGER.isDebug()) {
-      LOGGER.debug(String.format("Sending fragmented response message with responseID %s", responseID));
-    }
     try (InputStream messageDataStream = new ByteArrayInputStream(messageBytes)) {
+
       JMSUtils.fragment(messageDataStream, maxMessageSize, new JMSUtils.FragmentConsumer() {
         @Override
         public void fragment(byte[] data, int idx) throws JMSException, IOException {
           BytesMessage fragment = JMSUtils.createByteMessage(session, data, protocolVersion);
           fragment.setJMSCorrelationID(callID);
-          fragment.setStringProperty(JMSRequestProxy.PROPERTY_MESSAGE_TYPE, JMSRequestProxy.MESSAGE_TYPE_SIGNAL_FRAGMENT);
-          fragment.setStringProperty(JMSRequestProxy.PROPERTY_RESPONSE_ID, responseID.toString());
-          fragment.setIntProperty(JMSRequestProxy.PROPERTY_FRAGMENTS_IDX, idx);
+          fragment.setStringProperty(PROPERTY_MESSAGE_TYPE, MESSAGE_TYPE_SIGNAL_FRAGMENT);
+          fragment.setStringProperty(PROPERTY_RESPONSE_ID, responseID.toString());
+          fragment.setIntProperty(PROPERTY_FRAGMENTS_IDX, idx);
           //send fragment to upload channel
           replyTo.send(fragment);
+          if (LOGGER.isDebug()) {
+            LOGGER.debug(">> addFragmentedResponse [callID=%s responseID=%s idx=%d size=%d replyTo=%s]", callID, responseID, idx, data.length, replyTo);
+          }
         }
 
         @Override
@@ -133,15 +147,15 @@ class ServerResponseContext implements RequestContext, JMSRequestProxy.ServerCon
           //prepare EOS message (message text has no meaning)
           javax.jms.Message eof = JMSUtils.createTextMessage(session, "End-Of-Stream", protocolVersion);
           eof.setJMSCorrelationID(callID);
-          eof.setStringProperty(JMSRequestProxy.PROPERTY_MESSAGE_TYPE, JMSRequestProxy.MESSAGE_TYPE_END_OF_FRAGMENTED_MESSAGE);
-          eof.setStringProperty(JMSRequestProxy.PROPERTY_RESPONSE_ID, responseID.toString());
+          eof.setStringProperty(PROPERTY_MESSAGE_TYPE, MESSAGE_TYPE_END_OF_FRAGMENTED_MESSAGE);
+          eof.setStringProperty(PROPERTY_RESPONSE_ID, responseID.toString());
           //send total number of fragments and message digest with EOS message, to allow receiver to verify
-          eof.setIntProperty(JMSRequestProxy.PROPERTY_FRAGMENTS_TOTAL, fragments);
-          eof.setStringProperty(JMSRequestProxy.PROPERTY_DATA_CHECKSUM_MD5, JMSUtils.hex(digest));
+          eof.setIntProperty(PROPERTY_FRAGMENTS_TOTAL, fragments);
+          eof.setStringProperty(PROPERTY_DATA_CHECKSUM_MD5, JMSUtils.hex(digest));
           //send EOS
           replyTo.send(eof);
           if (LOGGER.isDebug()) {
-            LOGGER.debug(String.format("Completed sending %d fragments for responseID %s", fragments, responseID));
+            LOGGER.debug(">> fragmentedResponse EOF [callID=%s responseID=%s fragments=%d replyTo=%s]", callID, responseID, fragments, replyTo);
           }
         }
       });
@@ -176,8 +190,11 @@ class ServerResponseContext implements RequestContext, JMSRequestProxy.ServerCon
         ExceptionMessage ex = new ExceptionMessage(callID, e);
         javax.jms.Message exMessage = JMSUtils.createByteMessage(session, JMSUtils.serialize(ex), protocolVersion);
         exMessage.setJMSCorrelationID(callID);
-        exMessage.setStringProperty(JMSRequestProxy.PROPERTY_MESSAGE_TYPE, JMSRequestProxy.MESSAGE_TYPE_EXCEPTION);
+        exMessage.setStringProperty(PROPERTY_MESSAGE_TYPE, MESSAGE_TYPE_EXCEPTION);
         replyTo.send(exMessage);
+        if (LOGGER.isDebug()) {
+          LOGGER.debug(">> notifyErrorToClient [callID=%s exception=%s replyTo=%s]", callID, e.getClass(), replyTo);
+        }
       } catch (Exception e1) {
         LOGGER.warning("Could not send error notification for " + callID);
         close();
@@ -191,8 +208,11 @@ class ServerResponseContext implements RequestContext, JMSRequestProxy.ServerCon
         //send EndOfStream message (message text has no meaning)
         javax.jms.Message closeMessage = JMSUtils.createTextMessage(session, "stream closed", protocolVersion);
         closeMessage.setJMSCorrelationID(callID);
-        closeMessage.setStringProperty(JMSRequestProxy.PROPERTY_MESSAGE_TYPE, JMSRequestProxy.MESSAGE_TYPE_STREAM_CLOSED);
+        closeMessage.setStringProperty(PROPERTY_MESSAGE_TYPE, MESSAGE_TYPE_STREAM_CLOSED);
         replyTo.send(closeMessage);
+        if (LOGGER.isDebug()) {
+          LOGGER.debug(">> endOfStream [callID=%s replyTo=%s]", callID, replyTo);
+        }
       } catch (Exception e) {
         LOGGER.warning("Could not send End-Of-Stream for " + callID);
       } finally {

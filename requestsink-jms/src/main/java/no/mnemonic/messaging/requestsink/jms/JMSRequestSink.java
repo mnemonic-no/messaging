@@ -2,28 +2,25 @@ package no.mnemonic.messaging.requestsink.jms;
 
 import no.mnemonic.commons.logging.Logger;
 import no.mnemonic.commons.logging.Logging;
-import no.mnemonic.commons.utilities.ClassLoaderContext;
 import no.mnemonic.commons.utilities.ObjectUtils;
 import no.mnemonic.commons.utilities.collections.ListUtils;
 import no.mnemonic.commons.utilities.lambda.LambdaUtils;
 import no.mnemonic.messaging.requestsink.*;
 
-import javax.jms.BytesMessage;
+import javax.jms.DeliveryMode;
+import javax.jms.Destination;
 import javax.jms.JMSException;
-import javax.jms.MessageConsumer;
-import javax.jms.TemporaryQueue;
 import javax.naming.NamingException;
 import java.io.ByteArrayInputStream;
 import java.io.IOException;
-import java.util.Collection;
-import java.util.List;
+import java.util.Date;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.LinkedBlockingDeque;
-import java.util.concurrent.atomic.AtomicReference;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
 
-import static no.mnemonic.commons.utilities.collections.CollectionUtils.isEmpty;
-import static no.mnemonic.messaging.requestsink.jms.JMSRequestProxy.*;
+import static no.mnemonic.commons.utilities.collections.SetUtils.set;
 
 /**
  * JMSRequestSink is a JMS implementation of the RequestSink using JMS,
@@ -52,40 +49,40 @@ import static no.mnemonic.messaging.requestsink.jms.JMSRequestProxy.*;
  * The protocol between the sink and the proxy is versioned. The proxy must support the version used by the sink, or the
  * request will fail. The sink can specify a lesser protocol version, allowing a rolling upgrade by upgrading the code first, but keep
  * using previous version until all components are supporting the new protocol version.
- *
+ * <p>
  * The default protocol version is V1, so clients must explicitly enable higher protocol versions.
- *
+ * <p>
  * Protocol change history:
  * V1 - Initial version, supports requests with multiple replies (streaming result) and upload channel for fragmented request (for large request messages)
  * V2 - Added support for fragmented response (for large single-object response messages)
  */
 public class JMSRequestSink extends JMSBase implements RequestSink, RequestListener {
 
-  private static final int DEFAULT_MAX_MESSAGE_SIZE = 65536;
   private static final Logger LOGGER = Logging.getLogger(JMSRequestSink.class);
-  static final int DEFAULT_TTL = 1000;
-  static final int DEFAULT_PRIORITY = 1;
-  private static final String RECEIVED_END_OF_FRAGMENTS_WITHOUT = "Received end-of-fragments without ";
-  private static final String RECEIVED_FRAGMENT_WITHOUT = "Received fragment without ";
+
+  private final ProtocolVersion protocolVersion;
 
   // variables
 
-  private final ConcurrentHashMap<String, OngoingCallState> requests = new ConcurrentHashMap<>();
-  private final AtomicReference<ResponseListener> responseListener = new AtomicReference<>();
-  private final int maxMessageSize;
-  private final ProtocolVersion protocolVersion;
+  private final ConcurrentHashMap<String, ClientRequestState> requests = new ConcurrentHashMap<>();
+  private final ConcurrentHashMap<String, ClientResponseListener> responseListeners = new ConcurrentHashMap<>();
+  private final ExecutorService executor;
 
-  private JMSRequestSink(List<JMSConnection> connections, String destinationName,
-                         int timeToLive, int priority, boolean persistent,
-                         int maxMessageSize, ProtocolVersion protocolVersion) {
-    super(connections, destinationName, false,
-            timeToLive, priority, persistent, false);
-    this.maxMessageSize = maxMessageSize;
+  private JMSRequestSink(String contextFactoryName, String contextURL, String connectionFactoryName,
+                         String username, String password, Map<String, String> connectionProperties,
+                         String destinationName,
+                         int priority, int maxMessageSize, ProtocolVersion protocolVersion) {
+    super(contextFactoryName, contextURL, connectionFactoryName, username, password, connectionProperties, destinationName,
+            priority, maxMessageSize);
+    if (protocolVersion == null) {
+      throw new IllegalArgumentException("protocolVersion not set");
+    }
+    executor = Executors.newSingleThreadExecutor(new ThreadFactoryBuilder().setNamePrefix("JMSRequestSink").build());
     this.protocolVersion = protocolVersion;
   }
 
-  // **************** interface methods **************************
 
+  // **************** interface methods **************************
   public <T extends RequestContext> T signal(Message msg, final T signalContext, long maxWait) {
     //make sure message has callID set
     if (msg.getCallID() == null) {
@@ -100,253 +97,102 @@ public class JMSRequestSink extends JMSBase implements RequestSink, RequestListe
 
     checkForFragmentationAndSignal(msg, ctx, maxWait);
 
+    //clean response state on every request
+    executor.submit(this::cleanResponseState);
+
     return signalContext;
   }
 
   public void close(String callID) {
     //close the specified request
-    synchronized (this) {
-      requests.remove(callID);
+    requests.remove(callID);
+    ClientResponseListener listener = responseListeners.remove(callID);
+    if (listener != null) {
+      listener.close();
     }
   }
 
   @Override
-  public void stopComponent() {
-    ensureResponseListenerClosed();
-    super.stopComponent();
+  public void onException(JMSException e) {
+    super.onException(e);
+    //on exception, notify all ongoing requests of the error
+    ListUtils.list(requests.values()).forEach(ctx -> LambdaUtils.tryTo(
+            () -> ctx.getRequestContext().notifyError(e),
+            ex -> LOGGER.warning(ex, "Error calling requestContext.notifyErrorToClient")
+    ));
+    //and close all requests
+    set(requests.keySet()).forEach(this::close);
   }
 
   @Override
-  public void invalidate() {
-    //invalidate this request sink, forcing reconnection
-    //stop response listener thread, also closing down responseQueue and consumer
-    ensureResponseListenerClosed();
-    //perform normal invalidate
-    super.invalidate();
+  public void startComponent() {
+    //nothing to do
   }
 
+  @Override
+  public void stopComponent() {
+    super.stopComponent();
+    executor.shutdown();
+    LambdaUtils.tryTo(
+            () -> executor.awaitTermination(10, TimeUnit.SECONDS),
+            e -> LOGGER.warning(e, "Error waiting for executor termination")
+    );
+  }
+
+
   // ****************** private methods ************************
+
+  private void cleanResponseState() {
+    for (Map.Entry<String, ClientRequestState> e : set(requests.entrySet())) {
+      ClientRequestState requestHandler = e.getValue();
+      if (requestHandler.getRequestContext().isClosed()) {
+        close(e.getKey());
+      }
+    }
+  }
 
   private void checkForFragmentationAndSignal(Message msg, RequestContext ctx, long maxWait) {
     try {
       byte[] messageBytes = JMSUtils.serialize(msg);
       String messageType = JMSRequestProxy.MESSAGE_TYPE_SIGNAL;
       //check if we need to fragment this request message
-      if (messageBytes.length > maxMessageSize) {
+      if (messageBytes.length > getMaxMessageSize()) {
         //if needing to fragment, replace signal context with a wrapper client upload context and send a channel request
-        ctx = new ChannelUploadMessageContext(ctx, new ByteArrayInputStream(messageBytes), msg.getCallID(), maxMessageSize, protocolVersion);
+        ctx = new ChannelUploadMessageContext(ctx, new ByteArrayInputStream(messageBytes), msg.getCallID(), getMaxMessageSize(), protocolVersion);
         messageBytes = "channel upload request".getBytes();
         messageType = JMSRequestProxy.MESSAGE_TYPE_CHANNEL_REQUEST;
       }
-      requests.putIfAbsent(msg.getCallID(), new OngoingCallState(ctx, Thread.currentThread().getContextClassLoader()));
-      sendMessage(messageBytes, msg.getCallID(), messageType, maxWait);
-    } catch (IOException e) {
+      //add handler for this request
+      ClientRequestState handler = new ClientRequestState(ctx, Thread.currentThread().getContextClassLoader());
+      //setup response listener for this request
+      ClientResponseListener responseListener = new ClientResponseListener(msg.getCallID(), getSession(), handler);
+      //register handler
+      requests.put(msg.getCallID(), handler);
+      responseListeners.put(msg.getCallID(), responseListener);
+      //send signal message
+      sendMessage(messageBytes, msg.getCallID(), messageType, maxWait, responseListener.getResponseQueue());
+    } catch (IOException | JMSException | NamingException e) {
+      LOGGER.warning(e, "Error in checkForFragmentationAndSignal");
       throw new IllegalStateException(e);
     }
   }
 
-  private synchronized void ensureResponseListenerClosedIfRequestsEmpty() {
-    if (!requests.isEmpty()) return;
-    ensureResponseListenerClosed();
-  }
-
-  private synchronized void ensureResponseListenerClosed() {
-    ResponseListener l = responseListener.getAndSet(null);
-    if (l != null) runInSeparateThread(l::close);
-  }
-
-  private ResponseListener checkResponseListener() {
-    return responseListener.updateAndGet(u -> u != null ? u : new ResponseListener());
-  }
-
-  private void sendMessage(byte[] messageBytes, String callID, String messageType, long lifeTime) {
+  private void sendMessage(byte[] messageBytes, String callID, String messageType, long lifeTime, Destination replyTo) {
     try {
       javax.jms.Message m = JMSUtils.createByteMessage(getSession(), messageBytes, protocolVersion);
-      m.setJMSReplyTo(checkResponseListener().getResponseQueue());
+      long timeout = System.currentTimeMillis() + lifeTime;
+      m.setJMSReplyTo(replyTo);
       m.setJMSCorrelationID(callID);
       m.setStringProperty(JMSRequestProxy.PROPERTY_MESSAGE_TYPE, messageType);
-      m.setLongProperty(JMSRequestProxy.PROPERTY_REQ_TIMEOUT, System.currentTimeMillis() + lifeTime);
-      sendJMSMessage(m);
+      m.setLongProperty(JMSRequestProxy.PROPERTY_REQ_TIMEOUT, timeout);
+      getMessageProducer().send(m, (DeliveryMode.NON_PERSISTENT), getPriority(), lifeTime);
+      if (LOGGER.isDebug()) {
+        LOGGER.debug(">> sendMessage [destination=%s callID=%s messageType=%s replyTo=%s timeout=%s]", getDestination(), callID, messageType, replyTo, new Date(timeout));
+      }
     } catch (Exception e) {
-      throw handleMessagingException(e);
+      LOGGER.warning(e, "Error in sendMessage");
+      throw new MessagingException(e);
     }
-  }
-
-  private OngoingCallState getCurrentCall(String callID) {
-    if (callID == null) {
-      LOGGER.warning("Message received without callID");
-      return null;
-    }
-    OngoingCallState ctx = requests.get(callID);
-    if (ctx == null) {
-      LOGGER.warning("Discarding signal response: " + callID);
-    }
-    return ctx;
-  }
-
-  @SuppressWarnings("UnusedReturnValue")
-  private boolean handleResponse(javax.jms.Message message) throws JMSException {
-    String responseType = message.getStringProperty(JMSRequestProxy.PROPERTY_MESSAGE_TYPE);
-    if (responseType == null) responseType = "N/A";
-    switch (responseType) {
-      case JMSRequestProxy.MESSAGE_TYPE_SIGNAL_RESPONSE:
-        return handleSignalResponse(message);
-      case JMSRequestProxy.MESSAGE_TYPE_SIGNAL_FRAGMENT:
-        return handleSignalResponseFragment(message);
-      case JMSRequestProxy.MESSAGE_TYPE_END_OF_FRAGMENTED_MESSAGE:
-        return handleEndOfFragmentedResponse(message);
-      case JMSRequestProxy.MESSAGE_TYPE_CHANNEL_SETUP:
-        return handleChannelSetup(message);
-      case JMSRequestProxy.MESSAGE_TYPE_EXCEPTION:
-        return handleSignalError(message);
-      case JMSRequestProxy.MESSAGE_TYPE_STREAM_CLOSED:
-        return handleSignalEndOfStream(message);
-      case JMSRequestProxy.MESSAGE_TYPE_EXTEND_WAIT:
-        return handleSignalExtendWait(message);
-      default:
-        LOGGER.warning("Ignoring invalid response type: " + responseType);
-        return false;
-    }
-  }
-
-  private boolean handleSignalResponseFragment(javax.jms.Message fragment) throws JMSException {
-    OngoingCallState ctx = getCurrentCall(fragment.getJMSCorrelationID());
-    return ctx != null && ctx.addFragment((BytesMessage) fragment);
-  }
-
-  private boolean handleEndOfFragmentedResponse(javax.jms.Message message) throws JMSException {
-    OngoingCallState ctx = getCurrentCall(message.getJMSCorrelationID());
-    return ctx != null && ctx.assembleFragments(message);
-  }
-
-  private boolean handleSignalResponse(javax.jms.Message response) throws JMSException {
-    OngoingCallState ctx = getCurrentCall(response.getJMSCorrelationID());
-    if (ctx == null) return false;
-    try (ClassLoaderContext ignored = ClassLoaderContext.of(ctx.classLoader)) {
-      ctx.requestContext.addResponse(JMSUtils.extractObject(response));
-    }
-    return true;
-  }
-
-  private boolean handleChannelSetup(javax.jms.Message response) throws JMSException {
-    OngoingCallState ctx = getCurrentCall(response.getJMSCorrelationID());
-    if (ctx == null) return false;
-    try {
-      if (ctx.requestContext instanceof ChannelUploadMessageContext) {
-        ChannelUploadMessageContext uploadCtx = (ChannelUploadMessageContext) ctx.requestContext;
-        uploadCtx.upload(getSession(), response.getJMSReplyTo());
-        return true;
-      } else {
-        LOGGER.warning("Received channel setup for a non-channel-upload client context: " + response.getJMSCorrelationID());
-        return false;
-      }
-    } catch (NamingException e) {
-      ctx.requestContext.notifyError(e);
-      return false;
-    }
-  }
-
-  private boolean handleSignalEndOfStream(javax.jms.Message response) throws JMSException {
-    OngoingCallState ctx = getCurrentCall(response.getJMSCorrelationID());
-    if (ctx == null) return false;
-    ctx.requestContext.endOfStream();
-    return true;
-  }
-
-  private boolean handleSignalExtendWait(javax.jms.Message response) throws JMSException {
-    OngoingCallState ctx = getCurrentCall(response.getJMSCorrelationID());
-    if (ctx == null) return false;
-    ctx.requestContext.keepAlive(response.getLongProperty(JMSRequestProxy.PROPERTY_REQ_TIMEOUT));
-    return true;
-  }
-
-  private boolean handleSignalError(javax.jms.Message response) throws JMSException {
-    OngoingCallState ctx = getCurrentCall(response.getJMSCorrelationID());
-    if (ctx == null) return false;
-    if (JMSRequestProxy.MESSAGE_TYPE_STREAM_CLOSED.equals(response.getStringProperty(JMSRequestProxy.PROPERTY_MESSAGE_TYPE))) {
-      ctx.requestContext.endOfStream();
-    } else {
-      try (ClassLoaderContext ignored = ClassLoaderContext.of(ctx.classLoader)) {
-        ExceptionMessage em = JMSUtils.extractObject(response);
-        //noinspection ThrowableResultOfMethodCallIgnored
-        ctx.requestContext.notifyError(em.getException());
-      }
-    }
-    return true;
-  }
-
-  /**
-   * This listener listens for incoming reply messages and adds them to the correct responsehandler
-   *
-   * @author joakim
-   */
-  private class ResponseListener implements javax.jms.MessageListener, javax.jms.ExceptionListener {
-
-    private TemporaryQueue responseQueue;
-    private MessageConsumer responseConsumer;
-
-    ResponseListener() throws MessagingException {
-      try {
-        responseQueue = getSession().createTemporaryQueue();
-        responseConsumer = getSession().createConsumer(responseQueue);
-        responseConsumer.setMessageListener(this);
-        getConnection().addExceptionListener(this);
-      } catch (Exception e) {
-        LOGGER.warning(e, "Error setting up response listener");
-        invalidate();
-        throw new MessagingException("Error setting up response listener", e);
-      }
-    }
-
-    TemporaryQueue getResponseQueue() {
-      return responseQueue;
-    }
-
-    public void onException(JMSException e) {
-      //run invalidation in another thread
-      invalidateInSeparateThread();
-      //notify all connected client contexts about error
-      requests.values().forEach(ctx -> LambdaUtils.tryTo(() -> ctx.requestContext.notifyError(e)));
-    }
-
-    public void onMessage(javax.jms.Message message) {
-      try {
-        if (!JMSUtils.isCompatible(message)) {
-          LOGGER.warning("Ignoring message of incompatible version");
-          return;
-        }
-        handleResponse(message);
-      } catch (Throwable e) {
-        LOGGER.error(e, "Error receiving message");
-      }
-
-      //cleanup response sinks
-      cleanResponseSinks();
-    }
-
-    public void close() {
-      try {
-        JMSUtils.removeMessageListenerAndClose(responseConsumer);
-        JMSUtils.deleteTemporaryQueue(responseQueue);
-        JMSUtils.removeExceptionListener(getConnection(), this);
-      } catch (Exception e) {
-        LOGGER.warning(e, "Error in close()");
-      } finally {
-        responseConsumer = null;
-        responseQueue = null;
-      }
-    }
-
-    private void cleanResponseSinks() {
-      for (Map.Entry<String, OngoingCallState> e : requests.entrySet()) {
-        OngoingCallState c = e.getValue();
-        if (c.requestContext.isClosed()) {
-          requests.remove(e.getKey());
-        }
-      }
-      ensureResponseListenerClosedIfRequestsEmpty();
-    }
-
   }
 
   private static class NullRequestContext implements RequestContext {
@@ -362,6 +208,7 @@ public class JMSRequestSink extends JMSBase implements RequestSink, RequestListe
     }
 
     public void endOfStream() {
+      //ignore
     }
 
     public boolean isClosed() {
@@ -369,12 +216,15 @@ public class JMSRequestSink extends JMSBase implements RequestSink, RequestListe
     }
 
     public void notifyError(Throwable e) {
+      //ignore
     }
 
     public void addListener(RequestListener listener) {
+      //ignore
     }
 
     public void removeListener(RequestListener listener) {
+      //ignore
     }
   }
 
@@ -384,129 +234,30 @@ public class JMSRequestSink extends JMSBase implements RequestSink, RequestListe
   }
 
   @SuppressWarnings({"WeakerAccess", "unused"})
-  public static class Builder {
+  public static class Builder extends JMSBase.BaseBuilder<Builder> {
 
     //fields
-    private List<JMSConnection> connections;
-    private String destinationName;
-    private int timeToLive = DEFAULT_TTL;
-    private int priority = DEFAULT_PRIORITY;
-    private boolean persistent = false;
-    private int maxMessageSize = DEFAULT_MAX_MESSAGE_SIZE;
     private ProtocolVersion protocolVersion = ProtocolVersion.V1;
 
     private Builder() {
     }
 
     public JMSRequestSink build() {
-      if (protocolVersion == null) throw new IllegalArgumentException("protocolVersion not set");
-      if (isEmpty(connections)) throw new IllegalArgumentException("No connections defined");
-      if (destinationName == null) throw new IllegalArgumentException("No destination name provided");
-      return new JMSRequestSink(connections, destinationName, timeToLive, priority, persistent,
-              maxMessageSize, protocolVersion);
+      return new JMSRequestSink(contextFactoryName, contextURL, connectionFactoryName,
+              username, password, connectionProperties, destinationName,
+              priority, maxMessageSize, protocolVersion);
     }
 
     //setters
-
-    public Builder addConnection(JMSConnection c) {
-      this.connections = ListUtils.addToList(this.connections, c);
-      return this;
-    }
-
-    public Builder setConnections(List<JMSConnection> connections) {
-      this.connections = connections;
-      return this;
-    }
-
-    public Builder setDestinationName(String destinationName) {
-      this.destinationName = destinationName;
-      return this;
-    }
-
-    public Builder setTimeToLive(int timeToLive) {
-      this.timeToLive = timeToLive;
-      return this;
-    }
-
-    public Builder setPriority(int priority) {
-      this.priority = priority;
-      return this;
-    }
-
-    public Builder setPersistent(boolean persistent) {
-      this.persistent = persistent;
-      return this;
-    }
-
-    public Builder setMaxMessageSize(int maxMessageSize) {
-      this.maxMessageSize = maxMessageSize;
-      return this;
-    }
 
     public Builder setProtocolVersion(ProtocolVersion protocolVersion) {
       this.protocolVersion = protocolVersion;
       return this;
     }
+
   }
 
 
   //inner classes
 
-  static class OngoingCallState {
-    private final RequestContext requestContext;
-    private final ClassLoader classLoader;
-    private final Map<String, Collection<MessageFragment>> fragments = new ConcurrentHashMap<>();
-
-    OngoingCallState(RequestContext requestContext, ClassLoader classLoader) {
-      this.requestContext = requestContext;
-      this.classLoader = classLoader;
-    }
-
-    boolean addFragment(BytesMessage fragment) throws JMSException {
-      if (fragment == null) throw new IllegalArgumentException("fragment was null");
-      if (!fragment.propertyExists(PROPERTY_RESPONSE_ID)) {
-        LOGGER.warning(RECEIVED_FRAGMENT_WITHOUT + PROPERTY_RESPONSE_ID);
-        return false;
-      }
-      if (!fragment.propertyExists(PROPERTY_FRAGMENTS_IDX)) {
-        LOGGER.warning(RECEIVED_FRAGMENT_WITHOUT + PROPERTY_FRAGMENTS_IDX);
-        return false;
-      }
-      fragments
-              .computeIfAbsent(fragment.getStringProperty(PROPERTY_RESPONSE_ID), id -> new LinkedBlockingDeque<>())
-              .add(new MessageFragment(fragment));
-      return true;
-    }
-
-    boolean assembleFragments(javax.jms.Message endMessage) {
-      if (endMessage == null) throw new IllegalArgumentException("end-message was null");
-      try {
-        if (!endMessage.propertyExists(PROPERTY_RESPONSE_ID)) {
-          LOGGER.warning(RECEIVED_END_OF_FRAGMENTS_WITHOUT + PROPERTY_RESPONSE_ID);
-          return false;
-        }
-        if (!endMessage.propertyExists(PROPERTY_FRAGMENTS_TOTAL)) {
-          LOGGER.warning(RECEIVED_END_OF_FRAGMENTS_WITHOUT + PROPERTY_FRAGMENTS_TOTAL);
-          return false;
-        }
-        if (!endMessage.propertyExists(PROPERTY_DATA_CHECKSUM_MD5)) {
-          LOGGER.warning(RECEIVED_END_OF_FRAGMENTS_WITHOUT + PROPERTY_DATA_CHECKSUM_MD5);
-          return false;
-        }
-        String responseID = endMessage.getStringProperty(PROPERTY_RESPONSE_ID);
-        int totalFragments = endMessage.getIntProperty(PROPERTY_FRAGMENTS_TOTAL);
-        String checksum = endMessage.getStringProperty(PROPERTY_DATA_CHECKSUM_MD5);
-        Collection<MessageFragment> responseFragments = this.fragments.get(responseID);
-        if (isEmpty(responseFragments)) {
-          LOGGER.warning("Received fragment end-message without preceding fragments");
-          return false;
-        }
-        byte[] reassembledData = JMSUtils.reassembleFragments(responseFragments, totalFragments, checksum);
-        return requestContext.addResponse(JMSUtils.unserialize(reassembledData, classLoader));
-      } catch (JMSException | IOException | ClassNotFoundException e) {
-        LOGGER.warning(e,"Error unpacking fragments");
-        return false;
-      }
-    }
-  }
 }

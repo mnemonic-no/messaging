@@ -6,6 +6,7 @@ import org.mockito.Mockito;
 
 import javax.jms.BytesMessage;
 import javax.jms.JMSException;
+import javax.jms.Message;
 import java.io.ByteArrayInputStream;
 import java.io.IOException;
 import java.io.Serializable;
@@ -173,7 +174,7 @@ public class JMSUtilsTest {
     return true;
   }
 
-  private static byte[] barray(int... values) {
+  public static byte[] barray(int... values) {
     byte[] result = new byte[values.length];
     for (int i = 0; i < result.length; i++) {
       result[i] = (byte) values[i];

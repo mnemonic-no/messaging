@@ -14,6 +14,8 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 
+import static no.mnemonic.commons.utilities.collections.ListUtils.*;
+
 /**
  * Common implementation for asynchronous response handling.
  * <p>
@@ -73,19 +75,19 @@ public class RequestHandler implements RequestContext {
   }
 
   public void notifyError(Throwable e) {
+    error.set(e);
     synchronized (this) {
-      error.set(e);
       this.notifyAll();
     }
     close();
   }
 
   public boolean addResponse(Message msg) {
+    if (isClosed()) return false;
+    responses.add(msg);
+    //whenever receiving another response, this is an implicit 10sec keepalive
+    keepAlive(clock.millis() + KEEPALIVE_PERIOD);
     synchronized (this) {
-      if (isClosed()) return false;
-      responses.add(msg);
-      //whenever receiving another response, this is an implicit 10sec keepalive
-      keepAlive(clock.millis() + KEEPALIVE_PERIOD);
       this.notifyAll();
     }
     return true;
@@ -110,17 +112,17 @@ public class RequestHandler implements RequestContext {
   public boolean waitForEndOfStream(long maxWait) {
     long localTimeout = clock.millis() + maxWait;
     try {
-      synchronized (this) {
-        //do not wait if EOS has already been received
-        if (isClosed()) return true;
-        //wait until timeout, but never longer
-        long now;
-        while ((now = clock.millis()) < localTimeout) {
+      //do not wait if EOS has already been received
+      if (isClosed()) return true;
+      //wait until timeout, but never longer
+      long now;
+      while ((now = clock.millis()) < localTimeout) {
+        synchronized (this) {
           this.wait(localTimeout - now);
-          if (isClosed() || hasReceivedError()) return isClosed();
         }
-        return isClosed();
+        if (isClosed() || hasReceivedError()) return isClosed();
       }
+      return isClosed();
     } catch (InterruptedException e) {
       LOGGER.warning(e, "Interrupted");
       return isClosed();
@@ -133,9 +135,7 @@ public class RequestHandler implements RequestContext {
    * @return true if the response stream has received an error
    */
   public boolean hasReceivedError() {
-    synchronized (this) {
-      return error.get() != null;
-    }
+    return error.get() != null;
   }
 
   /**
@@ -143,14 +143,14 @@ public class RequestHandler implements RequestContext {
    * Further responses to this signal will be ignored
    */
   public void close() {
+    closed.set(true);
     synchronized (this) {
-      closed.set(true);
       this.notifyAll();
-      requestListeners.forEach(l -> LambdaUtils.tryTo(
-              () -> l.close(callID),
-              e -> LOGGER.warning(e, "Error invoking RequestListener")
-      ));
     }
+    list(requestListeners).forEach(l -> LambdaUtils.tryTo(
+            () -> l.close(callID),
+            e -> LOGGER.warning(e, "Error invoking RequestListener")
+    ));
   }
 
   /**
@@ -164,7 +164,7 @@ public class RequestHandler implements RequestContext {
     Collection<Message> result = new ArrayList<>();
     responses.drainTo(result);
     //noinspection unchecked
-    return ListUtils.list(result, v -> (T) v);
+    return list(result, v -> (T) v);
   }
 
 
@@ -192,16 +192,16 @@ public class RequestHandler implements RequestContext {
    */
   public <T extends Message> T getNextResponse(long maxWait) throws InvocationTargetException {
     try {
-      synchronized (this) {
-        checkIfReceivedError();
-        if (responses.isEmpty()) {
-          if (isClosed()) return null;
+      checkIfReceivedError();
+      if (responses.isEmpty()) {
+        if (isClosed()) return null;
+        synchronized (this) {
           this.wait(maxWait);
-          checkIfReceivedError();
         }
-        //noinspection unchecked
-        return (T) responses.poll();
+        checkIfReceivedError();
       }
+      //noinspection unchecked
+      return (T) responses.poll();
     } catch (InterruptedException e) {
       throw new RuntimeException(e);
     }
@@ -222,16 +222,16 @@ public class RequestHandler implements RequestContext {
     //wait for timeout (or enough responses)
     while (timeout > 0 && clock.millis() < timeout) {
       // if enough responses have come, return responses (so far)
-      synchronized (this) {
-        checkIfReceivedError();
-        if (responses.size() >= maxResults || isClosed()) {
-          return getResponsesNoWait();
-        }
-        try {
+      checkIfReceivedError();
+      if (responses.size() >= maxResults || isClosed()) {
+        return getResponsesNoWait();
+      }
+      try {
+        synchronized (this) {
           this.wait(Math.max(1, timeout - clock.millis()));
-        } catch (InterruptedException e) {
-          throw new RuntimeException(e);
         }
+      } catch (InterruptedException e) {
+        throw new RuntimeException(e);
       }
     }
     //if timeout has passed, return responses received so far

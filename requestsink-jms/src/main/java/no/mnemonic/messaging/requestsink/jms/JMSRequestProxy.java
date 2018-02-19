@@ -9,12 +9,10 @@ import no.mnemonic.commons.utilities.lambda.LambdaUtils;
 import no.mnemonic.messaging.requestsink.Message;
 import no.mnemonic.messaging.requestsink.RequestSink;
 
-import javax.jms.Destination;
-import javax.jms.ExceptionListener;
-import javax.jms.JMSException;
-import javax.jms.MessageListener;
+import javax.jms.*;
 import javax.naming.NamingException;
 import java.io.IOException;
+import java.lang.IllegalStateException;
 import java.util.HashSet;
 import java.util.Map;
 import java.util.Set;
@@ -54,6 +52,8 @@ public class JMSRequestProxy extends JMSBase implements MessageListener, Excepti
   private final LongAdder ignoredCallsCounter = new LongAdder();
   private final LongAdder errorCallsCounter = new LongAdder();
   private final ExecutorService executor;
+  private MessageProducer replyProducer;
+  private MessageConsumer consumer;
 
   private final Set<JMSRequestProxyConnectionListener> connectionListeners = new HashSet<>();
 
@@ -72,14 +72,17 @@ public class JMSRequestProxy extends JMSBase implements MessageListener, Excepti
     this.executor = Executors.newFixedThreadPool(
             maxConcurrentCalls,
             new ThreadFactoryBuilder().setNamePrefix("JMSRequestProxy").build()
-            );
+    );
     this.semaphore = new Semaphore(maxConcurrentCalls);
   }
 
   @Override
   public void startComponent() {
     try {
-      getMessageConsumer().setMessageListener(this);
+      replyProducer = getSession().createProducer(null);
+      replyProducer.setDeliveryMode(DeliveryMode.NON_PERSISTENT);
+      consumer = getSession().createConsumer(getDestination());
+      consumer.setMessageListener(this);
       SetUtils.set(connectionListeners).forEach(l -> l.connected(this));
     } catch (JMSException | NamingException e) {
       throw new IllegalStateException(e);
@@ -90,13 +93,13 @@ public class JMSRequestProxy extends JMSBase implements MessageListener, Excepti
   public void stopComponent() {
     try {
       //stop accepting messages
-      getMessageConsumer().setMessageListener(null);
+      consumer.setMessageListener(null);
       //stop executor
       executor.shutdown();
       //wait for ongoing requests to finish
       LambdaUtils.tryTo(
-              ()->executor.awaitTermination(10, TimeUnit.SECONDS),
-              e->LOGGER.warning("Error waiting for executor termination")
+              () -> executor.awaitTermination(10, TimeUnit.SECONDS),
+              e -> LOGGER.warning("Error waiting for executor termination")
       );
     } catch (Exception e) {
       LOGGER.warning(e, "Error stopping request proxy");
@@ -105,6 +108,7 @@ public class JMSRequestProxy extends JMSBase implements MessageListener, Excepti
     super.stopComponent();
   }
 
+  @Override
   public void onException(JMSException e) {
     errorCallsCounter.increment();
     super.onException(e);
@@ -220,7 +224,7 @@ public class JMSRequestProxy extends JMSBase implements MessageListener, Excepti
 
   private void handleChannelUploadCompleted(String callID, byte[] data, Destination replyTo, long timeout, ProtocolVersion protocolVersion) throws IOException, ClassNotFoundException, JMSException, NamingException {
     // create a response context to handle response messages
-    ServerResponseContext r = new ServerResponseContext(callID, getSession(), replyTo, timeout, protocolVersion, getMaxMessageSize());
+    ServerResponseContext r = new ServerResponseContext(callID, getSession(), replyProducer, replyTo, timeout, protocolVersion, getMaxMessageSize());
     // overwrite channel upload context with a server response context
     calls.put(callID, r);
     //send uploaded signal to requestSink
@@ -259,7 +263,7 @@ public class JMSRequestProxy extends JMSBase implements MessageListener, Excepti
     ServerContext ctx = calls.get(callID);
     if (ctx != null) return (ServerResponseContext) ctx;
     //create new response context
-    ServerResponseContext context = new ServerResponseContext(callID, getSession(), replyTo, timeout, protocolVersion, getMaxMessageSize());
+    ServerResponseContext context = new ServerResponseContext(callID, getSession(), replyProducer, replyTo, timeout, protocolVersion, getMaxMessageSize());
     // register this responsesink
     calls.put(callID, context);
     // and return it

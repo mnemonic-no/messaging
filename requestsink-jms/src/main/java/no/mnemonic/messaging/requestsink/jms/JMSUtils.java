@@ -149,6 +149,12 @@ class JMSUtils {
     );
   }
 
+  static void closeConsumer(MessageConsumer consumer) {
+    ifNotNullDo(consumer,
+            c -> tryTo(c::close, e -> LOGGER.warning(e, "Could not close consumer"))
+    );
+  }
+
   static void deleteTemporaryQueue(TemporaryQueue queue) {
     ifNotNullDo(queue,
             q -> tryTo(q::delete, e -> LOGGER.warning(e, "Could not delete temporary queue"))

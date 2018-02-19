@@ -6,8 +6,6 @@ import no.mnemonic.commons.logging.Logging;
 import no.mnemonic.commons.utilities.AppendMembers;
 import no.mnemonic.commons.utilities.AppendUtils;
 import no.mnemonic.commons.utilities.StringUtils;
-import no.mnemonic.commons.utilities.collections.MapUtils;
-import no.mnemonic.messaging.requestsink.MessagingException;
 
 import javax.jms.*;
 import javax.naming.InitialContext;
@@ -64,8 +62,6 @@ public abstract class JMSBase implements LifecycleAspect, AppendMembers, Excepti
   private final AtomicReference<Connection> connection = new AtomicReference<>();
   private final AtomicReference<Session> session = new AtomicReference<>();
   private final AtomicReference<Destination> destination = new AtomicReference<>();
-  private final AtomicReference<MessageConsumer> consumer = new AtomicReference<>();
-  private final AtomicReference<MessageProducer> producer = new AtomicReference<>();
 
   // ************************* constructors ********************************
 
@@ -143,8 +139,6 @@ public abstract class JMSBase implements LifecycleAspect, AppendMembers, Excepti
   private void closeAllResources() {
     try {
       // try to nicely shut down all resources
-      executeAndReset(consumer, MessageConsumer::close, "Error closing consumer");
-      executeAndReset(producer, MessageProducer::close, "Error closing producer");
       executeAndReset(session, Session::close, "Error closing session");
       executeAndReset(connection, Connection::close, "Error closing connection");
     } finally {
@@ -166,8 +160,6 @@ public abstract class JMSBase implements LifecycleAspect, AppendMembers, Excepti
   private void resetState() {
     session.set(null);
     destination.set(null);
-    consumer.set(null);
-    producer.set(null);
   }
 
   private InitialContext getInitialContext() throws NamingException, JMSException {
@@ -188,16 +180,6 @@ public abstract class JMSBase implements LifecycleAspect, AppendMembers, Excepti
   Session getSession() throws JMSException, NamingException {
     if (isClosed()) throw new IllegalStateException(ERROR_CLOSED);
     return getOrUpdateSynchronized(session, () -> getConnection().createSession(false, Session.AUTO_ACKNOWLEDGE));
-  }
-
-  MessageConsumer getMessageConsumer() throws JMSException, NamingException {
-    if (isClosed()) throw new IllegalStateException(ERROR_CLOSED);
-    return getOrUpdateSynchronized(consumer, () -> getSession().createConsumer(getDestination()));
-  }
-
-  MessageProducer getMessageProducer() throws JMSException, NamingException {
-    if (isClosed()) throw new IllegalStateException(ERROR_CLOSED);
-    return getOrUpdateSynchronized(producer, () -> getSession().createProducer(getDestination()));
   }
 
   private InitialContext createInitialContext() throws NamingException {

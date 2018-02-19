@@ -35,23 +35,24 @@ class ServerResponseContext implements RequestContext, ServerContext {
   private static Clock clock = Clock.systemUTC();
 
   private final Session session;
-  private final MessageProducer replyTo;
+  private final MessageProducer replyProducer;
+  private final Destination replyTo;
   private final String callID;
   private final AtomicLong timeout = new AtomicLong();
   private final AtomicBoolean closed = new AtomicBoolean();
   private final ProtocolVersion protocolVersion;
   private final int maxMessageSize;
 
-  ServerResponseContext(String callID, Session session, Destination replyTo, long timeout, ProtocolVersion protocolVersion, int maxMessageSize) throws NamingException, JMSException {
+  ServerResponseContext(String callID, Session session, MessageProducer replyProducer, Destination replyTo, long timeout, ProtocolVersion protocolVersion, int maxMessageSize) throws NamingException, JMSException {
     this.callID = assertNotNull(callID, "CallID not set");
-    this.session = assertNotNull(session, "Session not set");
+    this.session = assertNotNull(session, "session not set");
+    this.replyProducer = assertNotNull(replyProducer, "replyProducer not set");
+    this.replyTo = assertNotNull(replyTo, "replyTo not set");
     this.protocolVersion = assertNotNull(protocolVersion, "ProtocolVersion not set");
     if (maxMessageSize <= 1) throw new IllegalArgumentException("MaxMessageSize must be a positive integer");
     this.maxMessageSize = maxMessageSize;
     if (timeout <= 0) throw new IllegalArgumentException("Timeout must be a positive integer");
     this.timeout.set(timeout);
-    //create a producer to send responses back to client
-    this.replyTo = session.createProducer(replyTo);
   }
 
   /**
@@ -78,7 +79,7 @@ class ServerResponseContext implements RequestContext, ServerContext {
       closeMessage.setJMSCorrelationID(callID);
       closeMessage.setStringProperty(PROPERTY_MESSAGE_TYPE, MESSAGE_TYPE_EXTEND_WAIT);
       closeMessage.setLongProperty(PROPERTY_REQ_TIMEOUT, until);
-      replyTo.send(closeMessage);
+      replyProducer.send(replyTo, closeMessage);
       if (LOGGER.isDebug()) {
         LOGGER.debug(">> keepalive [callID=%s until=%s replyTo=%s]", callID, new Date(until), replyTo);
       }
@@ -117,7 +118,7 @@ class ServerResponseContext implements RequestContext, ServerContext {
     returnMessage.setJMSCorrelationID(callID);
     returnMessage.setStringProperty(PROPERTY_MESSAGE_TYPE, MESSAGE_TYPE_SIGNAL_RESPONSE);
     // send return message
-    replyTo.send(returnMessage);
+    replyProducer.send(replyTo, returnMessage);
     if (LOGGER.isDebug()) {
       LOGGER.debug(">> addResponse [callID=%s size=%d replyTo=%s]", callID, messageBytes.length, replyTo);
     }
@@ -136,7 +137,7 @@ class ServerResponseContext implements RequestContext, ServerContext {
           fragment.setStringProperty(PROPERTY_RESPONSE_ID, responseID.toString());
           fragment.setIntProperty(PROPERTY_FRAGMENTS_IDX, idx);
           //send fragment to upload channel
-          replyTo.send(fragment);
+          replyProducer.send(replyTo, fragment);
           if (LOGGER.isDebug()) {
             LOGGER.debug(">> addFragmentedResponse [callID=%s responseID=%s idx=%d size=%d replyTo=%s]", callID, responseID, idx, data.length, replyTo);
           }
@@ -153,7 +154,7 @@ class ServerResponseContext implements RequestContext, ServerContext {
           eof.setIntProperty(PROPERTY_FRAGMENTS_TOTAL, fragments);
           eof.setStringProperty(PROPERTY_DATA_CHECKSUM_MD5, JMSUtils.hex(digest));
           //send EOS
-          replyTo.send(eof);
+          replyProducer.send(replyTo, eof);
           if (LOGGER.isDebug()) {
             LOGGER.debug(">> fragmentedResponse EOF [callID=%s responseID=%s fragments=%d replyTo=%s]", callID, responseID, fragments, replyTo);
           }
@@ -164,7 +165,6 @@ class ServerResponseContext implements RequestContext, ServerContext {
 
   private void close() {
     closed.set(true);
-    JMSUtils.closeProducer(replyTo);
   }
 
   public boolean isClosed() {
@@ -191,7 +191,7 @@ class ServerResponseContext implements RequestContext, ServerContext {
         javax.jms.Message exMessage = JMSUtils.createByteMessage(session, JMSUtils.serialize(ex), protocolVersion);
         exMessage.setJMSCorrelationID(callID);
         exMessage.setStringProperty(PROPERTY_MESSAGE_TYPE, MESSAGE_TYPE_EXCEPTION);
-        replyTo.send(exMessage);
+        replyProducer.send(replyTo, exMessage);
         if (LOGGER.isDebug()) {
           LOGGER.debug(">> notifyErrorToClient [callID=%s exception=%s replyTo=%s]", callID, e.getClass(), replyTo);
         }
@@ -209,7 +209,7 @@ class ServerResponseContext implements RequestContext, ServerContext {
         javax.jms.Message closeMessage = JMSUtils.createTextMessage(session, "stream closed", protocolVersion);
         closeMessage.setJMSCorrelationID(callID);
         closeMessage.setStringProperty(PROPERTY_MESSAGE_TYPE, MESSAGE_TYPE_STREAM_CLOSED);
-        replyTo.send(closeMessage);
+        replyProducer.send(replyTo, closeMessage);
         if (LOGGER.isDebug()) {
           LOGGER.debug(">> endOfStream [callID=%s replyTo=%s]", callID, replyTo);
         }

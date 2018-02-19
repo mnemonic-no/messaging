@@ -49,71 +49,69 @@ public class ClientResponseListenerTest {
   }
 
   @Test
-  public void testSetup() throws JMSException {
-    verify(session).createTemporaryQueue();
-    verify(session).createConsumer(temporaryQueue);
-    verify(messageConsumer).setMessageListener(listener);
+  public void testSetupDoesNoInvocations() throws JMSException {
+    verifyNoMoreInteractions(session);
   }
 
   @Test
   public void testNullMessage() throws JMSException, IOException {
-    listener.onMessage(null);
+    listener.handleResponse(null);
     verifyNoMoreInteractions(requestContext);
   }
 
   @Test
   public void testMessageWithoutProtocolVersion() throws JMSException, IOException {
-    listener.onMessage(new MockMessageBuilder<>(TextMessage.class).build());
+    listener.handleResponse(new MockMessageBuilder<>(TextMessage.class).build());
     verifyNoMoreInteractions(requestContext);
   }
 
   @Test
   public void testMessageWithoutType() throws JMSException, IOException {
-    listener.onMessage(textMessage().build());
+    listener.handleResponse(textMessage().build());
     verifyNoMoreInteractions(requestContext);
   }
 
   @Test
   public void testAddSingleResponse() throws JMSException, IOException {
-    listener.onMessage(createResponseMessage(CALL_ID, testMessage));
+    listener.handleResponse(createResponseMessage(CALL_ID, testMessage));
     verify(requestContext).addResponse(eq(testMessage));
   }
 
   @Test
   public void testAddSingleResponseWithWrongCallID() throws JMSException, IOException {
-    listener.onMessage(createResponseMessage("invalid", testMessage));
+    listener.handleResponse(createResponseMessage("invalid", testMessage));
     verifyNoMoreInteractions(requestContext);
   }
 
   @Test
   public void testAddSingleResponseWithClosedRequestContext() throws JMSException, IOException {
     when(requestContext.isClosed()).thenReturn(true);
-    listener.onMessage(createResponseMessage(CALL_ID, testMessage));
+    listener.handleResponse(createResponseMessage(CALL_ID, testMessage));
     verify(requestContext, never()).addResponse(any());
   }
 
   @Test
   public void testEndOfStream() throws JMSException {
-    listener.onMessage(createEOS(CALL_ID));
+    listener.handleResponse(createEOS(CALL_ID));
     verify(requestContext).endOfStream();
   }
 
   @Test
   public void testErrorSignal() throws JMSException, IOException {
-    listener.onMessage(createErrorSignal(CALL_ID, new IllegalStateException()));
+    listener.handleResponse(createErrorSignal(CALL_ID, new IllegalStateException()));
     verify(requestContext).notifyError(isA(IllegalStateException.class));
   }
 
   @Test
   public void testExtendWait() throws JMSException {
-    listener.onMessage(createExtendWaitMessage(CALL_ID, 1000));
+    listener.handleResponse(createExtendWaitMessage(CALL_ID, 1000));
     verify(requestContext).keepAlive(1000);
   }
 
   @Test
   public void testExtendWaitWithClosedRequestContext() throws JMSException {
     when(requestContext.isClosed()).thenReturn(true);
-    listener.onMessage(createExtendWaitMessage(CALL_ID, 1000));
+    listener.handleResponse(createExtendWaitMessage(CALL_ID, 1000));
     verify(requestContext, never()).keepAlive(anyLong());
   }
 
@@ -122,9 +120,9 @@ public class ClientResponseListenerTest {
     TestMessage message = new TestMessage("abc");
     byte[] messageBytes = JMSUtils.serialize(message);
 
-    listener.onMessage(createMessageFragment(CALL_ID, "response1", Arrays.copyOfRange(messageBytes, 0, 3), 0));
-    listener.onMessage(createMessageFragment(CALL_ID, "response1", Arrays.copyOfRange(messageBytes, 3, messageBytes.length), 1));
-    listener.onMessage(createEOF(CALL_ID, "response1", 2, JMSUtils.md5(messageBytes)));
+    listener.handleResponse(createMessageFragment(CALL_ID, "response1", Arrays.copyOfRange(messageBytes, 0, 3), 0));
+    listener.handleResponse(createMessageFragment(CALL_ID, "response1", Arrays.copyOfRange(messageBytes, 3, messageBytes.length), 1));
+    listener.handleResponse(createEOF(CALL_ID, "response1", 2, JMSUtils.md5(messageBytes)));
 
     verify(requestContext).addResponse(eq(message));
   }

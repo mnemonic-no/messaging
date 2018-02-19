@@ -5,14 +5,14 @@ import no.mnemonic.commons.logging.Logging;
 import no.mnemonic.commons.utilities.ObjectUtils;
 import no.mnemonic.commons.utilities.collections.ListUtils;
 import no.mnemonic.commons.utilities.lambda.LambdaUtils;
+import no.mnemonic.messaging.requestsink.Message;
 import no.mnemonic.messaging.requestsink.*;
 
-import javax.jms.DeliveryMode;
-import javax.jms.Destination;
-import javax.jms.JMSException;
+import javax.jms.*;
 import javax.naming.NamingException;
 import java.io.ByteArrayInputStream;
 import java.io.IOException;
+import java.lang.IllegalStateException;
 import java.util.Date;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
@@ -56,7 +56,7 @@ import static no.mnemonic.commons.utilities.collections.SetUtils.set;
  * V1 - Initial version, supports requests with multiple replies (streaming result) and upload channel for fragmented request (for large request messages)
  * V2 - Added support for fragmented response (for large single-object response messages)
  */
-public class JMSRequestSink extends JMSBase implements RequestSink, RequestListener {
+public class JMSRequestSink extends JMSBase implements RequestSink, RequestListener, MessageListener {
 
   private static final Logger LOGGER = Logging.getLogger(JMSRequestSink.class);
 
@@ -67,6 +67,9 @@ public class JMSRequestSink extends JMSBase implements RequestSink, RequestListe
   private final ConcurrentHashMap<String, ClientRequestState> requests = new ConcurrentHashMap<>();
   private final ConcurrentHashMap<String, ClientResponseListener> responseListeners = new ConcurrentHashMap<>();
   private final ExecutorService executor;
+  private MessageProducer producer;
+  private TemporaryQueue responseQueue;
+  private MessageConsumer responseConsumer;
 
   private JMSRequestSink(String contextFactoryName, String contextURL, String connectionFactoryName,
                          String username, String password, Map<String, String> connectionProperties,
@@ -81,8 +84,32 @@ public class JMSRequestSink extends JMSBase implements RequestSink, RequestListe
     this.protocolVersion = protocolVersion;
   }
 
-
   // **************** interface methods **************************
+
+  public void onMessage(javax.jms.Message message) {
+    try {
+      if (!JMSUtils.isCompatible(message)) {
+        LOGGER.warning("Ignoring message of incompatible version");
+        return;
+      }
+      if (message.getJMSCorrelationID() == null) {
+        LOGGER.warning("Message received without callID");
+        return;
+      }
+      ClientResponseListener responseListener = responseListeners.get(message.getJMSCorrelationID());
+      if (responseListener == null) {
+        LOGGER.warning("No response handler for callID: %s (type=%s)",
+                message.getJMSCorrelationID(),
+                message.getStringProperty(PROPERTY_MESSAGE_TYPE));
+        return;
+      }
+      responseListener.handleResponse(message);
+    } catch (Exception e) {
+      LOGGER.error(e, "Error receiving message");
+    }
+  }
+
+  @Override
   public <T extends RequestContext> T signal(Message msg, final T signalContext, long maxWait) {
     //make sure message has callID set
     if (msg.getCallID() == null) {
@@ -103,18 +130,24 @@ public class JMSRequestSink extends JMSBase implements RequestSink, RequestListe
     return signalContext;
   }
 
+  @Override
   public void close(String callID) {
     //close the specified request
     requests.remove(callID);
-    ClientResponseListener listener = responseListeners.remove(callID);
-    if (listener != null) {
-      listener.close();
-    }
+    responseListeners.remove(callID);
   }
 
   @Override
   public void onException(JMSException e) {
     super.onException(e);
+    LOGGER.warning("Invalidating temporary response queue");
+
+    JMSUtils.closeProducer(producer);
+    JMSUtils.closeConsumer(responseConsumer);
+    JMSUtils.deleteTemporaryQueue(responseQueue);
+
+    setupProducerAndConsumer();
+
     //on exception, notify all ongoing requests of the error
     ListUtils.list(requests.values()).forEach(ctx -> LambdaUtils.tryTo(
             () -> ctx.getRequestContext().notifyError(e),
@@ -126,7 +159,7 @@ public class JMSRequestSink extends JMSBase implements RequestSink, RequestListe
 
   @Override
   public void startComponent() {
-    //nothing to do
+    setupProducerAndConsumer();
   }
 
   @Override
@@ -139,8 +172,19 @@ public class JMSRequestSink extends JMSBase implements RequestSink, RequestListe
     );
   }
 
-
   // ****************** private methods ************************
+
+  private void setupProducerAndConsumer() {
+    try {
+      producer = getSession().createProducer(getDestination());
+      producer.setDeliveryMode(DeliveryMode.NON_PERSISTENT);
+      responseQueue = getSession().createTemporaryQueue();
+      responseConsumer = getSession().createConsumer(responseQueue);
+      responseConsumer.setMessageListener(this);
+    } catch (JMSException | NamingException e1) {
+      LOGGER.error(e1, "Error reestablishing producers and consumers");
+    }
+  }
 
   private void cleanResponseState() {
     for (Map.Entry<String, ClientRequestState> e : set(requests.entrySet())) {
@@ -170,7 +214,7 @@ public class JMSRequestSink extends JMSBase implements RequestSink, RequestListe
       requests.put(msg.getCallID(), handler);
       responseListeners.put(msg.getCallID(), responseListener);
       //send signal message
-      sendMessage(messageBytes, msg.getCallID(), messageType, maxWait, responseListener.getResponseQueue());
+      sendMessage(messageBytes, msg.getCallID(), messageType, maxWait, responseQueue);
     } catch (IOException | JMSException | NamingException e) {
       LOGGER.warning(e, "Error in checkForFragmentationAndSignal");
       throw new IllegalStateException(e);
@@ -185,7 +229,7 @@ public class JMSRequestSink extends JMSBase implements RequestSink, RequestListe
       m.setJMSCorrelationID(callID);
       m.setStringProperty(JMSRequestProxy.PROPERTY_MESSAGE_TYPE, messageType);
       m.setLongProperty(JMSRequestProxy.PROPERTY_REQ_TIMEOUT, timeout);
-      getMessageProducer().send(m, (DeliveryMode.NON_PERSISTENT), getPriority(), lifeTime);
+      producer.send(m, DeliveryMode.NON_PERSISTENT, getPriority(), lifeTime);
       if (LOGGER.isDebug()) {
         LOGGER.debug(">> sendMessage [destination=%s callID=%s messageType=%s replyTo=%s timeout=%s]", getDestination(), callID, messageType, replyTo, new Date(timeout));
       }

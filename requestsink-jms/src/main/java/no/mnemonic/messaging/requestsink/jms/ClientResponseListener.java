@@ -5,7 +5,10 @@ import no.mnemonic.commons.logging.Logging;
 import no.mnemonic.commons.utilities.ClassLoaderContext;
 import no.mnemonic.messaging.requestsink.MessagingException;
 
-import javax.jms.*;
+import javax.jms.BytesMessage;
+import javax.jms.JMSException;
+import javax.jms.Message;
+import javax.jms.Session;
 import java.util.Date;
 import java.util.Objects;
 
@@ -16,15 +19,13 @@ import static no.mnemonic.messaging.requestsink.jms.JMSRequestProxy.*;
  *
  * @author joakim
  */
-class ClientResponseListener implements javax.jms.MessageListener {
+class ClientResponseListener {
 
   private static final Logger LOGGER = Logging.getLogger(ClientResponseListener.class);
   private static final String RECEIVED_FRAGMENT_WITHOUT = "Received fragment without ";
   private static final String RECEIVED_END_OF_FRAGMENTS_WITHOUT = "Received end-of-fragments without ";
 
   private final Session session;
-  private final TemporaryQueue responseQueue;
-  private final MessageConsumer responseConsumer;
   private final ClientRequestState requestState;
   private final String callID;
 
@@ -36,42 +37,14 @@ class ClientResponseListener implements javax.jms.MessageListener {
       this.callID = callID;
       this.session = session;
       this.requestState = requestState;
-      responseQueue = session.createTemporaryQueue();
-      responseConsumer = session.createConsumer(responseQueue);
-      responseConsumer.setMessageListener(this);
     } catch (Exception e) {
       LOGGER.warning(e, "Error setting up response listener");
       throw new MessagingException("Error setting up response listener", e);
     }
   }
 
-  TemporaryQueue getResponseQueue() {
-    return responseQueue;
-  }
-
-  public void onMessage(javax.jms.Message message) {
-    try {
-      if (!JMSUtils.isCompatible(message)) {
-        LOGGER.warning("Ignoring message of incompatible version");
-        return;
-      }
-      handleResponse(message);
-    } catch (Exception e) {
-      LOGGER.error(e, "Error receiving message");
-    }
-  }
-
-  void close() {
-    try {
-      JMSUtils.removeMessageListenerAndClose(responseConsumer);
-      JMSUtils.deleteTemporaryQueue(responseQueue);
-    } catch (Exception e) {
-      LOGGER.warning(e, "Error in close()");
-    }
-  }
-
   @SuppressWarnings("UnusedReturnValue")
-  private boolean handleResponse(javax.jms.Message message) throws JMSException {
+  boolean handleResponse(javax.jms.Message message) throws JMSException {
     if (message == null) {
       LOGGER.warning("No message");
       return false;

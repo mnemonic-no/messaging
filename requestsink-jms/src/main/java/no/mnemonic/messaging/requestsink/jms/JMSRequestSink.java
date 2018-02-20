@@ -2,6 +2,9 @@ package no.mnemonic.messaging.requestsink.jms;
 
 import no.mnemonic.commons.logging.Logger;
 import no.mnemonic.commons.logging.Logging;
+import no.mnemonic.commons.metrics.MetricAspect;
+import no.mnemonic.commons.metrics.MetricException;
+import no.mnemonic.commons.metrics.Metrics;
 import no.mnemonic.commons.utilities.ObjectUtils;
 import no.mnemonic.commons.utilities.collections.ListUtils;
 import no.mnemonic.commons.utilities.lambda.LambdaUtils;
@@ -56,7 +59,7 @@ import static no.mnemonic.commons.utilities.collections.SetUtils.set;
  * V1 - Initial version, supports requests with multiple replies (streaming result) and upload channel for fragmented request (for large request messages)
  * V2 - Added support for fragmented response (for large single-object response messages)
  */
-public class JMSRequestSink extends JMSBase implements RequestSink, RequestListener, MessageListener {
+public class JMSRequestSink extends JMSBase implements RequestSink, RequestListener, MessageListener, MetricAspect {
 
   private static final Logger LOGGER = Logging.getLogger(JMSRequestSink.class);
 
@@ -70,6 +73,8 @@ public class JMSRequestSink extends JMSBase implements RequestSink, RequestListe
   private MessageProducer producer;
   private TemporaryQueue responseQueue;
   private MessageConsumer responseConsumer;
+
+  private final ClientMetrics metrics = new ClientMetrics();
 
   private JMSRequestSink(String contextFactoryName, String contextURL, String connectionFactoryName,
                          String username, String password, Map<String, String> connectionProperties,
@@ -86,18 +91,27 @@ public class JMSRequestSink extends JMSBase implements RequestSink, RequestListe
 
   // **************** interface methods **************************
 
+  @Override
+  public Metrics getMetrics() throws MetricException {
+    return metrics.metrics();
+  }
+
+  @Override
   public void onMessage(javax.jms.Message message) {
     try {
       if (!JMSUtils.isCompatible(message)) {
         LOGGER.warning("Ignoring message of incompatible version");
+        metrics.incompatibleMessage();
         return;
       }
       if (message.getJMSCorrelationID() == null) {
         LOGGER.warning("Message received without callID");
+        metrics.incompatibleMessage();
         return;
       }
       ClientResponseListener responseListener = responseListeners.get(message.getJMSCorrelationID());
       if (responseListener == null) {
+        metrics.unknownCallIDMessage();
         LOGGER.warning("No response handler for callID: %s (type=%s)",
                 message.getJMSCorrelationID(),
                 message.getStringProperty(PROPERTY_MESSAGE_TYPE));
@@ -105,6 +119,7 @@ public class JMSRequestSink extends JMSBase implements RequestSink, RequestListe
       }
       responseListener.handleResponse(message);
     } catch (Exception e) {
+      metrics.error();
       LOGGER.error(e, "Error receiving message");
     }
   }
@@ -202,19 +217,21 @@ public class JMSRequestSink extends JMSBase implements RequestSink, RequestListe
       //check if we need to fragment this request message
       if (messageBytes.length > getMaxMessageSize()) {
         //if needing to fragment, replace signal context with a wrapper client upload context and send a channel request
-        ctx = new ChannelUploadMessageContext(ctx, new ByteArrayInputStream(messageBytes), msg.getCallID(), getMaxMessageSize(), protocolVersion);
+        ctx = new ChannelUploadMessageContext(ctx, new ByteArrayInputStream(messageBytes), msg.getCallID(), getMaxMessageSize(), protocolVersion, metrics);
         messageBytes = "channel upload request".getBytes();
         messageType = JMSRequestProxy.MESSAGE_TYPE_CHANNEL_REQUEST;
+        metrics.fragmentedUploadRequested();
       }
       //add handler for this request
       ClientRequestState handler = new ClientRequestState(ctx, Thread.currentThread().getContextClassLoader());
       //setup response listener for this request
-      ClientResponseListener responseListener = new ClientResponseListener(msg.getCallID(), getSession(), handler);
+      ClientResponseListener responseListener = new ClientResponseListener(msg.getCallID(), getSession(), handler, metrics);
       //register handler
       requests.put(msg.getCallID(), handler);
       responseListeners.put(msg.getCallID(), responseListener);
       //send signal message
       sendMessage(messageBytes, msg.getCallID(), messageType, maxWait, responseQueue);
+      metrics.request();
     } catch (IOException | JMSException | NamingException e) {
       LOGGER.warning(e, "Error in checkForFragmentationAndSignal");
       throw new IllegalStateException(e);
@@ -298,7 +315,6 @@ public class JMSRequestSink extends JMSBase implements RequestSink, RequestListe
       this.protocolVersion = protocolVersion;
       return this;
     }
-
   }
 
 

@@ -3,6 +3,9 @@ package no.mnemonic.messaging.requestsink.jms;
 import no.mnemonic.commons.component.Dependency;
 import no.mnemonic.commons.logging.Logger;
 import no.mnemonic.commons.logging.Logging;
+import no.mnemonic.commons.metrics.MetricAspect;
+import no.mnemonic.commons.metrics.MetricException;
+import no.mnemonic.commons.metrics.Metrics;
 import no.mnemonic.commons.utilities.ClassLoaderContext;
 import no.mnemonic.commons.utilities.collections.SetUtils;
 import no.mnemonic.commons.utilities.lambda.LambdaUtils;
@@ -18,7 +21,6 @@ import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicLong;
-import java.util.concurrent.atomic.LongAdder;
 
 /**
  * A JMSRequestProxy is the listener component handling messages sent from a
@@ -32,7 +34,7 @@ import java.util.concurrent.atomic.LongAdder;
  * not be consumed by the JMS Request Sink until a thread is available.
  * This allows multiple JMSRequestProxies to share the load from a queue, and acts as a resource limitation.
  */
-public class JMSRequestProxy extends JMSBase implements MessageListener, ExceptionListener {
+public class JMSRequestProxy extends JMSBase implements MessageListener, ExceptionListener, MetricAspect {
 
   private static final Logger LOGGER = Logging.getLogger(JMSRequestProxy.class);
 
@@ -48,10 +50,9 @@ public class JMSRequestProxy extends JMSBase implements MessageListener, Excepti
   private final Semaphore semaphore;
   private final AtomicLong lastCleanupTimestamp = new AtomicLong();
 
-  private final LongAdder totalCallsCounter = new LongAdder();
-  private final LongAdder ignoredCallsCounter = new LongAdder();
-  private final LongAdder errorCallsCounter = new LongAdder();
   private final ExecutorService executor;
+  private final ServerMetrics metrics = new ServerMetrics();
+
   private MessageProducer replyProducer;
   private MessageConsumer consumer;
 
@@ -74,6 +75,11 @@ public class JMSRequestProxy extends JMSBase implements MessageListener, Excepti
             new ThreadFactoryBuilder().setNamePrefix("JMSRequestProxy").build()
     );
     this.semaphore = new Semaphore(maxConcurrentCalls);
+  }
+
+  @Override
+  public Metrics getMetrics() throws MetricException {
+    return metrics.metrics();
   }
 
   @Override
@@ -110,7 +116,7 @@ public class JMSRequestProxy extends JMSBase implements MessageListener, Excepti
 
   @Override
   public void onException(JMSException e) {
-    errorCallsCounter.increment();
+    metrics.error();
     super.onException(e);
   }
 
@@ -132,11 +138,11 @@ public class JMSRequestProxy extends JMSBase implements MessageListener, Excepti
    * @param message message to process
    */
   private void process(javax.jms.Message message) {
-    totalCallsCounter.increment();
+    metrics.request();
     try {
       if (!JMSUtils.isCompatible(message)) {
         LOGGER.warning("Ignoring request of incompatible version: " + message);
-        ignoredCallsCounter.increment();
+        metrics.incompatibleMessage();
         return;
       }
 
@@ -144,7 +150,7 @@ public class JMSRequestProxy extends JMSBase implements MessageListener, Excepti
       long maxWait = timeout - System.currentTimeMillis();
       if (maxWait <= 0) {
         LOGGER.warning("Ignoring request: timed out");
-        ignoredCallsCounter.increment();
+        metrics.requestTimeout();
         return;
       }
 
@@ -158,7 +164,7 @@ public class JMSRequestProxy extends JMSBase implements MessageListener, Excepti
       semaphore.acquire();
       executor.submit(() -> doProcessMessage(message, messageType, timeout));
     } catch (Exception e) {
-      errorCallsCounter.increment();
+      metrics.error();
       LOGGER.warning(e, "Error handling message");
     }
   }
@@ -171,11 +177,11 @@ public class JMSRequestProxy extends JMSBase implements MessageListener, Excepti
       } else if (MESSAGE_TYPE_CHANNEL_REQUEST.equals(messageType)) {
         handleChannelRequest(message, timeout);
       } else {
-        ignoredCallsCounter.increment();
+        metrics.incompatibleMessage();
         LOGGER.warning("Ignoring unrecognized request type: " + messageType);
       }
     } catch (Exception e) {
-      errorCallsCounter.increment();
+      metrics.error();
       LOGGER.error(e, "Error handling JMS call");
     } finally {
       semaphore.release();
@@ -213,7 +219,7 @@ public class JMSRequestProxy extends JMSBase implements MessageListener, Excepti
     //ignore requests without a clear response destination/call ID
     if (callID == null || responseDestination == null) {
       LOGGER.info("Request without return information ignored: " + message);
-      ignoredCallsCounter.increment();
+      metrics.incompatibleMessage();
       return;
     }
     if (LOGGER.isDebug()) {
@@ -224,7 +230,7 @@ public class JMSRequestProxy extends JMSBase implements MessageListener, Excepti
 
   private void handleChannelUploadCompleted(String callID, byte[] data, Destination replyTo, long timeout, ProtocolVersion protocolVersion) throws IOException, ClassNotFoundException, JMSException, NamingException {
     // create a response context to handle response messages
-    ServerResponseContext r = new ServerResponseContext(callID, getSession(), replyProducer, replyTo, timeout, protocolVersion, getMaxMessageSize());
+    ServerResponseContext r = new ServerResponseContext(callID, getSession(), replyProducer, replyTo, timeout, protocolVersion, getMaxMessageSize(), metrics);
     // overwrite channel upload context with a server response context
     calls.put(callID, r);
     //send uploaded signal to requestSink
@@ -232,6 +238,7 @@ public class JMSRequestProxy extends JMSBase implements MessageListener, Excepti
       // requestsink will broadcast signal, and responses sent to response mockSink
       //use the classloader for the receiving sink when extracting object
       Message request = JMSUtils.unserialize(data, classLoaderCtx.getContextClassLoader());
+      metrics.fragmentedUploadCompleted();
       r.handle(requestSink, request);
     }
   }
@@ -263,7 +270,7 @@ public class JMSRequestProxy extends JMSBase implements MessageListener, Excepti
     ServerContext ctx = calls.get(callID);
     if (ctx != null) return (ServerResponseContext) ctx;
     //create new response context
-    ServerResponseContext context = new ServerResponseContext(callID, getSession(), replyProducer, replyTo, timeout, protocolVersion, getMaxMessageSize());
+    ServerResponseContext context = new ServerResponseContext(callID, getSession(), replyProducer, replyTo, timeout, protocolVersion, getMaxMessageSize(), metrics);
     // register this responsesink
     calls.put(callID, context);
     // and return it
@@ -271,10 +278,11 @@ public class JMSRequestProxy extends JMSBase implements MessageListener, Excepti
   }
 
   private void setupChannel(String callID, Destination replyTo, long timeout, ProtocolVersion protocolVersion) throws NamingException, JMSException {
+    metrics.fragmentedUploadRequested();
     ServerContext ctx = calls.get(callID);
     if (ctx != null) return;
     //create new upload context
-    ServerChannelUploadContext context = new ServerChannelUploadContext(callID, getSession(), replyTo, timeout, protocolVersion);
+    ServerChannelUploadContext context = new ServerChannelUploadContext(callID, getSession(), replyTo, timeout, protocolVersion, metrics);
     // register this responsesink
     calls.put(callID, context);
     //listen on upload messages and transmit channel setup

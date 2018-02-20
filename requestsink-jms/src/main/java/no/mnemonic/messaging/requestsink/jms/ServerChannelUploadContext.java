@@ -32,17 +32,19 @@ class ServerChannelUploadContext implements JMSRequestProxy.ServerContext {
   private final BlockingQueue<MessageFragment> fragments = new LinkedBlockingDeque<>();
   private final AtomicLong timeout = new AtomicLong();
   private final ProtocolVersion protocolVersion;
+  private final ServerMetrics metrics;
 
   private UploadHandler uploadHandler;
   private MessageProducer replyTo;
   private TemporaryQueue channelQueue;
   private MessageConsumer channelConsumer;
 
-  ServerChannelUploadContext(String callID, Session session, Destination responseDestination, long timeout, ProtocolVersion protocolVersion) throws JMSException, NamingException {
+  ServerChannelUploadContext(String callID, Session session, Destination responseDestination, long timeout, ProtocolVersion protocolVersion, ServerMetrics metrics) throws JMSException, NamingException {
     this.callID = assertNotNull(callID, "CallID not set");
     this.session = assertNotNull(session, "Session not set");
     this.responseDestination = assertNotNull(responseDestination, "ResponseDestination not set");
     this.protocolVersion = assertNotNull(protocolVersion, "ProtocolVersion not set");
+    this.metrics = assertNotNull(metrics, "metrics not set");
     this.timeout.set(timeout);
   }
 
@@ -92,9 +94,11 @@ class ServerChannelUploadContext implements JMSRequestProxy.ServerContext {
       } else if (JMSRequestProxy.MESSAGE_TYPE_EXTEND_WAIT.equals(messageType)) {
         handleSignalExtendWait(message);
       } else {
+        metrics.incompatibleMessage();
         LOGGER.warning("Ignoring invalid channel message type: " + messageType);
       }
     } catch (Exception e) {
+      metrics.error();
       LOGGER.error(e, "Error receiving message");
     }
   }
@@ -113,6 +117,7 @@ class ServerChannelUploadContext implements JMSRequestProxy.ServerContext {
     long reqTimeout = message.getLongProperty(JMSRequestProxy.PROPERTY_REQ_TIMEOUT);
     timeout.updateAndGet(v -> v < reqTimeout ? reqTimeout : v);
     fragments.add(messageFragment);
+    metrics.fragmentedUploadFragment();
   }
 
   private void handleSignalEndOfStream(Message eosMessage) {
@@ -125,6 +130,7 @@ class ServerChannelUploadContext implements JMSRequestProxy.ServerContext {
         LOGGER.warning("Ignoring empty channel upload: " + callID);
         return;
       }
+      metrics.fragmentedUploadCompleted();
       uploadHandler.handleRequest(callID, messageData, responseDestination, timeout.get(), protocolVersion);
     } catch (Exception e) {
       LOGGER.warning("Error handling end-of-stream: " + callID);
@@ -133,11 +139,13 @@ class ServerChannelUploadContext implements JMSRequestProxy.ServerContext {
   }
 
   private void handleSignalExtendWait(Message msg) {
+    metrics.incompatibleMessage();
     LOGGER.info("Unexpected message: ServerChannelUploadContext.handleSignalExtendWait");
   }
 
   private void abortUpload() {
     LOGGER.info("Unexpected message: ServerChannelUploadContext.abortUpload");
+    metrics.incompatibleMessage();
     close();
   }
 

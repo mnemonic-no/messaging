@@ -31,12 +31,14 @@ class ChannelUploadMessageContext implements RequestContext {
   private final String callID;
   private final int fragmentSize;
   private final ProtocolVersion protocolVersion;
+  private final ClientMetrics metrics;
 
-  ChannelUploadMessageContext(RequestContext realContext, InputStream messageData, String callID, int fragmentSize, ProtocolVersion protocolVersion) {
+  ChannelUploadMessageContext(RequestContext realContext, InputStream messageData, String callID, int fragmentSize, ProtocolVersion protocolVersion, ClientMetrics metrics) {
     this.realContext = assertNotNull(realContext, "RequestContext not set");
     this.messageData = assertNotNull(messageData, "Message data not set");
     this.callID = assertNotNull(callID, "CallID not set");
     this.protocolVersion = assertNotNull(protocolVersion, "ProtocolVersion not set");
+    this.metrics = assertNotNull(metrics, "metrics not set");
     if (fragmentSize <= 0) throw new IllegalArgumentException("FragmentSize must be a positive integer");
     this.fragmentSize = fragmentSize;
   }
@@ -56,6 +58,7 @@ class ChannelUploadMessageContext implements RequestContext {
           fragment.setStringProperty(JMSRequestProxy.PROPERTY_MESSAGE_TYPE, JMSRequestProxy.MESSAGE_TYPE_SIGNAL_FRAGMENT);
           fragment.setIntProperty(JMSRequestProxy.PROPERTY_FRAGMENTS_IDX, idx);
           fragment.setLongProperty(JMSRequestProxy.PROPERTY_REQ_TIMEOUT, clock.millis() + KEEPALIVE_PERIOD);
+          metrics.fragmentedUploadFragment();
           //send fragment to upload channel
           producer.send(uploadChannel, fragment);
           if (LOGGER.isDebug()) {

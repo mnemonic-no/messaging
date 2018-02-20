@@ -42,13 +42,15 @@ class ServerResponseContext implements RequestContext, ServerContext {
   private final AtomicBoolean closed = new AtomicBoolean();
   private final ProtocolVersion protocolVersion;
   private final int maxMessageSize;
+  private final ServerMetrics metrics;
 
-  ServerResponseContext(String callID, Session session, MessageProducer replyProducer, Destination replyTo, long timeout, ProtocolVersion protocolVersion, int maxMessageSize) throws NamingException, JMSException {
+  ServerResponseContext(String callID, Session session, MessageProducer replyProducer, Destination replyTo, long timeout, ProtocolVersion protocolVersion, int maxMessageSize, ServerMetrics metrics) throws NamingException, JMSException {
     this.callID = assertNotNull(callID, "CallID not set");
     this.session = assertNotNull(session, "session not set");
     this.replyProducer = assertNotNull(replyProducer, "replyProducer not set");
     this.replyTo = assertNotNull(replyTo, "replyTo not set");
     this.protocolVersion = assertNotNull(protocolVersion, "ProtocolVersion not set");
+    this.metrics = assertNotNull(metrics, "metrics not set");
     if (maxMessageSize <= 1) throw new IllegalArgumentException("MaxMessageSize must be a positive integer");
     this.maxMessageSize = maxMessageSize;
     if (timeout <= 0) throw new IllegalArgumentException("Timeout must be a positive integer");
@@ -79,6 +81,7 @@ class ServerResponseContext implements RequestContext, ServerContext {
       closeMessage.setJMSCorrelationID(callID);
       closeMessage.setStringProperty(PROPERTY_MESSAGE_TYPE, MESSAGE_TYPE_EXTEND_WAIT);
       closeMessage.setLongProperty(PROPERTY_REQ_TIMEOUT, until);
+      metrics.extendWait();
       replyProducer.send(replyTo, closeMessage);
       if (LOGGER.isDebug()) {
         LOGGER.debug(">> keepalive [callID=%s until=%s replyTo=%s]", callID, new Date(until), replyTo);
@@ -104,6 +107,7 @@ class ServerResponseContext implements RequestContext, ServerContext {
       } else {
         sendSingleResponse(messageBytes);
       }
+      metrics.reply();
       return true;
     } catch (Exception e) {
       LOGGER.error(e, "Error adding response for " + callID);
@@ -138,6 +142,7 @@ class ServerResponseContext implements RequestContext, ServerContext {
           fragment.setIntProperty(PROPERTY_FRAGMENTS_IDX, idx);
           //send fragment to upload channel
           replyProducer.send(replyTo, fragment);
+          metrics.fragmentReplyFragment();
           if (LOGGER.isDebug()) {
             LOGGER.debug(">> addFragmentedResponse [callID=%s responseID=%s idx=%d size=%d replyTo=%s]", callID, responseID, idx, data.length, replyTo);
           }
@@ -155,6 +160,7 @@ class ServerResponseContext implements RequestContext, ServerContext {
           eof.setStringProperty(PROPERTY_DATA_CHECKSUM_MD5, JMSUtils.hex(digest));
           //send EOS
           replyProducer.send(replyTo, eof);
+          metrics.fragmentedReplyCompleted();
           if (LOGGER.isDebug()) {
             LOGGER.debug(">> fragmentedResponse EOF [callID=%s responseID=%s fragments=%d replyTo=%s]", callID, responseID, fragments, replyTo);
           }
@@ -192,6 +198,7 @@ class ServerResponseContext implements RequestContext, ServerContext {
         exMessage.setJMSCorrelationID(callID);
         exMessage.setStringProperty(PROPERTY_MESSAGE_TYPE, MESSAGE_TYPE_EXCEPTION);
         replyProducer.send(replyTo, exMessage);
+        metrics.exceptionSignal();
         if (LOGGER.isDebug()) {
           LOGGER.debug(">> notifyErrorToClient [callID=%s exception=%s replyTo=%s]", callID, e.getClass(), replyTo);
         }
@@ -210,6 +217,7 @@ class ServerResponseContext implements RequestContext, ServerContext {
         closeMessage.setJMSCorrelationID(callID);
         closeMessage.setStringProperty(PROPERTY_MESSAGE_TYPE, MESSAGE_TYPE_STREAM_CLOSED);
         replyProducer.send(replyTo, closeMessage);
+        metrics.endOfStream();
         if (LOGGER.isDebug()) {
           LOGGER.debug(">> endOfStream [callID=%s replyTo=%s]", callID, replyTo);
         }

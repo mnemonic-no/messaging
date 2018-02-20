@@ -28,12 +28,15 @@ class ClientResponseListener {
   private final Session session;
   private final ClientRequestState requestState;
   private final String callID;
+  private final ClientMetrics metrics;
 
-  ClientResponseListener(String callID, Session session, ClientRequestState requestState) {
+  ClientResponseListener(String callID, Session session, ClientRequestState requestState, ClientMetrics metrics) {
     if (callID == null) throw new IllegalArgumentException("callID not set");
     if (session == null) throw new IllegalArgumentException("session not set");
     if (requestState == null) throw new IllegalArgumentException("requestState not set");
+    if (metrics == null) throw new IllegalArgumentException("metrics not set");
     try {
+      this.metrics = metrics;
       this.callID = callID;
       this.session = session;
       this.requestState = requestState;
@@ -46,20 +49,24 @@ class ClientResponseListener {
   @SuppressWarnings("UnusedReturnValue")
   boolean handleResponse(javax.jms.Message message) throws JMSException {
     if (message == null) {
+      metrics.incompatibleMessage();
       LOGGER.warning("No message");
       return false;
     }
     if (message.getJMSCorrelationID() == null) {
+      metrics.incompatibleMessage();
       LOGGER.warning("Message received without callID");
       return false;
     }
     if (!Objects.equals(callID, message.getJMSCorrelationID())) {
+      metrics.unknownCallIDMessage();
       LOGGER.warning("Message received with wrong callID: %s (type=%s)",
               message.getJMSCorrelationID(),
               message.getStringProperty(PROPERTY_MESSAGE_TYPE));
       return false;
     }
     if (requestState.getRequestContext().isClosed()) {
+      metrics.unknownCallIDMessage();
       LOGGER.warning("Discarding signal response [callID=%s messageType=%s] ",
               message.getJMSCorrelationID(),
               message.getStringProperty(PROPERTY_MESSAGE_TYPE));
@@ -86,6 +93,7 @@ class ClientResponseListener {
       case MESSAGE_TYPE_EXTEND_WAIT:
         return handleSignalExtendWait(message);
       default:
+        metrics.incompatibleMessage();
         LOGGER.warning("Ignoring invalid response type: " + responseType);
         return false;
     }
@@ -94,13 +102,16 @@ class ClientResponseListener {
   private boolean handleSignalResponseFragment(javax.jms.Message fragmentSignal) throws JMSException {
     if (fragmentSignal == null) throw new IllegalArgumentException("fragment was null");
     if (!fragmentSignal.propertyExists(JMSBase.PROPERTY_RESPONSE_ID)) {
+      metrics.incompatibleMessage();
       LOGGER.warning(RECEIVED_FRAGMENT_WITHOUT + JMSBase.PROPERTY_RESPONSE_ID);
       return false;
     }
     if (!fragmentSignal.propertyExists(JMSBase.PROPERTY_FRAGMENTS_IDX)) {
+      metrics.incompatibleMessage();
       LOGGER.warning(RECEIVED_FRAGMENT_WITHOUT + JMSBase.PROPERTY_FRAGMENTS_IDX);
       return false;
     }
+    metrics.fragmentedReplyFragment();
     MessageFragment messageFragment = new MessageFragment((BytesMessage) fragmentSignal);
     if (LOGGER.isDebug()) {
       LOGGER.debug("<< addFragment [callID=%s responseID=%s idx=%d size=%d]",
@@ -113,14 +124,17 @@ class ClientResponseListener {
   private boolean handleEndOfFragmentedResponse(Message endMessage) throws JMSException {
     if (endMessage == null) throw new IllegalArgumentException("end-message was null");
     if (!endMessage.propertyExists(JMSBase.PROPERTY_RESPONSE_ID)) {
+      metrics.incompatibleMessage();
       LOGGER.warning(RECEIVED_END_OF_FRAGMENTS_WITHOUT + JMSBase.PROPERTY_RESPONSE_ID);
       return false;
     }
     if (!endMessage.propertyExists(JMSBase.PROPERTY_FRAGMENTS_TOTAL)) {
+      metrics.incompatibleMessage();
       LOGGER.warning(RECEIVED_END_OF_FRAGMENTS_WITHOUT + JMSBase.PROPERTY_FRAGMENTS_TOTAL);
       return false;
     }
     if (!endMessage.propertyExists(JMSBase.PROPERTY_DATA_CHECKSUM_MD5)) {
+      metrics.incompatibleMessage();
       LOGGER.warning(RECEIVED_END_OF_FRAGMENTS_WITHOUT + JMSBase.PROPERTY_DATA_CHECKSUM_MD5);
       return false;
     }
@@ -131,6 +145,7 @@ class ClientResponseListener {
       LOGGER.debug("<< reassembleFragments [callID=%s responseID=%s fragments=%d]",
               callID, responseID, totalFragments);
     }
+    metrics.fragmentedReplyCompleted();
     return requestState.reassembleFragments(responseID, totalFragments, checksum);
   }
 
@@ -139,6 +154,7 @@ class ClientResponseListener {
       LOGGER.debug("<< addResponse [callID=%s]", response.getJMSCorrelationID());
     }
     try (ClassLoaderContext ignored = ClassLoaderContext.of(requestState.getClassLoader())) {
+      metrics.reply();
       return requestState.getRequestContext().addResponse(JMSUtils.extractObject(response));
     }
   }
@@ -150,13 +166,17 @@ class ClientResponseListener {
           LOGGER.debug("<< uploadChannel [callID=%s uploadChannel=%s]", response.getJMSCorrelationID(), response.getJMSReplyTo());
         }
         ChannelUploadMessageContext uploadCtx = (ChannelUploadMessageContext) requestState.getRequestContext();
+        //perform actual upload to dedicated server channel
         uploadCtx.upload(session, response.getJMSReplyTo());
+        metrics.fragmentedUploadCompleted();
         return true;
       } else {
+        metrics.incompatibleMessage();
         LOGGER.warning("Received channel setup for a non-channel-upload client context: " + response.getJMSCorrelationID());
         return false;
       }
     } catch (Exception e) {
+      metrics.error();
       LOGGER.warning(e, "Error in handleChannelSetup");
       requestState.getRequestContext().notifyError(e);
       return false;
@@ -167,6 +187,7 @@ class ClientResponseListener {
     if (LOGGER.isDebug()) {
       LOGGER.debug("<< endOfStream [callID=%s]", response.getJMSCorrelationID());
     }
+    metrics.endOfStream();
     requestState.getRequestContext().endOfStream();
     return true;
   }
@@ -180,6 +201,7 @@ class ClientResponseListener {
     if (LOGGER.isDebug()) {
       LOGGER.debug("<< extendWait [callID=%s timeout=%s]", response.getJMSCorrelationID(), new Date(timeout));
     }
+    metrics.extendWait();
     requestState.getRequestContext().keepAlive(timeout);
     return true;
   }
@@ -188,14 +210,11 @@ class ClientResponseListener {
     if (LOGGER.isDebug()) {
       LOGGER.debug("<< signalError [callID=%s]", response.getJMSCorrelationID());
     }
-    if (MESSAGE_TYPE_STREAM_CLOSED.equals(response.getStringProperty(PROPERTY_MESSAGE_TYPE))) {
-      requestState.getRequestContext().endOfStream();
-    } else {
-      try (ClassLoaderContext ignored = ClassLoaderContext.of(requestState.getClassLoader())) {
-        ExceptionMessage em = JMSUtils.extractObject(response);
-        //noinspection ThrowableResultOfMethodCallIgnored
-        requestState.getRequestContext().notifyError(em.getException());
-      }
+    metrics.exceptionSignal();
+    try (ClassLoaderContext ignored = ClassLoaderContext.of(requestState.getClassLoader())) {
+      ExceptionMessage em = JMSUtils.extractObject(response);
+      //noinspection ThrowableResultOfMethodCallIgnored
+      requestState.getRequestContext().notifyError(em.getException());
     }
     return true;
   }

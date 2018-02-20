@@ -45,7 +45,7 @@ public class ClientResponseListenerTest {
     when(requestContext.keepAlive(anyLong())).thenReturn(true);
     state = new ClientRequestState(requestContext, ClassLoader.getSystemClassLoader());
 
-    listener = new ClientResponseListener(CALL_ID, session, state);
+    listener = new ClientResponseListener(CALL_ID, session, state, new ClientMetrics());
   }
 
   @Test

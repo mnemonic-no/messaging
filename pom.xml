@@ -40,7 +40,7 @@
     <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
 
     <!-- mnemonic dependencies -->
-    <mnemonic.commons.version>0.2.8</mnemonic.commons.version>
+    <mnemonic.commons.version>0.2.9</mnemonic.commons.version>
 
     <!-- external dependencies -->
     <activemq.version>5.15.2</activemq.version>

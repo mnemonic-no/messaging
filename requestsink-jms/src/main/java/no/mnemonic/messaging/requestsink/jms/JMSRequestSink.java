@@ -16,12 +16,14 @@ import javax.naming.NamingException;
 import java.io.ByteArrayInputStream;
 import java.io.IOException;
 import java.lang.IllegalStateException;
+import java.time.Clock;
 import java.util.Date;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicLong;
 
 import static no.mnemonic.commons.utilities.collections.SetUtils.set;
 
@@ -49,6 +51,13 @@ import static no.mnemonic.commons.utilities.collections.SetUtils.set;
  * For download, the server RequestSink can choose to send multiple replies on the same reply channel, and can use this
  * to stream the results back to the client.
  * <p>
+ * The JMSRequestSink uses a single multiplexed temporary response to receive all responses for signalled requests.
+ * This reduces the load on the JMS server infrastructure, and gives a more stable system in clustered/networked JMS environments,
+ * since it reduces the need for signalling and cross-network state updates. However, the response queue may become stale, i.e.
+ * upon single server restart or network reconfiguration. To detect this situation, the JMSRequestSink will
+ * detect if there are no received replies on the response channel inside of <code>staleResponseQueueTimeout</code> milliseconds, in which
+ * case it will create a new response queue. To disable this mechanism, set <code>staleResponseQueueTimeout</code> to 0.
+ * <p>
  * The protocol between the sink and the proxy is versioned. The proxy must support the version used by the sink, or the
  * request will fail. The sink can specify a lesser protocol version, allowing a rolling upgrade by upgrading the code first, but keep
  * using previous version until all components are supporting the new protocol version.
@@ -62,6 +71,8 @@ import static no.mnemonic.commons.utilities.collections.SetUtils.set;
 public class JMSRequestSink extends JMSBase implements RequestSink, RequestListener, MessageListener, MetricAspect {
 
   private static final Logger LOGGER = Logging.getLogger(JMSRequestSink.class);
+  private static final int DEFAULT_STALE_RESPONSEQUEUE_TIMEOUT = 10000;
+  private static final Clock clock = Clock.systemUTC();
 
   private final ProtocolVersion protocolVersion;
 
@@ -70,18 +81,23 @@ public class JMSRequestSink extends JMSBase implements RequestSink, RequestListe
   private final ConcurrentHashMap<String, ClientRequestState> requests = new ConcurrentHashMap<>();
   private final ConcurrentHashMap<String, ClientResponseListener> responseListeners = new ConcurrentHashMap<>();
   private final ExecutorService executor;
+  private final AtomicLong lastRequestSent = new AtomicLong();
+  private final AtomicLong lastResponseReceived = new AtomicLong();
+
   private MessageProducer producer;
   private TemporaryQueue responseQueue;
   private MessageConsumer responseConsumer;
 
   private final ClientMetrics metrics = new ClientMetrics();
+  private final long staleResponseQueueTimeout;
 
   private JMSRequestSink(String contextFactoryName, String contextURL, String connectionFactoryName,
                          String username, String password, Map<String, String> connectionProperties,
                          String destinationName,
-                         int priority, int maxMessageSize, ProtocolVersion protocolVersion) {
+                         int priority, int maxMessageSize, ProtocolVersion protocolVersion, long staleResponseQueueTimeout) {
     super(contextFactoryName, contextURL, connectionFactoryName, username, password, connectionProperties, destinationName,
             priority, maxMessageSize);
+    this.staleResponseQueueTimeout = staleResponseQueueTimeout;
     if (protocolVersion == null) {
       throw new IllegalArgumentException("protocolVersion not set");
     }
@@ -109,6 +125,7 @@ public class JMSRequestSink extends JMSBase implements RequestSink, RequestListe
         metrics.incompatibleMessage();
         return;
       }
+      lastResponseReceived.set(clock.millis());
       ClientResponseListener responseListener = responseListeners.get(message.getJMSCorrelationID());
       if (responseListener == null) {
         metrics.unknownCallIDMessage();
@@ -130,6 +147,9 @@ public class JMSRequestSink extends JMSBase implements RequestSink, RequestListe
     if (msg.getCallID() == null) {
       throw new IllegalArgumentException("Cannot accept message with no callID");
     }
+
+    //periodic verification of response queue to detect stale response queue
+    checkForStaleResponseQueue();
 
     //if no context given by user, create a null context
     RequestContext ctx = ObjectUtils.ifNull(signalContext, NullRequestContext::new);
@@ -155,21 +175,8 @@ public class JMSRequestSink extends JMSBase implements RequestSink, RequestListe
   @Override
   public void onException(JMSException e) {
     super.onException(e);
-    LOGGER.warning("Invalidating temporary response queue");
 
-    JMSUtils.closeProducer(producer);
-    JMSUtils.closeConsumer(responseConsumer);
-    JMSUtils.deleteTemporaryQueue(responseQueue);
-
-    setupProducerAndConsumer();
-
-    //on exception, notify all ongoing requests of the error
-    ListUtils.list(requests.values()).forEach(ctx -> LambdaUtils.tryTo(
-            () -> ctx.getRequestContext().notifyError(e),
-            ex -> LOGGER.warning(ex, "Error calling requestContext.notifyErrorToClient")
-    ));
-    //and close all requests
-    set(requests.keySet()).forEach(this::close);
+    closeAndRecreateTemporaryResources(e);
   }
 
   @Override
@@ -188,6 +195,46 @@ public class JMSRequestSink extends JMSBase implements RequestSink, RequestListe
   }
 
   // ****************** private methods ************************
+
+  private void closeAndRecreateTemporaryResources(Exception e) {
+    if (e == null) throw new IllegalArgumentException("Exception should never be null");
+
+    //only allow one thread at a time into this block
+    synchronized (this) {
+      //first thread into this block will reset the lastRequestSent
+      //causing all other pending threads to skip it
+      if (lastRequestSent.get() > 0) {
+        LOGGER.warning("Invalidating temporary response queue");
+
+        JMSUtils.closeProducer(producer);
+        JMSUtils.closeConsumer(responseConsumer);
+        JMSUtils.deleteTemporaryQueue(responseQueue);
+
+        //on exception, notify all ongoing requests of the error
+        ListUtils.list(requests.values()).forEach(ctx -> LambdaUtils.tryTo(
+                () -> ctx.getRequestContext().notifyError(e),
+                ex -> LOGGER.warning(ex, "Error calling requestContext.notifyErrorToClient")
+        ));
+        //and close all requests
+        set(requests.keySet()).forEach(this::close);
+
+        setupProducerAndConsumer();
+
+        //reset stale queue detection counters
+        lastRequestSent.set(0);
+        lastResponseReceived.set(0);
+      }
+    }
+  }
+
+  private void checkForStaleResponseQueue() {
+    if (staleResponseQueueTimeout > 0 && lastRequestSent.get() > 0) {
+      long diff = lastRequestSent.get() - lastResponseReceived.get();
+      if (diff > staleResponseQueueTimeout) {
+        closeAndRecreateTemporaryResources(new IllegalStateException("Stale response queue"));
+      }
+    }
+  }
 
   private void setupProducerAndConsumer() {
     try {
@@ -231,6 +278,7 @@ public class JMSRequestSink extends JMSBase implements RequestSink, RequestListe
       responseListeners.put(msg.getCallID(), responseListener);
       //send signal message
       sendMessage(messageBytes, msg.getCallID(), messageType, maxWait, responseQueue);
+      lastRequestSent.set(clock.millis());
       metrics.request();
     } catch (IOException | JMSException | NamingException e) {
       LOGGER.warning(e, "Error in checkForFragmentationAndSignal");
@@ -244,7 +292,7 @@ public class JMSRequestSink extends JMSBase implements RequestSink, RequestListe
       long timeout = System.currentTimeMillis() + lifeTime;
       m.setJMSReplyTo(replyTo);
       m.setJMSCorrelationID(callID);
-      m.setStringProperty(JMSRequestProxy.PROPERTY_MESSAGE_TYPE, messageType);
+      m.setStringProperty(PROPERTY_MESSAGE_TYPE, messageType);
       m.setLongProperty(JMSRequestProxy.PROPERTY_REQ_TIMEOUT, timeout);
       producer.send(m, DeliveryMode.NON_PERSISTENT, getPriority(), lifeTime);
       if (LOGGER.isDebug()) {
@@ -299,6 +347,7 @@ public class JMSRequestSink extends JMSBase implements RequestSink, RequestListe
 
     //fields
     private ProtocolVersion protocolVersion = ProtocolVersion.V1;
+    private long staleResponseQueueTimeout = DEFAULT_STALE_RESPONSEQUEUE_TIMEOUT;
 
     private Builder() {
     }
@@ -306,7 +355,7 @@ public class JMSRequestSink extends JMSBase implements RequestSink, RequestListe
     public JMSRequestSink build() {
       return new JMSRequestSink(contextFactoryName, contextURL, connectionFactoryName,
               username, password, connectionProperties, destinationName,
-              priority, maxMessageSize, protocolVersion);
+              priority, maxMessageSize, protocolVersion, staleResponseQueueTimeout);
     }
 
     //setters
@@ -315,9 +364,11 @@ public class JMSRequestSink extends JMSBase implements RequestSink, RequestListe
       this.protocolVersion = protocolVersion;
       return this;
     }
+
+    public Builder setStaleResponseQueueTimeout(long staleResponseQueueTimeout) {
+      this.staleResponseQueueTimeout = staleResponseQueueTimeout;
+      return this;
+    }
   }
-
-
-  //inner classes
 
 }

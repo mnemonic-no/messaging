@@ -1,6 +1,7 @@
 package no.mnemonic.messaging.requestsink.jms;
 
 import no.mnemonic.commons.container.ComponentContainer;
+import no.mnemonic.commons.utilities.collections.ListUtils;
 import no.mnemonic.messaging.requestsink.RequestContext;
 import org.junit.After;
 import org.junit.Assert;
@@ -15,9 +16,11 @@ import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.Serializable;
+import java.lang.IllegalStateException;
 import java.security.MessageDigest;
 import java.util.UUID;
 import java.util.concurrent.*;
+import java.util.function.Consumer;
 
 import static org.junit.Assert.*;
 import static org.mockito.Mockito.*;
@@ -37,7 +40,6 @@ public class JMSRequestSinkTest extends AbstractJMSRequestTest {
   @Before
   public void setUp() throws Exception {
     MockitoAnnotations.initMocks(this);
-
     queueName = "dynamicQueues/" + generateCookie(10);
     session = createSession();
     endOfStream = expectEndOfStream();
@@ -62,6 +64,23 @@ public class JMSRequestSinkTest extends AbstractJMSRequestTest {
     Assert.assertEquals(JMSRequestProxy.MESSAGE_TYPE_SIGNAL, receivedMessage.getStringProperty(JMSRequestProxy.PROPERTY_MESSAGE_TYPE));
     assertEquals(testMessage, JMSUtils.extractObject(receivedMessage));
     assertTrue(receivedMessage instanceof BytesMessage);
+  }
+
+  @Test
+  public void testNoResponseTriggersStaleQueueDetection() throws Exception {
+    setupSinkAndContainer(65536, ProtocolVersion.V2, c -> c.setStaleResponseQueueTimeout(500));
+    //send first message, but do not reply
+    requestSink.signal(new TestMessage("test1"), requestContext, 10000);
+    Message msg1 = expectMessage(JMSRequestProxy.MESSAGE_TYPE_SIGNAL);
+
+    Thread.sleep(1000);
+
+    requestSink.signal(new TestMessage("test2"), requestContext, 10000);
+    //verify that we got notified about a
+    verify(requestContext).notifyError(isA(IllegalStateException.class));
+    Message msg2 = expectMessage(JMSRequestProxy.MESSAGE_TYPE_SIGNAL);
+
+    assertNotEquals(msg1.getJMSReplyTo(), msg2.getJMSReplyTo());
   }
 
   @Test
@@ -195,12 +214,13 @@ public class JMSRequestSinkTest extends AbstractJMSRequestTest {
     verify(requestContext, times(resultCount)).addResponse(eq(responseMessage));
   }
 
-  private void setupSinkAndContainer(int maxMessageSize, ProtocolVersion protocolVersion) {
-    requestSink = addConnection(JMSRequestSink.builder())
+  private void setupSinkAndContainer(int maxMessageSize, ProtocolVersion protocolVersion, Consumer<JMSRequestSink.Builder>... changes) {
+    JMSRequestSink.Builder builder = addConnection(JMSRequestSink.builder())
             .setDestinationName(queueName)
             .setProtocolVersion(protocolVersion)
-            .setMaxMessageSize(maxMessageSize)
-            .build();
+            .setMaxMessageSize(maxMessageSize);
+    ListUtils.list(changes).forEach(c -> c.accept(builder));
+    requestSink = builder.build();
     container = ComponentContainer.create(requestSink);
     container.initialize();
   }

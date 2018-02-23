@@ -65,7 +65,7 @@ abstract class AbstractJMSRequestTest {
     return testConnection.createSession(false, Session.AUTO_ACKNOWLEDGE);
   }
 
-  Destination createDestination(String name) throws NamingException {
+  Destination lookupDestination(String name) throws NamingException {
     return (Destination) createInitialContext().lookup(name);
   }
 

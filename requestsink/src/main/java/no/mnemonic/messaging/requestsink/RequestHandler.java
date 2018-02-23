@@ -2,7 +2,6 @@ package no.mnemonic.messaging.requestsink;
 
 import no.mnemonic.commons.logging.Logger;
 import no.mnemonic.commons.logging.Logging;
-import no.mnemonic.commons.utilities.collections.ListUtils;
 import no.mnemonic.commons.utilities.lambda.LambdaUtils;
 
 import java.lang.reflect.InvocationTargetException;
@@ -14,7 +13,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 
-import static no.mnemonic.commons.utilities.collections.ListUtils.*;
+import static no.mnemonic.commons.utilities.collections.ListUtils.list;
 
 /**
  * Common implementation for asynchronous response handling.
@@ -82,6 +81,14 @@ public class RequestHandler implements RequestContext {
     close();
   }
 
+  @Override
+  public void notifyClose() {
+    list(requestListeners).forEach(l -> LambdaUtils.tryTo(
+            () -> l.close(callID),
+            e -> LOGGER.warning(e, "Error invoking RequestListener")
+    ));
+  }
+
   public boolean addResponse(Message msg) {
     if (isClosed()) return false;
     responses.add(msg);
@@ -143,14 +150,23 @@ public class RequestHandler implements RequestContext {
    * Further responses to this signal will be ignored
    */
   public void close() {
-    closed.set(true);
+    boolean wasClosed = closed.getAndSet(true);
     synchronized (this) {
       this.notifyAll();
     }
-    list(requestListeners).forEach(l -> LambdaUtils.tryTo(
-            () -> l.close(callID),
-            e -> LOGGER.warning(e, "Error invoking RequestListener")
-    ));
+    if (!wasClosed) {
+      list(requestListeners).forEach(l -> LambdaUtils.tryTo(
+              () -> l.close(callID),
+              e -> LOGGER.warning(e, "Error invoking RequestListener")
+      ));
+    }
+  }
+
+  /**
+   * Signal unexpected timeout to request listeners
+   */
+  public void timeout() {
+    list(requestListeners).forEach(l -> LambdaUtils.tryTo(l::timeout));
   }
 
   /**

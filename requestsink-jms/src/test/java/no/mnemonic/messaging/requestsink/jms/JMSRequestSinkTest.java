@@ -3,6 +3,8 @@ package no.mnemonic.messaging.requestsink.jms;
 import no.mnemonic.commons.container.ComponentContainer;
 import no.mnemonic.commons.utilities.collections.ListUtils;
 import no.mnemonic.messaging.requestsink.RequestContext;
+import no.mnemonic.messaging.requestsink.RequestListener;
+import org.apache.activemq.DestinationDoesNotExistException;
 import org.junit.After;
 import org.junit.Assert;
 import org.junit.Before;
@@ -16,10 +18,10 @@ import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.Serializable;
-import java.lang.IllegalStateException;
 import java.security.MessageDigest;
 import java.util.UUID;
 import java.util.concurrent.*;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
 
 import static org.junit.Assert.*;
@@ -36,6 +38,7 @@ public class JMSRequestSinkTest extends AbstractJMSRequestTest {
   private Future<Void> endOfStream;
   private BlockingQueue<Message> queue;
   private String queueName;
+  private AtomicReference<RequestListener> requestListener = new AtomicReference<>();
 
   @Before
   public void setUp() throws Exception {
@@ -44,6 +47,11 @@ public class JMSRequestSinkTest extends AbstractJMSRequestTest {
     session = createSession();
     endOfStream = expectEndOfStream();
     queue = receiveFrom(queueName);
+    
+    doAnswer(i -> {
+      requestListener.set(i.getArgument(0));
+      return null;
+    }).when(requestContext).addListener(any());
   }
 
   @After
@@ -53,13 +61,29 @@ public class JMSRequestSinkTest extends AbstractJMSRequestTest {
   }
 
   @Test
+  public void testSignalRegisteresRequestListener() throws Exception {
+    setupSinkAndContainer(65536, ProtocolVersion.V2);
+    requestSink.signal(new TestMessage("test1"), requestContext, 10000);
+    assertNotNull(requestListener.get());
+  }
+
+  @Test
+  public void testSignalNotifiesRequestListenerOnClose() throws Exception {
+    setupSinkAndContainer(65536, ProtocolVersion.V2);
+    requestSink.setCleanupInSeparateThread(false);
+    when(requestContext.isClosed()).thenReturn(true);
+    requestSink.signal(new TestMessage("test1"), requestContext, 10000);
+    verify(requestContext).notifyClose();
+  }
+
+  @Test
   public void testSignalSubmitsMessage() throws Exception {
     setupSinkAndContainer(65536, ProtocolVersion.V2);
     TestMessage testMessage = new TestMessage("test1");
     //send testmessage
     requestSink.signal(testMessage, requestContext, 10000);
     //wait for message to come through and validate
-    Message receivedMessage = expectMessage(JMSRequestProxy.MESSAGE_TYPE_SIGNAL);
+    Message receivedMessage = expectSignal();
     Assert.assertEquals(ProtocolVersion.V2.getVersionString(), receivedMessage.getStringProperty(JMSBase.PROTOCOL_VERSION_KEY));
     Assert.assertEquals(JMSRequestProxy.MESSAGE_TYPE_SIGNAL, receivedMessage.getStringProperty(JMSRequestProxy.PROPERTY_MESSAGE_TYPE));
     assertEquals(testMessage, JMSUtils.extractObject(receivedMessage));
@@ -67,20 +91,61 @@ public class JMSRequestSinkTest extends AbstractJMSRequestTest {
   }
 
   @Test
-  public void testNoResponseTriggersStaleQueueDetection() throws Exception {
-    setupSinkAndContainer(65536, ProtocolVersion.V2, c -> c.setStaleResponseQueueTimeout(500));
-    //send first message, but do not reply
-    requestSink.signal(new TestMessage("test1"), requestContext, 10000);
-    Message msg1 = expectMessage(JMSRequestProxy.MESSAGE_TYPE_SIGNAL);
+  public void testTimeoutNotificationTriggersResponseQueueChange() throws Exception {
+    setupSinkAndContainer(65536, ProtocolVersion.V2);
 
-    Thread.sleep(1000);
+    //send first message
+    requestSink.signal(new TestMessage("test1"), requestContext, 10000);
+    Message msg1 = expectSignal();
+
+    //notify timeout
+    requestListener.get().timeout();
 
     requestSink.signal(new TestMessage("test2"), requestContext, 10000);
-    //verify that we got notified about a
-    verify(requestContext).notifyError(isA(IllegalStateException.class));
-    Message msg2 = expectMessage(JMSRequestProxy.MESSAGE_TYPE_SIGNAL);
+    Message msg2 = expectSignal();
 
+    //verify that response queue has changed
     assertNotEquals(msg1.getJMSReplyTo(), msg2.getJMSReplyTo());
+  }
+
+  @Test
+  public void testInvalidatedResponseQueueNotClosedUntilAllPendingRequestsAreClosed() throws Exception {
+    setupSinkAndContainer(65536, ProtocolVersion.V2);
+    requestSink.setCleanupInSeparateThread(false);
+
+    when(requestContext.isClosed()).thenReturn(false);
+    requestSink.signal(new TestMessage("test1"), requestContext, 10000);
+    Message signal = expectSignal();
+    //send reply to response queue to check that it is not removed
+    reply(signal, "obj");
+
+    //notify timeout, marking current response queue as invalid
+    requestListener.get().timeout();
+
+    //send another signal (should trigger cleanup of closed request and cleanup of invalid response queue)
+    requestSink.signal(new TestMessage("test2"), requestContext, 10000);
+    //send reply to response queue to check that it is not removed
+    reply(signal, "obj");
+
+    //close ongoing requests, triggering a cleanup
+    when(requestContext.isClosed()).thenReturn(true);
+    requestSink.signal(new TestMessage("test3"), requestContext, 10000);
+    assertFalse(responseQueueIsValid(signal));
+  }
+
+  @Test
+  public void testRequestSinkIsClosedOnCleanup() throws Exception {
+    setupSinkAndContainer(65536, ProtocolVersion.V2);
+    requestSink.setCleanupInSeparateThread(false);
+
+    when(requestContext.isClosed()).thenReturn(false);
+    requestSink.signal(new TestMessage("test1"), requestContext, 10000);
+    verify(requestContext, never()).notifyClose();
+
+    //when this mock returns isClosed(), then both signals will be closed and notified
+    when(requestContext.isClosed()).thenReturn(true);
+    requestSink.signal(new TestMessage("test1"), requestContext, 10000);
+    verify(requestContext, times(2)).notifyClose();
   }
 
   @Test
@@ -90,7 +155,7 @@ public class JMSRequestSinkTest extends AbstractJMSRequestTest {
     //send testmessage
     requestSink.signal(testMessage, requestContext, 10000);
     //wait for message to come through and validate
-    Message receivedMessage = expectMessage(JMSRequestProxy.MESSAGE_TYPE_SIGNAL);
+    Message receivedMessage = expectSignal();
     Assert.assertEquals(ProtocolVersion.V1.getVersionString(), receivedMessage.getStringProperty(JMSBase.PROTOCOL_VERSION_KEY));
   }
 
@@ -113,7 +178,7 @@ public class JMSRequestSinkTest extends AbstractJMSRequestTest {
     //signal message
     requestSink.signal(testMessage, requestContext, 10000);
     //wait for message to come through
-    Message receivedMessage = expectMessage(JMSRequestProxy.MESSAGE_TYPE_SIGNAL);
+    Message receivedMessage = expectSignal();
     UUID responseID = UUID.randomUUID();
 
     //fragment response message into fragments of 3 bytes
@@ -164,7 +229,7 @@ public class JMSRequestSinkTest extends AbstractJMSRequestTest {
     //signal message with short lifetime
     requestSink.signal(testMessage, requestContext, 1000);
     //wait for message to come through
-    Message receivedMessage = expectMessage(JMSRequestProxy.MESSAGE_TYPE_SIGNAL);
+    Message receivedMessage = expectSignal();
     keepalive(receivedMessage, 1000);
     eos(receivedMessage);
     waitForEOS();
@@ -193,8 +258,8 @@ public class JMSRequestSinkTest extends AbstractJMSRequestTest {
     verify(requestContext).endOfStream();
   }
 
-  //helper methods
 
+  //helper methods
   private void doTestSignalReceiveResults(int resultCount) throws Exception {
     setupSinkAndContainer(65536, ProtocolVersion.V2);
     TestMessage testMessage = new TestMessage("test1");
@@ -203,7 +268,7 @@ public class JMSRequestSinkTest extends AbstractJMSRequestTest {
     //signal message
     requestSink.signal(testMessage, requestContext, 10000);
     //wait for message to come through
-    Message receivedMessage = expectMessage(JMSRequestProxy.MESSAGE_TYPE_SIGNAL);
+    Message receivedMessage = expectSignal();
     //send reply and EOS
     for (int i = 0; i < resultCount; i++) {
       reply(receivedMessage, responseMessage);
@@ -214,7 +279,8 @@ public class JMSRequestSinkTest extends AbstractJMSRequestTest {
     verify(requestContext, times(resultCount)).addResponse(eq(responseMessage));
   }
 
-  private void setupSinkAndContainer(int maxMessageSize, ProtocolVersion protocolVersion, Consumer<JMSRequestSink.Builder>... changes) {
+  @SafeVarargs
+  private final void setupSinkAndContainer(int maxMessageSize, ProtocolVersion protocolVersion, Consumer<JMSRequestSink.Builder>... changes) {
     JMSRequestSink.Builder builder = addConnection(JMSRequestSink.builder())
             .setDestinationName(queueName)
             .setProtocolVersion(protocolVersion)
@@ -227,6 +293,10 @@ public class JMSRequestSinkTest extends AbstractJMSRequestTest {
 
   private void waitForEOS() throws Exception {
     endOfStream.get(1000, TimeUnit.MILLISECONDS);
+  }
+
+  private Message expectSignal() throws InterruptedException, JMSException {
+    return expectMessage(queue, JMSRequestProxy.MESSAGE_TYPE_SIGNAL);
   }
 
   private Message expectMessage(String messageType) throws InterruptedException, JMSException {
@@ -247,7 +317,17 @@ public class JMSRequestSinkTest extends AbstractJMSRequestTest {
   }
 
   private BlockingQueue<Message> receiveFrom(String destination) throws NamingException, JMSException {
-    return receiveFrom(createDestination(destination));
+    return receiveFrom(lookupDestination(destination));
+  }
+
+  private boolean responseQueueIsValid(Message signal) throws Exception {
+    try {
+      //send reply to response queue and expect exception because it is removed
+      reply(signal, "obj");
+      return true;
+    } catch (DestinationDoesNotExistException e) {
+      return false;
+    }
   }
 
   private BlockingQueue<Message> receiveFrom(Destination destination) throws NamingException, JMSException {
@@ -282,9 +362,10 @@ public class JMSRequestSinkTest extends AbstractJMSRequestTest {
   }
 
   private void sendTo(Destination destination, Message msg) throws NamingException, JMSException {
-    MessageProducer producer = session.createProducer(destination);
-    producer.send(msg);
-    producer.close();
+    try (MessageProducer producer = session.createProducer(destination)) {
+      producer.send(msg);
+      producer.close();
+    }
   }
 
   private class ChannelUploadVerifier {

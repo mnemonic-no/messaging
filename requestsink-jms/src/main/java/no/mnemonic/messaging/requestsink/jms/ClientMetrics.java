@@ -20,9 +20,11 @@ class ClientMetrics {
   private final LongAdder fragmentedReplyFragmentCounter = new LongAdder();
   private final LongAdder incompatibleMessageCounter = new LongAdder();
   private final LongAdder unknownCallIDMessageCounter = new LongAdder();
+  private final LongAdder invalidatedResponseQueues = new LongAdder();
 
   Metrics metrics() throws MetricException {
     return new MetricsData()
+            .addData("invalidatedResponseQueues", invalidatedResponseQueues)
             .addData("errors", errorCount)
             .addData("exceptionSignal", exceptionSignalCount)
             .addData("requests", requestCount)
@@ -36,6 +38,10 @@ class ClientMetrics {
             .addData("fragmentedReplyFragments", fragmentedReplyFragmentCounter)
             .addData("incompatibleMessages", incompatibleMessageCounter)
             .addData("unknownCallIDMessages", unknownCallIDMessageCounter);
+  }
+
+  void invalidatedResponseQueue() {
+    invalidatedResponseQueues.increment();
   }
 
   void request() {

@@ -111,6 +111,11 @@ class ChannelUploadMessageContext implements RequestContext {
   }
 
   @Override
+  public void notifyClose() {
+    realContext.notifyClose();
+  }
+
+  @Override
   public void addListener(RequestListener listener) {
     realContext.addListener(listener);
   }

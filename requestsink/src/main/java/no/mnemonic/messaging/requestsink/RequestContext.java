@@ -28,6 +28,12 @@ public interface RequestContext {
   void notifyError(Throwable e);
 
   /**
+   * Notify signal context that server has closed this request.
+   * The request may already be closed on the client side.
+   */
+  void notifyClose();
+
+  /**
    * Add a {@link RequestListener} to context. A context implementation should notify any registered listeners
    * about relevant events.
    *

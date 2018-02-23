@@ -143,12 +143,6 @@ class JMSUtils {
     );
   }
 
-  static void closeProducer(MessageProducer producer) {
-    ifNotNullDo(producer,
-            p -> tryTo(p::close, e -> LOGGER.warning(e, "Could not close producer"))
-    );
-  }
-
   static void closeConsumer(MessageConsumer consumer) {
     ifNotNullDo(consumer,
             c -> tryTo(c::close, e -> LOGGER.warning(e, "Could not close consumer"))

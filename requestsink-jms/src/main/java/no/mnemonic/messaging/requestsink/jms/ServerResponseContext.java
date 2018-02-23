@@ -190,6 +190,11 @@ class ServerResponseContext implements RequestContext, ServerContext {
     }
   }
 
+  @Override
+  public void notifyClose() {
+    close();
+  }
+
   public void notifyError(Throwable e) {
     if (!isClosed()) {
       try {

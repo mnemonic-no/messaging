@@ -3,15 +3,21 @@ package no.mnemonic.messaging.requestsink.jms;
 import no.mnemonic.commons.logging.Logger;
 import no.mnemonic.commons.logging.Logging;
 import no.mnemonic.commons.utilities.ClassLoaderContext;
-import no.mnemonic.messaging.requestsink.MessagingException;
+import no.mnemonic.messaging.requestsink.RequestContext;
 
 import javax.jms.BytesMessage;
 import javax.jms.JMSException;
 import javax.jms.Message;
 import javax.jms.Session;
+import java.io.IOException;
+import java.util.Collection;
 import java.util.Date;
+import java.util.Map;
 import java.util.Objects;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.LinkedBlockingDeque;
 
+import static no.mnemonic.commons.utilities.collections.CollectionUtils.isEmpty;
 import static no.mnemonic.messaging.requestsink.jms.JMSRequestProxy.*;
 
 /**
@@ -19,30 +25,76 @@ import static no.mnemonic.messaging.requestsink.jms.JMSRequestProxy.*;
  *
  * @author joakim
  */
-class ClientResponseListener {
+class ClientRequestHandler {
 
-  private static final Logger LOGGER = Logging.getLogger(ClientResponseListener.class);
+  private static final Logger LOGGER = Logging.getLogger(ClientRequestHandler.class);
   private static final String RECEIVED_FRAGMENT_WITHOUT = "Received fragment without ";
   private static final String RECEIVED_END_OF_FRAGMENTS_WITHOUT = "Received end-of-fragments without ";
 
   private final Session session;
-  private final ClientRequestState requestState;
   private final String callID;
   private final ClientMetrics metrics;
+  private final ClassLoader classLoader;
+  private final RequestContext requestContext;
+  private final Runnable closeListener;
 
-  ClientResponseListener(String callID, Session session, ClientRequestState requestState, ClientMetrics metrics) {
+  private final Map<String, Collection<MessageFragment>> fragments = new ConcurrentHashMap<>();
+
+  ClientRequestHandler(String callID, Session session, ClientMetrics metrics, ClassLoader classLoader,
+                       RequestContext requestContext, Runnable closeListener) {
     if (callID == null) throw new IllegalArgumentException("callID not set");
     if (session == null) throw new IllegalArgumentException("session not set");
-    if (requestState == null) throw new IllegalArgumentException("requestState not set");
     if (metrics == null) throw new IllegalArgumentException("metrics not set");
+    if (classLoader == null) throw new IllegalArgumentException("classLoader not set");
+    if (requestContext == null) throw new IllegalArgumentException("requestContext not set");
+    if (closeListener == null) throw new IllegalArgumentException("closeListener not set");
+    this.closeListener = closeListener;
+    this.classLoader = classLoader;
+    this.requestContext = requestContext;
+    this.metrics = metrics;
+    this.callID = callID;
+    this.session = session;
+  }
+
+  String getCallID() {
+    return callID;
+  }
+
+  boolean isClosed() {
+    return requestContext.isClosed();
+  }
+
+  void cleanup() {
+    closeListener.run();
+    requestContext.notifyClose();
+  }
+
+  boolean addFragment(MessageFragment messageFragment) {
+    if (messageFragment == null) {
+      LOGGER.warning("Fragment was null");
+      return false;
+    }
+    fragments
+            .computeIfAbsent(messageFragment.getResponseID(), id -> new LinkedBlockingDeque<>())
+            .add(messageFragment);
+    return true;
+  }
+
+  boolean reassembleFragments(String responseID, int totalFragments, String checksum) {
     try {
-      this.metrics = metrics;
-      this.callID = callID;
-      this.session = session;
-      this.requestState = requestState;
-    } catch (Exception e) {
-      LOGGER.warning(e, "Error setting up response listener");
-      throw new MessagingException("Error setting up response listener", e);
+      Collection<MessageFragment> responseFragments = this.fragments.remove(responseID);
+      if (isEmpty(responseFragments)) {
+        LOGGER.warning("Received fragment end-message without preceding fragments");
+        return false;
+      }
+      byte[] reassembledData = JMSUtils.reassembleFragments(responseFragments, totalFragments, checksum);
+      if (LOGGER.isDebug()) {
+        LOGGER.debug("# addReassembledResponse [responseID=%s]", responseID);
+      }
+      return requestContext.addResponse(JMSUtils.unserialize(reassembledData, classLoader));
+    } catch (JMSException | IOException | ClassNotFoundException e) {
+      LOGGER.warning(e, "Error unpacking fragments");
+      return false;
     }
   }
 
@@ -65,7 +117,7 @@ class ClientResponseListener {
               message.getStringProperty(PROPERTY_MESSAGE_TYPE));
       return false;
     }
-    if (requestState.getRequestContext().isClosed()) {
+    if (requestContext.isClosed()) {
       metrics.unknownCallIDMessage();
       LOGGER.warning("Discarding signal response [callID=%s messageType=%s] ",
               message.getJMSCorrelationID(),
@@ -118,7 +170,7 @@ class ClientResponseListener {
               messageFragment.getCallID(), messageFragment.getResponseID(),
               messageFragment.getIdx(), messageFragment.getData().length);
     }
-    return requestState.addFragment(messageFragment);
+    return addFragment(messageFragment);
   }
 
   private boolean handleEndOfFragmentedResponse(Message endMessage) throws JMSException {
@@ -146,26 +198,26 @@ class ClientResponseListener {
               callID, responseID, totalFragments);
     }
     metrics.fragmentedReplyCompleted();
-    return requestState.reassembleFragments(responseID, totalFragments, checksum);
+    return reassembleFragments(responseID, totalFragments, checksum);
   }
 
   private boolean handleSignalResponse(Message response) throws JMSException {
     if (LOGGER.isDebug()) {
       LOGGER.debug("<< addResponse [callID=%s]", response.getJMSCorrelationID());
     }
-    try (ClassLoaderContext ignored = ClassLoaderContext.of(requestState.getClassLoader())) {
+    try (ClassLoaderContext ignored = ClassLoaderContext.of(classLoader)) {
       metrics.reply();
-      return requestState.getRequestContext().addResponse(JMSUtils.extractObject(response));
+      return requestContext.addResponse(JMSUtils.extractObject(response));
     }
   }
 
   private boolean handleChannelSetup(Message response) throws JMSException {
     try {
-      if (requestState.getRequestContext() instanceof ChannelUploadMessageContext) {
+      if (requestContext instanceof ChannelUploadMessageContext) {
         if (LOGGER.isDebug()) {
           LOGGER.debug("<< uploadChannel [callID=%s uploadChannel=%s]", response.getJMSCorrelationID(), response.getJMSReplyTo());
         }
-        ChannelUploadMessageContext uploadCtx = (ChannelUploadMessageContext) requestState.getRequestContext();
+        ChannelUploadMessageContext uploadCtx = (ChannelUploadMessageContext) requestContext;
         //perform actual upload to dedicated server channel
         uploadCtx.upload(session, response.getJMSReplyTo());
         metrics.fragmentedUploadCompleted();
@@ -178,7 +230,7 @@ class ClientResponseListener {
     } catch (Exception e) {
       metrics.error();
       LOGGER.warning(e, "Error in handleChannelSetup");
-      requestState.getRequestContext().notifyError(e);
+      requestContext.notifyError(e);
       return false;
     }
   }
@@ -188,7 +240,7 @@ class ClientResponseListener {
       LOGGER.debug("<< endOfStream [callID=%s]", response.getJMSCorrelationID());
     }
     metrics.endOfStream();
-    requestState.getRequestContext().endOfStream();
+    requestContext.endOfStream();
     return true;
   }
 
@@ -202,7 +254,7 @@ class ClientResponseListener {
       LOGGER.debug("<< extendWait [callID=%s timeout=%s]", response.getJMSCorrelationID(), new Date(timeout));
     }
     metrics.extendWait();
-    requestState.getRequestContext().keepAlive(timeout);
+    requestContext.keepAlive(timeout);
     return true;
   }
 
@@ -211,10 +263,10 @@ class ClientResponseListener {
       LOGGER.debug("<< signalError [callID=%s]", response.getJMSCorrelationID());
     }
     metrics.exceptionSignal();
-    try (ClassLoaderContext ignored = ClassLoaderContext.of(requestState.getClassLoader())) {
+    try (ClassLoaderContext ignored = ClassLoaderContext.of(classLoader)) {
       ExceptionMessage em = JMSUtils.extractObject(response);
       //noinspection ThrowableResultOfMethodCallIgnored
-      requestState.getRequestContext().notifyError(em.getException());
+      requestContext.notifyError(em.getException());
     }
     return true;
   }

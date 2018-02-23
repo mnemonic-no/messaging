@@ -12,4 +12,10 @@ public interface RequestListener {
    */
   void close(String callID);
 
+  /**
+   * Client side notification that an unexpected timeout occurred.
+   * The listener may act to avoid future errors (such as invalid return path or connection error)
+   */
+  void timeout();
+
 }

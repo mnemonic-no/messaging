@@ -326,7 +326,7 @@ public class JMSRequestProxyTest extends AbstractJMSRequestTest {
     createContainer();
 
     session = createSession();
-    queue = createDestination(queueName);
+    queue = lookupDestination(queueName);
     //wait for proxy to connect
     proxyConnected.get(1000, TimeUnit.MILLISECONDS);
   }

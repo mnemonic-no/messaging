@@ -1,6 +1,7 @@
 package no.mnemonic.messaging.requestsink.jms;
 
 import no.mnemonic.messaging.requestsink.RequestContext;
+import org.junit.After;
 import org.junit.Before;
 import org.junit.Test;
 import org.mockito.Mock;
@@ -9,6 +10,7 @@ import org.mockito.MockitoAnnotations;
 import javax.jms.*;
 import java.io.IOException;
 import java.lang.IllegalStateException;
+import java.time.Clock;
 import java.util.Arrays;
 
 import static no.mnemonic.messaging.requestsink.jms.JMSBase.*;
@@ -34,6 +36,8 @@ public class ClientRequestHandlerTest {
   private MessageConsumer messageConsumer;
   @Mock
   private Runnable closeListener;
+  @Mock
+  private Clock clock;
 
   private ClientRequestHandler handler;
   private TestMessage testMessage = new TestMessage(CALL_ID);
@@ -42,6 +46,8 @@ public class ClientRequestHandlerTest {
   @Before
   public void setup() throws JMSException, IOException {
     MockitoAnnotations.initMocks(this);
+    when(clock.millis()).thenReturn(10000L);
+    ClientRequestHandler.setClock(clock);
     when(session.createTemporaryQueue()).thenReturn(temporaryQueue);
     when(session.createConsumer(any())).thenReturn(messageConsumer);
     when(requestContext.isClosed()).thenReturn(false);
@@ -51,12 +57,23 @@ public class ClientRequestHandlerTest {
     handler = new ClientRequestHandler(CALL_ID, session, new ClientMetrics(), ClassLoader.getSystemClassLoader(), requestContext, closeListener);
   }
 
+  @After
+  public void cleanup() {
+    ClientRequestHandler.setClock(Clock.systemUTC());
+  }
+
   @Test
   public void testHandleFragments() throws IOException {
     assertTrue(handler.addFragment(new MessageFragment("callID", "responseID", 0, Arrays.copyOfRange(messageBytes, 0, 3))));
     assertTrue(handler.addFragment(new MessageFragment("callID", "responseID", 1, Arrays.copyOfRange(messageBytes, 3, messageBytes.length))));
     assertTrue(handler.reassembleFragments("responseID", 2, JMSUtils.md5(messageBytes)));
     verify(requestContext).addResponse(eq(testMessage));
+  }
+
+  @Test
+  public void testHandleFragmentSubmitsKeepalive() throws IOException {
+    assertTrue(handler.addFragment(new MessageFragment("callID", "responseID", 0, Arrays.copyOfRange(messageBytes, 0, 3))));
+    verify(requestContext).keepAlive(11000L);
   }
 
   @Test

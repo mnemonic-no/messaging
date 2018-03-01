@@ -10,6 +10,7 @@ import javax.jms.JMSException;
 import javax.jms.Message;
 import javax.jms.Session;
 import java.io.IOException;
+import java.time.Clock;
 import java.util.Collection;
 import java.util.Date;
 import java.util.Map;
@@ -30,6 +31,9 @@ class ClientRequestHandler {
   private static final Logger LOGGER = Logging.getLogger(ClientRequestHandler.class);
   private static final String RECEIVED_FRAGMENT_WITHOUT = "Received fragment without ";
   private static final String RECEIVED_END_OF_FRAGMENTS_WITHOUT = "Received end-of-fragments without ";
+  private static final long KEEPALIVE_ON_FRAGMENT = 1000;
+
+  private static Clock clock = Clock.systemUTC();
 
   private final Session session;
   private final String callID;
@@ -77,6 +81,8 @@ class ClientRequestHandler {
     fragments
             .computeIfAbsent(messageFragment.getResponseID(), id -> new LinkedBlockingDeque<>())
             .add(messageFragment);
+    //notify requestcontext for each fragment to avoid long fragment stream causing timeout
+    requestContext.keepAlive(clock.millis() + KEEPALIVE_ON_FRAGMENT);
     return true;
   }
 
@@ -271,4 +277,8 @@ class ClientRequestHandler {
     return true;
   }
 
+
+  static void setClock(Clock clock) {
+    ClientRequestHandler.clock = clock;
+  }
 }

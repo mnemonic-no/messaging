@@ -48,6 +48,9 @@ public class RequestHandler implements RequestContext {
     if (maxWait <= 0) throw new IllegalArgumentException("MaxWait must be a positive integer");
     RequestHandler handler = new RequestHandler(allowKeepAlive, msg.getCallID(), maxWait);
     sink.signal(msg, handler, maxWait);
+    if (LOGGER.isDebug()) {
+      LOGGER.debug(">> signal [callID=%s msg=%s allowKeepalive=%s maxWait=%d]", msg.getCallID(), msg.getClass(), allowKeepAlive, maxWait);
+    }
     return handler;
   }
 
@@ -62,18 +65,29 @@ public class RequestHandler implements RequestContext {
   }
 
   public boolean keepAlive(long until) {
-    if (isClosed() || !allowKeepAlive) return false;
+    if (isClosed() || !allowKeepAlive) {
+      if (LOGGER.isDebug()) {
+        LOGGER.debug("<< keepAlive rejected[callID=%s  until=%s]", callID, new Date(until));
+      }
+      return false;
+    }
     if (timeout.getAndUpdate(prev -> until > prev ? until : prev) < until) {
-      LOGGER.debug("Keeping session open until %s", new Date(until));
+      LOGGER.debug("Keeping session open [callID=%s until=%s]", callID, new Date(until));
     }
     return true;
   }
 
   public void endOfStream() {
+    if (LOGGER.isDebug()) {
+      LOGGER.debug("<< endOfStream [callID=%s]", callID);
+    }
     close();
   }
 
   public void notifyError(Throwable e) {
+    if (LOGGER.isDebug()) {
+      LOGGER.debug("<< notifyError [callID=%s throwable=%s]", callID, e.getClass());
+    }
     error.set(e);
     synchronized (this) {
       this.notifyAll();
@@ -83,6 +97,9 @@ public class RequestHandler implements RequestContext {
 
   @Override
   public void notifyClose() {
+    if (LOGGER.isDebug()) {
+      LOGGER.debug("<< notifyClose [callID=%s]", callID);
+    }
     list(requestListeners).forEach(l -> LambdaUtils.tryTo(
             () -> l.close(callID),
             e -> LOGGER.warning(e, "Error invoking RequestListener")
@@ -90,7 +107,15 @@ public class RequestHandler implements RequestContext {
   }
 
   public boolean addResponse(Message msg) {
-    if (isClosed()) return false;
+    if (isClosed()) {
+      if (LOGGER.isDebug()) {
+        LOGGER.debug("<< addResponse rejected [callID=%s]", callID);
+      }
+      return false;
+    }
+    if (LOGGER.isDebug()) {
+      LOGGER.debug("<< addResponse [callID=%s]", callID);
+    }
     responses.add(msg);
     //whenever receiving another response, this is an implicit 10sec keepalive
     keepAlive(clock.millis() + KEEPALIVE_PERIOD);
@@ -155,6 +180,9 @@ public class RequestHandler implements RequestContext {
       this.notifyAll();
     }
     if (!wasClosed) {
+      if (LOGGER.isDebug()) {
+        LOGGER.debug("# close [callID=%s]", callID);
+      }
       list(requestListeners).forEach(l -> LambdaUtils.tryTo(
               () -> l.close(callID),
               e -> LOGGER.warning(e, "Error invoking RequestListener")

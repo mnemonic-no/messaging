@@ -241,6 +241,9 @@ public class JMSRequestSink extends JMSBase implements RequestSink, MessageListe
     if (!requestHandlers.containsKey(handler.getCallID())) {
       return;
     }
+    if (LOGGER.isDebug()) {
+      LOGGER.debug("## cleanup [callID=%s]", handler.getCallID());
+    }
     //close the specified request
     requestHandlers.remove(handler.getCallID());
     handler.cleanup();

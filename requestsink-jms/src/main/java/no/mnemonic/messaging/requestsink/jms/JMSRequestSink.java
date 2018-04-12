@@ -124,6 +124,13 @@ public class JMSRequestSink extends JMSBase implements RequestSink, MessageListe
       }
       ClientRequestHandler handler = requestHandlers.get(message.getJMSCorrelationID());
       if (handler == null) {
+        //do not notify/count close message as missing handler, as single-value replies often lead to client-initiated stream close
+        if (MESSAGE_TYPE_STREAM_CLOSED.equals(message.getStringProperty(PROPERTY_MESSAGE_TYPE))) {
+          LOGGER.debug("No request handler for callID: %s (type=%s)",
+                  message.getJMSCorrelationID(),
+                  MESSAGE_TYPE_STREAM_CLOSED);
+          return;
+        }
         metrics.unknownCallIDMessage();
         LOGGER.warning("No request handler for callID: %s (type=%s)",
                 message.getJMSCorrelationID(),

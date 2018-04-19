@@ -91,6 +91,7 @@ public class JMSRequestProxy extends JMSBase implements MessageListener, Excepti
       consumer.setMessageListener(this);
       SetUtils.set(connectionListeners).forEach(l -> l.connected(this));
     } catch (JMSException | NamingException e) {
+      executor.shutdown();
       throw new IllegalStateException(e);
     }
   }

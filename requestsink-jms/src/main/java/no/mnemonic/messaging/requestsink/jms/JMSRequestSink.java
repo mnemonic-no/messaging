@@ -172,7 +172,8 @@ public class JMSRequestSink extends JMSBase implements RequestSink, MessageListe
       producer.set(getSession().createProducer(getDestination()));
       producer.get().setDeliveryMode(DeliveryMode.NON_PERSISTENT);
     } catch (JMSException | NamingException e) {
-      LOGGER.error(e, "Error setting up connection");
+      executor.shutdown();
+      throw new IllegalStateException("Error setting up connection", e);
     }
     //initialize response queue
     replaceResponseQueue();

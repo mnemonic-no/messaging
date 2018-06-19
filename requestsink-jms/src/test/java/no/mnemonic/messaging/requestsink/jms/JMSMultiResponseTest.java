@@ -3,6 +3,7 @@ package no.mnemonic.messaging.requestsink.jms;
 import no.mnemonic.commons.container.ComponentContainer;
 import no.mnemonic.messaging.requestsink.RequestSink;
 import no.mnemonic.messaging.requestsink.RequestContext;
+import no.mnemonic.messaging.requestsink.jms.serializer.DefaultJavaMessageSerializer;
 import org.junit.After;
 import org.junit.Before;
 import org.junit.Test;
@@ -52,11 +53,14 @@ public class JMSMultiResponseTest extends AbstractJMSRequestTest {
     String queueName = "dynamicQueues/" + generateCookie(10);
 
     requestSink = addConnection(JMSRequestSink.builder())
+            .setSerializer(new DefaultJavaMessageSerializer())
+            .setProtocolVersion(ProtocolVersion.V3)
             .setDestinationName(queueName)
             .build();
 
     //set up request sink pointing at a vm-local topic
     requestProxy = addConnection(JMSRequestProxy.builder())
+            .addSerializer(new DefaultJavaMessageSerializer())
             .setDestinationName(queueName)
             .setRequestSink(endpoint)
             .build();

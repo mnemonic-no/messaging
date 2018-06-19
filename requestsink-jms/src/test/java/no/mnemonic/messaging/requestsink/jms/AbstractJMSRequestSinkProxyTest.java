@@ -2,10 +2,8 @@ package no.mnemonic.messaging.requestsink.jms;
 
 import no.mnemonic.commons.container.ComponentContainer;
 import no.mnemonic.messaging.requestsink.Message;
-import no.mnemonic.messaging.requestsink.RequestSink;
 import no.mnemonic.messaging.requestsink.RequestContext;
-import org.junit.After;
-import org.junit.Before;
+import no.mnemonic.messaging.requestsink.RequestSink;
 import org.junit.Test;
 
 import java.util.ArrayList;
@@ -14,52 +12,21 @@ import java.util.concurrent.*;
 
 import static no.mnemonic.commons.utilities.lambda.LambdaUtils.tryTo;
 import static org.junit.Assert.*;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.isA;
 import static org.mockito.Mockito.*;
 
-public class JMSRequestSinkProxyTest extends AbstractJMSRequestTest {
+public abstract class AbstractJMSRequestSinkProxyTest extends AbstractJMSRequestTest {
 
-  private JMSRequestSink requestSink;
-  private JMSRequestProxy requestProxy;
-  private ComponentContainer clientContainer, serverContainer;
-  private RequestSink endpoint;
-  private RequestContext requestContext;
-  private String queueName;
+  protected JMSRequestSink requestSink;
+  protected JMSRequestProxy requestProxy;
+  protected ComponentContainer clientContainer, serverContainer;
+  protected RequestSink endpoint;
+  protected RequestContext requestContext;
+  protected String queueName;
 
-  private ExecutorService executor = Executors.newCachedThreadPool();
-
-  @Before
-  public void setUp() throws Exception {
-
-    //create mock client (requestor to requestSink) and endpoint (target for requestProxy)
-    endpoint = mock(RequestSink.class);
-    requestContext = mock(RequestContext.class);
-
-    //set up a real JMS connection to a vm-local activemq
-    queueName = "dynamicQueues/" + generateCookie(10);
-
-    //set up request sink pointing at a vm-local topic
-    requestSink = addConnection(JMSRequestSink.builder())
-            .setDestinationName(queueName)
-            .build();
-
-    //set up request proxy listening to the vm-local topic, and pointing to mock endpoint
-    requestProxy = addConnection(JMSRequestProxy.builder())
-            .setMaxMessageSize(1000)
-            .setDestinationName(queueName)
-            .setRequestSink(endpoint)
-            .build();
-
-    clientContainer = ComponentContainer.create(requestSink);
-    serverContainer = ComponentContainer.create(requestProxy);
-  }
-
-  @After
-  public void tearDown() throws Exception {
-    clientContainer.destroy();
-    serverContainer.destroy();
-    executor.shutdown();
-  }
+  protected ExecutorService executor = Executors.newCachedThreadPool();
 
   @Test
   public void testSignal() throws Exception {

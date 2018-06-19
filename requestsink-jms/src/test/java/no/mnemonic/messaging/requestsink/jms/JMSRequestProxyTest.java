@@ -3,6 +3,7 @@ package no.mnemonic.messaging.requestsink.jms;
 import no.mnemonic.commons.container.ComponentContainer;
 import no.mnemonic.messaging.requestsink.RequestContext;
 import no.mnemonic.messaging.requestsink.RequestSink;
+import no.mnemonic.messaging.requestsink.jms.serializer.DefaultJavaMessageSerializer;
 import org.junit.After;
 import org.junit.Assert;
 import org.junit.Before;
@@ -17,7 +18,9 @@ import java.util.Date;
 import java.util.List;
 import java.util.concurrent.*;
 
+import static no.mnemonic.messaging.requestsink.jms.util.JMSUtils.*;
 import static org.junit.Assert.*;
+import static org.junit.Assert.assertNotNull;
 import static org.mockito.Mockito.*;
 
 public class JMSRequestProxyTest extends AbstractJMSRequestTest {
@@ -68,7 +71,7 @@ public class JMSRequestProxyTest extends AbstractJMSRequestTest {
     Message eosMessage = receiveFrom(responseQueue).poll(1000, TimeUnit.MILLISECONDS);
     Assert.assertEquals(JMSRequestProxy.MESSAGE_TYPE_STREAM_CLOSED, eosMessage.getStringProperty(JMSRequestProxy.PROPERTY_MESSAGE_TYPE));
     assertEquals(sentMessage.getCallID(), eosMessage.getJMSCorrelationID());
-    assertEquals(ProtocolVersion.V2, JMSUtils.getProtocolVersion(eosMessage));
+    assertEquals(ProtocolVersion.V2, getProtocolVersion(eosMessage));
   }
 
 
@@ -106,7 +109,7 @@ public class JMSRequestProxyTest extends AbstractJMSRequestTest {
     for (int i = 0; i < 10; i++) {
       Message r = response.poll(1000, TimeUnit.MILLISECONDS);
       assertEquals(JMSRequestProxy.MESSAGE_TYPE_EXTEND_WAIT, r.getStringProperty(JMSRequestProxy.PROPERTY_MESSAGE_TYPE));
-      assertEquals(ProtocolVersion.V2, JMSUtils.getProtocolVersion(r));
+      assertEquals(ProtocolVersion.V2, getProtocolVersion(r));
       assertEquals(sentMessage.getCallID(), r.getJMSCorrelationID());
       long until = r.getLongProperty(JMSRequestProxy.PROPERTY_REQ_TIMEOUT);
       assertTrue(until > System.currentTimeMillis());
@@ -114,7 +117,7 @@ public class JMSRequestProxyTest extends AbstractJMSRequestTest {
     }
     Message respMessage = response.poll(1000, TimeUnit.MILLISECONDS);
     assertEquals(JMSRequestProxy.MESSAGE_TYPE_SIGNAL_RESPONSE, respMessage.getStringProperty(JMSRequestProxy.PROPERTY_MESSAGE_TYPE));
-    assertEquals("resp", ((TestMessage) JMSUtils.extractObject(respMessage)).getId());
+    assertEquals("resp", ((TestMessage) TestUtils.unserialize(extractMessageBytes(respMessage))).getId());
 
     Message eosMessage = response.poll(1000, TimeUnit.MILLISECONDS);
     Assert.assertEquals(JMSRequestProxy.MESSAGE_TYPE_STREAM_CLOSED, eosMessage.getStringProperty(JMSRequestProxy.PROPERTY_MESSAGE_TYPE));
@@ -137,7 +140,7 @@ public class JMSRequestProxyTest extends AbstractJMSRequestTest {
     Destination channel = channelSetup.getJMSReplyTo();
 
     //fragment and upload data through channel
-    uploadAndCloseChannel(channel, sentMessage.getCallID(), JMSUtils.serialize(sentMessage), 10);
+    uploadAndCloseChannel(channel, sentMessage.getCallID(), TestUtils.serialize(sentMessage), 10);
 
     //wait for signal to come through after upload and validate
     TestMessage receivedMessage = expectedSignal.get(1000, TimeUnit.MILLISECONDS).msg;
@@ -149,7 +152,7 @@ public class JMSRequestProxyTest extends AbstractJMSRequestTest {
   public void testFragmentedResponse() throws Exception {
     setupEnvironment();
     TestMessage response = createBigResponse();
-    String digest = JMSUtils.md5(JMSUtils.serialize(response));
+    String digest = md5(TestUtils.serialize(response));
 
     TestMessage sentMessage = new TestMessage("request");
     //listen for signal invocation
@@ -199,7 +202,7 @@ public class JMSRequestProxyTest extends AbstractJMSRequestTest {
 
   //private methods
 
-  private void doTestSignalResponse(int numberOfResponses) throws NamingException, JMSException, IOException, InterruptedException {
+  private void doTestSignalResponse(int numberOfResponses) throws NamingException, JMSException, IOException, InterruptedException, ClassNotFoundException {
     when(endpoint.signal(any(), any(), anyLong())).thenAnswer(inv -> {
       RequestContext ctx = inv.getArgument(1);
       for (int i = 0; i < numberOfResponses; i++) {
@@ -217,9 +220,9 @@ public class JMSRequestProxyTest extends AbstractJMSRequestTest {
       Message r = response.poll(1000, TimeUnit.MILLISECONDS);
       assertNotNull(r);
       assertEquals(JMSRequestProxy.MESSAGE_TYPE_SIGNAL_RESPONSE, r.getStringProperty(JMSRequestProxy.PROPERTY_MESSAGE_TYPE));
-      assertEquals(ProtocolVersion.V2, JMSUtils.getProtocolVersion(r));
+      assertEquals(ProtocolVersion.V2, getProtocolVersion(r));
       assertEquals(sentMessage.getCallID(), r.getJMSCorrelationID());
-      assertEquals("resp" + i, ((TestMessage) JMSUtils.extractObject(r)).getId());
+      assertEquals("resp" + i, ((TestMessage) TestUtils.unserialize(extractMessageBytes(r))).getId());
     }
     Message eosMessage = response.poll(1000, TimeUnit.MILLISECONDS);
     Assert.assertEquals(JMSRequestProxy.MESSAGE_TYPE_STREAM_CLOSED, eosMessage.getStringProperty(JMSRequestProxy.PROPERTY_MESSAGE_TYPE));
@@ -276,8 +279,8 @@ public class JMSRequestProxyTest extends AbstractJMSRequestTest {
 
   private void uploadAndCloseChannel(Destination channel, String callID, byte[] data, int maxSize) throws Exception {
     MessageProducer producer = session.createProducer(channel);
-    String md5sum = JMSUtils.md5(data);
-    List<byte[]> fragments = JMSUtils.splitArray(data, maxSize);
+    String md5sum = md5(data);
+    List<byte[]> fragments = splitArray(data, maxSize);
     int idx = 0;
     for (byte[] f : fragments) {
       Message message = byteMsg(f, JMSRequestProxy.MESSAGE_TYPE_SIGNAL_FRAGMENT, callID);
@@ -311,6 +314,7 @@ public class JMSRequestProxyTest extends AbstractJMSRequestTest {
   private void setupProxy(String queueName) {
     //set up request sink pointing at a vm-local topic
     requestProxy = addConnection(JMSRequestProxy.builder())
+            .addSerializer(new DefaultJavaMessageSerializer())
             .setDestinationName(queueName)
             .setRequestSink(endpoint)
             .setMaxMessageSize(1000)

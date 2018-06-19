@@ -1,4 +1,4 @@
-package no.mnemonic.messaging.requestsink.jms;
+package no.mnemonic.messaging.requestsink.jms.context;
 
 import no.mnemonic.commons.logging.Logger;
 import no.mnemonic.commons.logging.Logging;
@@ -6,6 +6,11 @@ import no.mnemonic.messaging.requestsink.Message;
 import no.mnemonic.messaging.requestsink.RequestContext;
 import no.mnemonic.messaging.requestsink.RequestListener;
 import no.mnemonic.messaging.requestsink.RequestSink;
+import no.mnemonic.messaging.requestsink.jms.ExceptionMessage;
+import no.mnemonic.messaging.requestsink.jms.ProtocolVersion;
+import no.mnemonic.messaging.requestsink.jms.serializer.MessageSerializer;
+import no.mnemonic.messaging.requestsink.jms.util.FragmentConsumer;
+import no.mnemonic.messaging.requestsink.jms.util.ServerMetrics;
 
 import javax.jms.*;
 import javax.naming.NamingException;
@@ -19,7 +24,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 
 import static no.mnemonic.messaging.requestsink.jms.JMSRequestProxy.*;
-import static no.mnemonic.messaging.requestsink.jms.JMSUtils.assertNotNull;
+import static no.mnemonic.messaging.requestsink.jms.util.JMSUtils.*;
 
 /**
  * The server response context is the context object sent to the server side RequestSink along with the signal received from the client.
@@ -29,7 +34,7 @@ import static no.mnemonic.messaging.requestsink.jms.JMSUtils.assertNotNull;
  * Multiple responses will be encoded as multiple messages, creating a response stream back to the client.
  * When channel is closed, responses will be ignored.
  */
-class ServerResponseContext implements RequestContext, ServerContext {
+public class ServerResponseContext implements RequestContext, ServerContext {
 
   private static final Logger LOGGER = Logging.getLogger(ServerResponseContext.class);
   private static Clock clock = Clock.systemUTC();
@@ -43,14 +48,16 @@ class ServerResponseContext implements RequestContext, ServerContext {
   private final ProtocolVersion protocolVersion;
   private final int maxMessageSize;
   private final ServerMetrics metrics;
+  private final MessageSerializer serializer;
 
-  ServerResponseContext(String callID, Session session, MessageProducer replyProducer, Destination replyTo, long timeout, ProtocolVersion protocolVersion, int maxMessageSize, ServerMetrics metrics) throws NamingException, JMSException {
+  public ServerResponseContext(String callID, Session session, MessageProducer replyProducer, Destination replyTo, long timeout, ProtocolVersion protocolVersion, int maxMessageSize, ServerMetrics metrics, MessageSerializer serializer) throws NamingException, JMSException {
     this.callID = assertNotNull(callID, "CallID not set");
     this.session = assertNotNull(session, "session not set");
     this.replyProducer = assertNotNull(replyProducer, "replyProducer not set");
     this.replyTo = assertNotNull(replyTo, "replyTo not set");
     this.protocolVersion = assertNotNull(protocolVersion, "ProtocolVersion not set");
     this.metrics = assertNotNull(metrics, "metrics not set");
+    this.serializer = assertNotNull(serializer, "serializer not set");
     if (maxMessageSize <= 1) throw new IllegalArgumentException("MaxMessageSize must be a positive integer");
     this.maxMessageSize = maxMessageSize;
     if (timeout <= 0) throw new IllegalArgumentException("Timeout must be a positive integer");
@@ -60,7 +67,7 @@ class ServerResponseContext implements RequestContext, ServerContext {
   /**
    * Method to implement {@link ServerChannelUploadContext.UploadHandler}
    */
-  void handle(RequestSink requestSink, Message request) throws JMSException {
+  public void handle(RequestSink requestSink, Message request) throws JMSException {
     assertNotNull(requestSink, "RequestSink not set");
     assertNotNull(request, "Message not set");
     if (LOGGER.isDebug()) {
@@ -77,7 +84,7 @@ class ServerResponseContext implements RequestContext, ServerContext {
     //if keepalive requests to extend timeout, relay that request back to client
     try {
       //create a extend-wait message to client (message content has no meaning)
-      javax.jms.Message closeMessage = JMSUtils.createTextMessage(session, "please wait", protocolVersion);
+      javax.jms.Message closeMessage = createTextMessage(session, "please wait", protocolVersion);
       closeMessage.setJMSCorrelationID(callID);
       closeMessage.setStringProperty(PROPERTY_MESSAGE_TYPE, MESSAGE_TYPE_EXTEND_WAIT);
       closeMessage.setLongProperty(PROPERTY_REQ_TIMEOUT, until);
@@ -100,7 +107,7 @@ class ServerResponseContext implements RequestContext, ServerContext {
     }
 
     try {
-      byte[] messageBytes = JMSUtils.serialize(msg);
+      byte[] messageBytes = serializer.serialize(msg);
       //if request origin is sending using protocol V2 or higher, fragmented responses are supported, so fragment big responses
       if (protocolVersion.atLeast(ProtocolVersion.V2) && messageBytes.length > maxMessageSize) {
         sendResponseFragments(messageBytes);
@@ -116,9 +123,11 @@ class ServerResponseContext implements RequestContext, ServerContext {
     }
   }
 
+  //private methods
+
   private void sendSingleResponse(byte[] messageBytes) throws JMSException, IOException {
     // construct single response message
-    javax.jms.Message returnMessage = JMSUtils.createByteMessage(session, messageBytes, protocolVersion);
+    javax.jms.Message returnMessage = createByteMessage(session, messageBytes, protocolVersion, serializer.serializerID());
     returnMessage.setJMSCorrelationID(callID);
     returnMessage.setStringProperty(PROPERTY_MESSAGE_TYPE, MESSAGE_TYPE_SIGNAL_RESPONSE);
     // send return message
@@ -132,10 +141,10 @@ class ServerResponseContext implements RequestContext, ServerContext {
     UUID responseID = UUID.randomUUID();
     try (InputStream messageDataStream = new ByteArrayInputStream(messageBytes)) {
 
-      JMSUtils.fragment(messageDataStream, maxMessageSize, new JMSUtils.FragmentConsumer() {
+      fragment(messageDataStream, maxMessageSize, new FragmentConsumer() {
         @Override
         public void fragment(byte[] data, int idx) throws JMSException, IOException {
-          BytesMessage fragment = JMSUtils.createByteMessage(session, data, protocolVersion);
+          BytesMessage fragment = createByteMessage(session, data, protocolVersion, serializer.serializerID());
           fragment.setJMSCorrelationID(callID);
           fragment.setStringProperty(PROPERTY_MESSAGE_TYPE, MESSAGE_TYPE_SIGNAL_FRAGMENT);
           fragment.setStringProperty(PROPERTY_RESPONSE_ID, responseID.toString());
@@ -151,13 +160,13 @@ class ServerResponseContext implements RequestContext, ServerContext {
         @Override
         public void end(int fragments, byte[] digest) throws JMSException {
           //prepare EOS message (message text has no meaning)
-          javax.jms.Message eof = JMSUtils.createTextMessage(session, "End-Of-Stream", protocolVersion);
+          javax.jms.Message eof = createTextMessage(session, "End-Of-Stream", protocolVersion);
           eof.setJMSCorrelationID(callID);
           eof.setStringProperty(PROPERTY_MESSAGE_TYPE, MESSAGE_TYPE_END_OF_FRAGMENTED_MESSAGE);
           eof.setStringProperty(PROPERTY_RESPONSE_ID, responseID.toString());
           //send total number of fragments and message digest with EOS message, to allow receiver to verify
           eof.setIntProperty(PROPERTY_FRAGMENTS_TOTAL, fragments);
-          eof.setStringProperty(PROPERTY_DATA_CHECKSUM_MD5, JMSUtils.hex(digest));
+          eof.setStringProperty(PROPERTY_DATA_CHECKSUM_MD5, hex(digest));
           //send EOS
           replyProducer.send(replyTo, eof);
           metrics.fragmentedReplyCompleted();
@@ -199,7 +208,7 @@ class ServerResponseContext implements RequestContext, ServerContext {
     if (!isClosed()) {
       try {
         ExceptionMessage ex = new ExceptionMessage(callID, e);
-        javax.jms.Message exMessage = JMSUtils.createByteMessage(session, JMSUtils.serialize(ex), protocolVersion);
+        javax.jms.Message exMessage = createByteMessage(session, serializer.serialize(ex), protocolVersion, serializer.serializerID());
         exMessage.setJMSCorrelationID(callID);
         exMessage.setStringProperty(PROPERTY_MESSAGE_TYPE, MESSAGE_TYPE_EXCEPTION);
         replyProducer.send(replyTo, exMessage);
@@ -218,7 +227,7 @@ class ServerResponseContext implements RequestContext, ServerContext {
     if (!isClosed()) {
       try {
         //send EndOfStream message (message text has no meaning)
-        javax.jms.Message closeMessage = JMSUtils.createTextMessage(session, "stream closed", protocolVersion);
+        javax.jms.Message closeMessage = createTextMessage(session, "stream closed", protocolVersion);
         closeMessage.setJMSCorrelationID(callID);
         closeMessage.setStringProperty(PROPERTY_MESSAGE_TYPE, MESSAGE_TYPE_STREAM_CLOSED);
         replyProducer.send(replyTo, closeMessage);

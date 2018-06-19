@@ -1,7 +1,13 @@
-package no.mnemonic.messaging.requestsink.jms;
+package no.mnemonic.messaging.requestsink.jms.context;
 
 import no.mnemonic.commons.logging.Logger;
 import no.mnemonic.commons.logging.Logging;
+import no.mnemonic.messaging.requestsink.jms.ExceptionMessage;
+import no.mnemonic.messaging.requestsink.jms.JMSRequestProxy;
+import no.mnemonic.messaging.requestsink.jms.ProtocolVersion;
+import no.mnemonic.messaging.requestsink.jms.serializer.MessageSerializer;
+import no.mnemonic.messaging.requestsink.jms.util.MessageFragment;
+import no.mnemonic.messaging.requestsink.jms.util.ServerMetrics;
 
 import javax.jms.*;
 import javax.naming.NamingException;
@@ -10,7 +16,7 @@ import java.util.concurrent.LinkedBlockingDeque;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 
-import static no.mnemonic.messaging.requestsink.jms.JMSUtils.assertNotNull;
+import static no.mnemonic.messaging.requestsink.jms.util.JMSUtils.*;
 
 /**
  * This context handles fragmented uploading of the signal message on the JMSRequestProxy (server) side.
@@ -21,7 +27,7 @@ import static no.mnemonic.messaging.requestsink.jms.JMSUtils.assertNotNull;
  * <li>Reassemble fragments, verify and submit reassembled message to RequestSink</li>
  * </ul>
  */
-class ServerChannelUploadContext implements JMSRequestProxy.ServerContext {
+public class ServerChannelUploadContext implements ServerContext {
 
   private static final Logger LOGGER = Logging.getLogger(ServerChannelUploadContext.class);
 
@@ -33,18 +39,20 @@ class ServerChannelUploadContext implements JMSRequestProxy.ServerContext {
   private final AtomicLong timeout = new AtomicLong();
   private final ProtocolVersion protocolVersion;
   private final ServerMetrics metrics;
+  private final MessageSerializer serializer;
 
   private UploadHandler uploadHandler;
   private MessageProducer replyTo;
   private TemporaryQueue channelQueue;
   private MessageConsumer channelConsumer;
 
-  ServerChannelUploadContext(String callID, Session session, Destination responseDestination, long timeout, ProtocolVersion protocolVersion, ServerMetrics metrics) throws JMSException, NamingException {
+  public ServerChannelUploadContext(String callID, Session session, Destination responseDestination, long timeout, ProtocolVersion protocolVersion, ServerMetrics metrics, MessageSerializer serializer) throws JMSException, NamingException {
     this.callID = assertNotNull(callID, "CallID not set");
     this.session = assertNotNull(session, "Session not set");
     this.responseDestination = assertNotNull(responseDestination, "ResponseDestination not set");
     this.protocolVersion = assertNotNull(protocolVersion, "ProtocolVersion not set");
     this.metrics = assertNotNull(metrics, "metrics not set");
+    this.serializer = assertNotNull(serializer, "serializer not set");
     this.timeout.set(timeout);
   }
 
@@ -52,7 +60,7 @@ class ServerChannelUploadContext implements JMSRequestProxy.ServerContext {
    * @param handler handler to receive the reassembled uploaded message
    * @throws JMSException on error receiving from JMS
    */
-  void setupChannel(UploadHandler handler) throws JMSException {
+  public void setupChannel(UploadHandler handler) throws JMSException {
     //save reference to handler which should get the reassembled message
     this.uploadHandler = assertNotNull(handler, "UploadHandler not set");
     //create a temporary upload queue, a consumer on that queue, and bind a messagelistener to it
@@ -62,7 +70,7 @@ class ServerChannelUploadContext implements JMSRequestProxy.ServerContext {
     //create producer to send feedback to the client
     this.replyTo = session.createProducer(responseDestination);
     //send a channel setup message to the client (message text has no meaning)
-    Message setupMessage = JMSUtils.createTextMessage(session, "channel setup", protocolVersion);
+    Message setupMessage = createTextMessage(session, "channel setup", protocolVersion);
     setupMessage.setJMSCorrelationID(callID);
     setupMessage.setStringProperty(JMSRequestProxy.PROPERTY_MESSAGE_TYPE, JMSRequestProxy.MESSAGE_TYPE_CHANNEL_SETUP);
     setupMessage.setLongProperty(JMSRequestProxy.PROPERTY_REQ_TIMEOUT, timeout.get());
@@ -77,7 +85,7 @@ class ServerChannelUploadContext implements JMSRequestProxy.ServerContext {
 
   private void onMessage(Message message) {
     try {
-      if (!JMSUtils.isCompatible(message)) {
+      if (!isCompatible(message)) {
         LOGGER.warning("Ignoring incompatible message: " + message);
         return;
       }
@@ -125,13 +133,13 @@ class ServerChannelUploadContext implements JMSRequestProxy.ServerContext {
     try {
       int expectedFragments = eosMessage.getIntProperty(JMSRequestProxy.PROPERTY_FRAGMENTS_TOTAL);
       String transmittedChecksum = eosMessage.getStringProperty(JMSRequestProxy.PROPERTY_DATA_CHECKSUM_MD5);
-      byte[] messageData = JMSUtils.reassembleFragments(fragments, expectedFragments, transmittedChecksum);
+      byte[] messageData = reassembleFragments(fragments, expectedFragments, transmittedChecksum);
       if (messageData == null) {
         LOGGER.warning("Ignoring empty channel upload: " + callID);
         return;
       }
       metrics.fragmentedUploadCompleted();
-      uploadHandler.handleRequest(callID, messageData, responseDestination, timeout.get(), protocolVersion);
+      uploadHandler.handleRequest(callID, messageData, responseDestination, timeout.get(), protocolVersion, serializer);
     } catch (Exception e) {
       LOGGER.warning("Error handling end-of-stream: " + callID);
       notifyError(e);
@@ -153,7 +161,7 @@ class ServerChannelUploadContext implements JMSRequestProxy.ServerContext {
     try {
       ExceptionMessage ex = new ExceptionMessage(callID, e);
       javax.jms.Message exMessage;
-      exMessage = JMSUtils.createByteMessage(session, JMSUtils.serialize(ex), protocolVersion);
+      exMessage = createByteMessage(session, serializer.serialize(ex), protocolVersion, serializer.serializerID());
       exMessage.setJMSCorrelationID(callID);
       exMessage.setStringProperty(JMSRequestProxy.PROPERTY_MESSAGE_TYPE, JMSRequestProxy.MESSAGE_TYPE_EXCEPTION);
       replyTo.send(exMessage);
@@ -177,11 +185,11 @@ class ServerChannelUploadContext implements JMSRequestProxy.ServerContext {
 
   private void close() {
     closed.set(true);
-    JMSUtils.removeMessageListenerAndClose(channelConsumer);
-    JMSUtils.deleteTemporaryQueue(channelQueue);
+    removeMessageListenerAndClose(channelConsumer);
+    deleteTemporaryQueue(channelQueue);
   }
 
   public interface UploadHandler {
-    void handleRequest(String callID, byte[] message, Destination replyTo, long timeout, ProtocolVersion protocolVersion) throws Exception;
+    void handleRequest(String callID, byte[] message, Destination replyTo, long timeout, ProtocolVersion protocolVersion, MessageSerializer serializer) throws Exception;
   }
 }

@@ -9,9 +9,9 @@ import java.util.Objects;
 public enum ProtocolVersion {
 
   V1(1),
-  V2(2);
+  V2(2),
+  V3(3);
 
-  private static final Logger LOGGER = Logging.getLogger(ProtocolVersion.class);
   private final int version;
 
   ProtocolVersion(int version) {

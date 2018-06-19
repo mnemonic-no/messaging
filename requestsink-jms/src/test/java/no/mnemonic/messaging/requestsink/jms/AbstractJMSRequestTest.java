@@ -4,7 +4,6 @@ import javax.jms.*;
 import javax.naming.InitialContext;
 import javax.naming.NamingException;
 import java.io.IOException;
-import java.io.Serializable;
 import java.nio.CharBuffer;
 import java.security.SecureRandom;
 import java.util.Arrays;
@@ -40,9 +39,9 @@ abstract class AbstractJMSRequestTest {
     return msg;
   }
 
-  BytesMessage byteMsg(Serializable obj, String messageType, String callID) throws JMSException, IOException {
+  BytesMessage byteMsg(no.mnemonic.messaging.requestsink.Message obj, String messageType, String callID) throws JMSException, IOException {
     BytesMessage msg = session.createBytesMessage();
-    msg.writeBytes(JMSUtils.serialize(obj));
+    msg.writeBytes(TestUtils.serialize(obj));
     msg.setStringProperty(JMSBase.PROTOCOL_VERSION_KEY, ProtocolVersion.V1.getVersionString());
     msg.setStringProperty(JMSRequestProxy.PROPERTY_MESSAGE_TYPE, messageType);
     msg.setJMSCorrelationID(callID);

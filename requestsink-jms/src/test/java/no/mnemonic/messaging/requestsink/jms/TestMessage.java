@@ -13,7 +13,7 @@ public class TestMessage implements Message {
   private String callID;
   private long timestamp = System.currentTimeMillis();
 
-  TestMessage(String id) {
+  public TestMessage(String id) {
     this.id = id;
     this.callID = UUID.randomUUID().toString();
   }
@@ -41,7 +41,7 @@ public class TestMessage implements Message {
     return Objects.hash(id);
   }
 
-  String getId() {
+  public String getId() {
     return id;
   }
 }

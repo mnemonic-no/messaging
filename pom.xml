@@ -5,7 +5,7 @@
   <groupId>no.mnemonic.messaging</groupId>
   <artifactId>parent</artifactId>
   <packaging>pom</packaging>
-  <version>1.1.13-SNAPSHOT</version>
+  <version>1.2.0-SNAPSHOT</version>
 
   <name>mnemonic messaging</name>
   <description>Java messaging libraries</description>
@@ -47,6 +47,7 @@
     <jms.version>2.0.1</jms.version>
     <junit.version>4.12</junit.version>
     <mockito.version>2.18.3</mockito.version>
+    <xstream.version>1.4.10</xstream.version>
 
     <!-- build dependencies -->
     <maven.clean.version>3.0.0</maven.clean.version>
@@ -201,11 +202,12 @@
           <!-- Fail the build if a detected license is not in the white list. -->
           <failIfWarning>true</failIfWarning>
           <!-- Only allow licenses which are in this list. -->
-          <includedLicenses>Apache 2|CDDL|Eclipse|ISC|MIT</includedLicenses>
+          <includedLicenses>Apache 2|CDDL|Eclipse|ISC|MIT|BSD</includedLicenses>
           <!-- Consolidate license names. -->
           <licenseMerges>
             <licenseMerge>Apache 2|Apache License 2.0|Apache Software License - Version 2.0|Apache License, Version 2.0|The Apache Software License, Version 2.0</licenseMerge>
             <licenseMerge>CDDL|CDDL 1.1|CDDL + GPLv2 with classpath exception</licenseMerge>
+            <licenseMerge>BSD|BSD style</licenseMerge>
             <licenseMerge>Eclipse|Eclipse Public License 1.0|Eclipse Public License - Version 1.0</licenseMerge>
             <licenseMerge>MIT|The MIT License</licenseMerge>
           </licenseMerges>

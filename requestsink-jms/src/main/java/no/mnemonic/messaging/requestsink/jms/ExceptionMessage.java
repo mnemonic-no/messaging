@@ -10,7 +10,7 @@ public class ExceptionMessage implements Message {
   private Throwable exception;
   private long timestamp;
 
-  ExceptionMessage(String callID, Throwable exception) {
+  public ExceptionMessage(String callID, Throwable exception) {
     this.callID = callID;
     this.exception = exception;
     this.timestamp = System.currentTimeMillis();

@@ -1,12 +1,12 @@
-package no.mnemonic.messaging.requestsink.jms;
+package no.mnemonic.messaging.requestsink.jms.util;
 
 import no.mnemonic.commons.utilities.collections.ListUtils;
+import no.mnemonic.messaging.requestsink.jms.TestUtils;
 import org.junit.Test;
 import org.mockito.Mockito;
 
 import javax.jms.BytesMessage;
 import javax.jms.JMSException;
-import javax.jms.Message;
 import java.io.ByteArrayInputStream;
 import java.io.IOException;
 import java.io.Serializable;
@@ -18,44 +18,45 @@ import static no.mnemonic.messaging.requestsink.jms.JMSRequestProxy.PROPERTY_FRA
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertTrue;
 import static org.mockito.Mockito.*;
+import static no.mnemonic.messaging.requestsink.jms.util.JMSUtils.*;
 
 public class JMSUtilsTest {
 
   @Test(expected = IllegalArgumentException.class)
   public void testMessageDigestWithNullStringNotAllowed() {
-    assertEquals(null, JMSUtils.md5(null));
+    assertEquals(null, md5(null));
   }
 
   @Test
   public void testMessageDigestString() {
-    assertEquals("d41d8cd98f00b204e9800998ecf8427e", JMSUtils.md5(new byte[]{}));
-    assertEquals("5289df737df57326fcdd22597afb1fac", JMSUtils.md5(new byte[]{1, 2, 3}));
+    assertEquals("d41d8cd98f00b204e9800998ecf8427e", md5(new byte[]{}));
+    assertEquals("5289df737df57326fcdd22597afb1fac", md5(new byte[]{1, 2, 3}));
   }
 
   @Test
   public void testMessageDigester() {
-    MessageDigest digester = JMSUtils.md5();
-    assertEquals("5289df737df57326fcdd22597afb1fac", JMSUtils.hex(digester.digest(new byte[]{1, 2, 3})));
+    MessageDigest digester = md5();
+    assertEquals("5289df737df57326fcdd22597afb1fac", hex(digester.digest(new byte[]{1, 2, 3})));
   }
 
   @Test
   public void testHex() {
-    assertEquals(null, JMSUtils.hex(null));
-    assertEquals("", JMSUtils.hex(new byte[]{}));
-    assertEquals("01", JMSUtils.hex(new byte[]{1}));
-    assertEquals("0a", JMSUtils.hex(new byte[]{10}));
-    assertEquals("7f", JMSUtils.hex(new byte[]{0x7f}));
-    assertEquals("ff", JMSUtils.hex(new byte[]{-1}));
-    assertEquals("01020304", JMSUtils.hex(new byte[]{1, 2, 3, 4}));
-    assertEquals("0f101112", JMSUtils.hex(new byte[]{15, 16, 17, 18}));
+    assertEquals(null, hex(null));
+    assertEquals("", hex(new byte[]{}));
+    assertEquals("01", hex(new byte[]{1}));
+    assertEquals("0a", hex(new byte[]{10}));
+    assertEquals("7f", hex(new byte[]{0x7f}));
+    assertEquals("ff", hex(new byte[]{-1}));
+    assertEquals("01020304", hex(new byte[]{1, 2, 3, 4}));
+    assertEquals("0f101112", hex(new byte[]{15, 16, 17, 18}));
   }
 
   @Test
   public void testFragmenter() throws JMSException, IOException {
-    JMSUtils.FragmentConsumer consumer = mock(JMSUtils.FragmentConsumer.class);
+    FragmentConsumer consumer = mock(FragmentConsumer.class);
     byte[] data = barray(1, 2, 3, 4, 5, 6, 7);
-    byte[] digest = JMSUtils.md5().digest(data);
-    JMSUtils.fragment(new ByteArrayInputStream(data), 3, consumer);
+    byte[] digest = md5().digest(data);
+    fragment(new ByteArrayInputStream(data), 3, consumer);
     verify(consumer).fragment(argThat(b -> Arrays.equals(b, barray(1, 2, 3))), eq(0));
     verify(consumer).fragment(argThat(b -> Arrays.equals(b, barray(4, 5, 6))), eq(1));
     verify(consumer).fragment(argThat(b -> Arrays.equals(b, barray(7))), eq(2));
@@ -65,81 +66,81 @@ public class JMSUtilsTest {
   @Test
   public void testReassembleFragments() throws IOException, JMSException {
     byte[] data = barray(1, 2, 3, 4, 5, 6, 7);
-    byte[] digest = JMSUtils.md5().digest(data);
-    byte[] result = JMSUtils.reassembleFragments(
+    byte[] digest = md5().digest(data);
+    byte[] result = reassembleFragments(
             ListUtils.list(
                     prepareFragment(0, new byte[]{1, 2, 3}),
                     prepareFragment(1, new byte[]{4, 5, 6}),
                     prepareFragment(2, new byte[]{7})
             ),
-            3, JMSUtils.hex(digest));
+            3, hex(digest));
     assertTrue(Arrays.equals(data, result));
   }
 
   @Test
   public void testReassembleFragmentsOutOfOrder() throws IOException, JMSException {
     byte[] data = barray(1, 2, 3, 4, 5, 6, 7);
-    byte[] result = JMSUtils.reassembleFragments(
+    byte[] result = reassembleFragments(
             ListUtils.list(
                     prepareFragment(1, new byte[]{4, 5, 6}),
                     prepareFragment(0, new byte[]{1, 2, 3}),
                     prepareFragment(2, new byte[]{7})
             ),
-            3, JMSUtils.hex(JMSUtils.md5().digest(data)));
+            3, hex(md5().digest(data)));
     assertTrue(Arrays.equals(data, result));
   }
 
   @Test(expected = JMSException.class)
   public void testReassembleFragmentsFailsOnInvalidDigest() throws IOException, JMSException {
-    JMSUtils.reassembleFragments(
+    reassembleFragments(
             ListUtils.list(
                     prepareFragment(0, new byte[]{1, 2, 3}),
                     prepareFragment(1, new byte[]{4, 5, 6}),
                     prepareFragment(2, new byte[]{7})
             ),
-            3, JMSUtils.hex(new byte[]{1, 1, 2, 2, 3, 3, 4, 4}));
+            3, hex(new byte[]{1, 1, 2, 2, 3, 3, 4, 4}));
   }
 
   @Test(expected = JMSException.class)
   public void testReassembleFragmentsFailsOnMissingFragment() throws IOException, JMSException {
     byte[] data = barray(1, 2, 3, 4, 5, 6, 7);
-    JMSUtils.reassembleFragments(
+    reassembleFragments(
             ListUtils.list(
                     prepareFragment(0, new byte[]{1, 2, 3}),
                     prepareFragment(2, new byte[]{7})
             ),
-            3, JMSUtils.hex(JMSUtils.md5().digest(data)));
+            3, hex(md5().digest(data)));
   }
 
   @Test
   public void testSerialization() throws IOException, ClassNotFoundException {
     Serializable obj = "abc";
-    byte[] bytes = JMSUtils.serialize(obj);
-    assertEquals(obj, JMSUtils.unserialize(bytes));
+    byte[] bytes = TestUtils.serialize(obj);
+    assertEquals(obj, TestUtils.unserialize(bytes));
   }
 
   @Test(expected = IllegalArgumentException.class)
   public void testSplitEmptyArrayNotAllowed() {
-    JMSUtils.splitArray(new byte[]{}, 4);
+    splitArray(new byte[]{}, 4);
   }
 
   @Test
   public void testSplitArray() {
     assertTrue(equals(
             ListUtils.list(new byte[]{1, 2}),
-            JMSUtils.splitArray(new byte[]{1, 2}, 4)
+            splitArray(new byte[]{1, 2}, 4)
     ));
     assertTrue(equals(
             ListUtils.list(new byte[]{1, 2, 3, 4}),
-            JMSUtils.splitArray(new byte[]{1, 2, 3, 4}, 4)
+            splitArray(new byte[]{1, 2, 3, 4}, 4)
     ));
     assertTrue(equals(
             ListUtils.list(new byte[]{1, 2, 3, 4}, new byte[]{5, 6}),
-            JMSUtils.splitArray(new byte[]{1, 2, 3, 4, 5, 6}, 4)
+            splitArray(new byte[]{1, 2, 3, 4, 5, 6}, 4)
     ));
     assertTrue(equals(
             ListUtils.list(new byte[]{1, 2, 3, 4}, new byte[]{5, 6, 7, 8}),
-            JMSUtils.splitArray(new byte[]{1, 2, 3, 4, 5, 6, 7, 8}, 4)
+            splitArray(new byte[]{1, 2, 3, 4, 5, 6, 7, 8}, 4)
     ));
   }
 

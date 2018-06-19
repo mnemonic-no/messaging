@@ -1,4 +1,4 @@
-package no.mnemonic.messaging.requestsink.jms;
+package no.mnemonic.messaging.requestsink.jms.util;
 
 import no.mnemonic.commons.metrics.MetricException;
 import no.mnemonic.commons.metrics.Metrics;
@@ -6,11 +6,10 @@ import no.mnemonic.commons.metrics.MetricsData;
 
 import java.util.concurrent.atomic.LongAdder;
 
-class ServerMetrics {
+public class ClientMetrics {
   private final LongAdder errorCount = new LongAdder();
   private final LongAdder exceptionSignalCount = new LongAdder();
   private final LongAdder requestCount = new LongAdder();
-  private final LongAdder requestTimeoutCount = new LongAdder();
   private final LongAdder replyCount = new LongAdder();
   private final LongAdder endOfStreamCounter = new LongAdder();
   private final LongAdder extendWaitCounter = new LongAdder();
@@ -20,13 +19,15 @@ class ServerMetrics {
   private final LongAdder fragmentedReplyCompletedCounter = new LongAdder();
   private final LongAdder fragmentedReplyFragmentCounter = new LongAdder();
   private final LongAdder incompatibleMessageCounter = new LongAdder();
+  private final LongAdder unknownCallIDMessageCounter = new LongAdder();
+  private final LongAdder invalidatedResponseQueues = new LongAdder();
 
-  Metrics metrics() throws MetricException {
+  public Metrics metrics() throws MetricException {
     return new MetricsData()
+            .addData("invalidatedResponseQueues", invalidatedResponseQueues)
             .addData("errors", errorCount)
             .addData("exceptionSignal", exceptionSignalCount)
             .addData("requests", requestCount)
-            .addData("requestTimeoutCount", requestTimeoutCount)
             .addData("replies", replyCount)
             .addData("endOfStreams", endOfStreamCounter)
             .addData("extendWaits", extendWaitCounter)
@@ -35,58 +36,61 @@ class ServerMetrics {
             .addData("fragmentedUploadCompleted", fragmentedUploadCompletedCounter)
             .addData("fragmentedReplyCompleted", fragmentedReplyCompletedCounter)
             .addData("fragmentedReplyFragments", fragmentedReplyFragmentCounter)
-            .addData("incompatibleMessages", incompatibleMessageCounter);
+            .addData("incompatibleMessages", incompatibleMessageCounter)
+            .addData("unknownCallIDMessages", unknownCallIDMessageCounter);
   }
 
-  void requestTimeout() {
-    requestTimeoutCount.increment();
+  public void invalidatedResponseQueue() {
+    invalidatedResponseQueues.increment();
   }
 
-  void request() {
+  public void request() {
     requestCount.increment();
   }
 
-  void error() {
+  public void error() {
     errorCount.increment();
   }
 
-  void exceptionSignal() {
-    exceptionSignalCount.increment();
-  }
+  public void exceptionSignal() { exceptionSignalCount.increment(); }
 
-  void fragmentedUploadRequested() {
+  public void fragmentedUploadRequested() {
     fragmentedUploadRequestCounter.increment();
   }
 
-  void fragmentedUploadFragment() {
+  public void fragmentedUploadFragment() {
     fragmentedUploadFragmentsCounter.increment();
   }
 
-  void fragmentedUploadCompleted() {
+  public void fragmentedUploadCompleted() {
     fragmentedUploadCompletedCounter.increment();
   }
 
-  void fragmentedReplyCompleted() {
+  public void fragmentedReplyCompleted() {
     fragmentedReplyCompletedCounter.increment();
   }
 
-  void fragmentReplyFragment() {
+  public void fragmentedReplyFragment() {
     fragmentedReplyFragmentCounter.increment();
   }
 
-  void incompatibleMessage() {
+  public void incompatibleMessage() {
     incompatibleMessageCounter.increment();
   }
 
-  void reply() {
+  public void unknownCallIDMessage() {
+    unknownCallIDMessageCounter.increment();
+  }
+
+  public void reply() {
     replyCount.increment();
   }
 
-  void endOfStream() {
+  public void endOfStream() {
     endOfStreamCounter.increment();
   }
 
-  void extendWait() {
+  public void extendWait() {
     extendWaitCounter.increment();
   }
 }

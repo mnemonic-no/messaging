@@ -1,24 +1,32 @@
-package no.mnemonic.messaging.requestsink.jms;
+package no.mnemonic.messaging.requestsink.jms.util;
 
 import no.mnemonic.commons.logging.Logger;
 import no.mnemonic.commons.logging.Logging;
 import no.mnemonic.messaging.requestsink.MessagingException;
+import no.mnemonic.messaging.requestsink.jms.JMSBase;
+import no.mnemonic.messaging.requestsink.jms.ProtocolVersion;
+import no.mnemonic.messaging.requestsink.jms.serializer.DefaultJavaMessageSerializer;
+import no.mnemonic.messaging.requestsink.jms.serializer.MessageSerializer;
 
 import javax.jms.*;
-import java.io.*;
+import java.io.ByteArrayOutputStream;
+import java.io.IOException;
+import java.io.InputStream;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.*;
 
+import static no.mnemonic.commons.utilities.ObjectUtils.ifNotNull;
 import static no.mnemonic.commons.utilities.ObjectUtils.ifNotNullDo;
 import static no.mnemonic.commons.utilities.lambda.LambdaUtils.tryTo;
 
 /**
  * Package-local utilities, only to be used within this package
  */
-class JMSUtils {
+public class JMSUtils {
 
-  private static final Logger LOGGER = Logging.getLogger(JMSUtils.class);
+  private static final Logger LOGGER = Logging.getLogger(MessageFragment.class);
+  private static final MessageSerializer legacySerializer = new DefaultJavaMessageSerializer();
 
   /**
    * Creates a JMS object from a string serializable object
@@ -26,7 +34,7 @@ class JMSUtils {
    * @param str string to create message from
    * @return a JMS message created from given object
    */
-  static TextMessage createTextMessage(Session session, String str, ProtocolVersion protocolVersion) throws JMSException {
+  public static TextMessage createTextMessage(Session session, String str, ProtocolVersion protocolVersion) throws JMSException {
     assertNotNull(session, "Session not set");
     assertNotNull(str, "String not set");
     assertNotNull(protocolVersion, "ProtocolVersion not set");
@@ -42,17 +50,18 @@ class JMSUtils {
    * @param data data to create message from
    * @return a JMS message created from given object
    */
-  static BytesMessage createByteMessage(Session session, byte[] data, ProtocolVersion protocolVersion) throws JMSException, IOException {
+  public static BytesMessage createByteMessage(Session session, byte[] data, ProtocolVersion protocolVersion, String serializerKey) throws JMSException, IOException {
     assertNotNull(session, "Session not set");
     assertNotNull(data, "Data not set");
     assertNotNull(protocolVersion, "ProtocolVersion not set");
     BytesMessage m = session.createBytesMessage();
     m.writeBytes(data);
+    m.setStringProperty(JMSBase.SERIALIZER_KEY, serializerKey);
     m.setStringProperty(JMSBase.PROTOCOL_VERSION_KEY, protocolVersion.getVersionString());
     return m;
   }
 
-  static byte[] reassembleFragments(Collection<MessageFragment> fragments, int expectedFragments, String md5Checksum) throws IOException, JMSException {
+  public static byte[] reassembleFragments(Collection<MessageFragment> fragments, int expectedFragments, String md5Checksum) throws IOException, JMSException {
     if (fragments == null) throw new IllegalArgumentException("message was null");
     if (md5Checksum == null) throw new IllegalArgumentException("md5Checksum was null");
 
@@ -66,7 +75,7 @@ class JMSUtils {
       fragmentList.sort(Comparator.comparing(MessageFragment::getIdx));
 
       int fragmentIndex = 0;
-      MessageDigest digest = JMSUtils.md5();
+      MessageDigest digest = md5();
 
       for (MessageFragment m : fragmentList) {
         //verify that fragment makes sense
@@ -82,7 +91,7 @@ class JMSUtils {
       baos.flush();
 
       //verify checksum
-      String computedChecksum = JMSUtils.hex(digest.digest());
+      String computedChecksum = hex(digest.digest());
       if (!Objects.equals(computedChecksum, md5Checksum)) {
         throw new JMSException("Data checksum mismatch");
       }
@@ -91,7 +100,7 @@ class JMSUtils {
 
   }
 
-  static void fragment(InputStream messageData, int fragmentSize, FragmentConsumer consumer) throws JMSException {
+  public static void fragment(InputStream messageData, int fragmentSize, FragmentConsumer consumer) throws JMSException {
     if (messageData == null) throw new IllegalArgumentException("messageData was null");
     if (consumer == null) throw new IllegalArgumentException("consumer was null");
     try {
@@ -100,7 +109,7 @@ class JMSUtils {
       int size;
       int fragmentIndex = 0;
       //create a MD5 digester to calculate a checksum
-      MessageDigest digester = JMSUtils.md5();
+      MessageDigest digester = md5();
       //read each fragment
       while ((size = messageData.read(bytes)) >= 0) {
         digester.update(bytes, 0, size);
@@ -112,13 +121,7 @@ class JMSUtils {
     }
   }
 
-  interface FragmentConsumer {
-    void fragment(byte[] data, int idx) throws JMSException, IOException;
-
-    void end(int fragments, byte[] digest) throws JMSException;
-  }
-
-  static boolean isCompatible(Message message) throws JMSException {
+  public static boolean isCompatible(Message message) throws JMSException {
     if (!message.propertyExists(JMSBase.PROTOCOL_VERSION_KEY)) return false;
     String proto = message.getStringProperty(JMSBase.PROTOCOL_VERSION_KEY);
     try {
@@ -129,11 +132,11 @@ class JMSUtils {
     }
   }
 
-  static ProtocolVersion getProtocolVersion(Message message) throws JMSException {
+  public static ProtocolVersion getProtocolVersion(Message message) throws JMSException {
     return ProtocolVersion.versionOf(message.getStringProperty(JMSBase.PROTOCOL_VERSION_KEY));
   }
 
-  static void removeMessageListenerAndClose(MessageConsumer consumer) {
+  public static void removeMessageListenerAndClose(MessageConsumer consumer) {
     ifNotNullDo(consumer, p -> tryTo(
             () -> {
               p.setMessageListener(null);
@@ -143,65 +146,56 @@ class JMSUtils {
     );
   }
 
-  static void closeConsumer(MessageConsumer consumer) {
+  public static void closeConsumer(MessageConsumer consumer) {
     ifNotNullDo(consumer,
             c -> tryTo(c::close, e -> LOGGER.warning(e, "Could not close consumer"))
     );
   }
 
-  static void deleteTemporaryQueue(TemporaryQueue queue) {
+  public static void deleteTemporaryQueue(TemporaryQueue queue) {
     ifNotNullDo(queue,
             q -> tryTo(q::delete, e -> LOGGER.warning(e, "Could not delete temporary queue"))
     );
   }
 
-  /**
-   * Extracts a Serializable from a Message.
-   * <p>
-   * Extracts a Serializable from an ObjectMessage, a String from a TextMessage, or a Map from a MapMessage. Other
-   * message types are not allowed.
-   *
-   * @param msg JMS message to extract from
-   * @return the serializable content of an object message
-   * @throws JMSException if a JMS error occurs while extracting message
-   */
-  @SuppressWarnings("unchecked")
-  static <T extends Serializable> T extractObject(Message msg) throws JMSException {
-    //noinspection ChainOfInstanceofChecks
+  public static MessageSerializer determineSerializer(String serializerKey, Map<String, MessageSerializer> serializers) throws JMSException {
+    if (!serializers.containsKey(serializerKey)) {
+      throw new JMSException("Received message encoded with unknown serializer: " + serializerKey);
+    }
+    return serializers.get(serializerKey);
+  }
+
+  public static MessageSerializer determineSerializer(javax.jms.Message msg, Map<String, MessageSerializer> serializers) throws JMSException {
+    if (!msg.propertyExists(JMSBase.SERIALIZER_KEY)) {
+      return legacySerializer;
+    }
+    return determineSerializer(msg.getStringProperty(JMSBase.SERIALIZER_KEY), serializers);
+  }
+
+  public static no.mnemonic.messaging.requestsink.Message extractObject(javax.jms.Message message, MessageSerializer serializer) throws JMSException {
+    MessageSerializer ser = getProtocolVersion(message).atLeast(ProtocolVersion.V3) ? serializer : legacySerializer;
+    try {
+      return ser.deserialize(extractMessageBytes(message), Thread.currentThread().getContextClassLoader());
+    } catch (IOException e) {
+      LOGGER.error(e, "Error deserializing response");
+      throw new JMSException(e.getMessage());
+    }
+  }
+
+  public static byte[] extractMessageBytes(Message msg) throws JMSException {
     if (msg instanceof TextMessage) {
-      return (T) ((TextMessage) msg).getText();
+      return ifNotNull(((TextMessage) msg).getText(), String::getBytes);
     } else if (msg instanceof BytesMessage) {
-      return (T) extractSerializableFromBytesMessage((BytesMessage) msg);
+      BytesMessage bmsg = (BytesMessage) msg;
+      byte[] data = new byte[(int) bmsg.getBodyLength()];
+      bmsg.readBytes(data);
+      return data;
     } else {
       throw new MessagingException("message is not of an allowable type: " + msg.getClass().getName());
     }
   }
 
-  static byte[] serialize(Serializable object) throws IOException {
-    assertNotNull(object, "Object not set");
-    ByteArrayOutputStream baos = new ByteArrayOutputStream();
-    ObjectOutputStream oos = new ObjectOutputStream(baos);
-    oos.writeObject(object);
-    oos.close();
-    return baos.toByteArray();
-  }
-
-  static <T extends Serializable> T unserialize(byte[] data) throws IOException, ClassNotFoundException {
-    assertNotNull(data, "Data not set");
-    ObjectInputStream ois = new ObjectInputStream(new ByteArrayInputStream(data));
-    //noinspection unchecked
-    return (T) ois.readObject();
-  }
-
-  static <T extends Serializable> T unserialize(byte[] data, ClassLoader classLoader) throws IOException, ClassNotFoundException {
-    assertNotNull(data, "Data not set");
-    assertNotNull(classLoader, "ClassLoader not set");
-    ObjectInputStream ois = new ClassLoaderAwareObjectInputStream(new ByteArrayInputStream(data), classLoader);
-    //noinspection unchecked
-    return (T) ois.readObject();
-  }
-
-  static String hex(byte[] data) {
+  public static String hex(byte[] data) {
     if (data == null) return null;
     StringBuilder sb = new StringBuilder(data.length * 2);
     for (byte b : data) {
@@ -210,12 +204,12 @@ class JMSUtils {
     return sb.toString();
   }
 
-  static String md5(byte[] data) {
+  public static String md5(byte[] data) {
     assertNotNull(data, "Data not set");
     return hex(md5().digest(data));
   }
 
-  static MessageDigest md5() {
+  public static MessageDigest md5() {
     try {
       return MessageDigest.getInstance("MD5");
     } catch (NoSuchAlgorithmException e) {
@@ -223,12 +217,12 @@ class JMSUtils {
     }
   }
 
-  static byte[] arraySubSeq(byte[] a, int off, int len) {
+  public static byte[] arraySubSeq(byte[] a, int off, int len) {
     if (a == null || a.length == 0) throw new IllegalArgumentException("a can't be empty or null");
     return Arrays.copyOfRange(a, off, off + len);
   }
 
-  static <T> T assertNotNull(T obj, String msg) {
+  public static <T> T assertNotNull(T obj, String msg) {
     if (obj != null) return obj;
     throw new IllegalArgumentException(msg);
   }
@@ -237,7 +231,7 @@ class JMSUtils {
    * @param bytes bytes to splitArray
    * @return list of byte arrays, each at most <code>maxlen</code> bytes, or null if bytes are null.
    */
-  static List<byte[]> splitArray(byte[] bytes, int maxlen) {
+  public static List<byte[]> splitArray(byte[] bytes, int maxlen) {
     if (bytes == null) return null;
     List<byte[]> result = new ArrayList<>();
     int off = 0;
@@ -249,17 +243,5 @@ class JMSUtils {
     return result;
   }
 
-  //private methods
-
-  private static Serializable extractSerializableFromBytesMessage(BytesMessage msg) throws JMSException {
-    try {
-      byte[] data = new byte[(int) msg.getBodyLength()];
-      msg.readBytes(data);
-      //TODO: control the deserialization to ensure only safe classes are deserialized
-      return unserialize(data, Thread.currentThread().getContextClassLoader());
-    } catch (IOException | ClassNotFoundException e) {
-      throw new JMSException(e.getMessage());
-    }
-  }
 
 }

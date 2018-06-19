@@ -1,6 +1,10 @@
-package no.mnemonic.messaging.requestsink.jms;
+package no.mnemonic.messaging.requestsink.jms.context;
 
 import no.mnemonic.messaging.requestsink.RequestContext;
+import no.mnemonic.messaging.requestsink.jms.*;
+import no.mnemonic.messaging.requestsink.jms.serializer.DefaultJavaMessageSerializer;
+import no.mnemonic.messaging.requestsink.jms.util.ClientMetrics;
+import no.mnemonic.messaging.requestsink.jms.util.MessageFragment;
 import org.junit.After;
 import org.junit.Before;
 import org.junit.Test;
@@ -14,6 +18,7 @@ import java.time.Clock;
 import java.util.Arrays;
 
 import static no.mnemonic.messaging.requestsink.jms.JMSBase.*;
+import static no.mnemonic.messaging.requestsink.jms.util.JMSUtils.*;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
@@ -22,7 +27,7 @@ import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.isA;
 import static org.mockito.Mockito.*;
 
-public class ClientRequestHandlerTest {
+public class ClientRequestContextTest {
 
   private static final String CALL_ID = "callID";
 
@@ -39,7 +44,7 @@ public class ClientRequestHandlerTest {
   @Mock
   private Clock clock;
 
-  private ClientRequestHandler handler;
+  private ClientRequestContext handler;
   private TestMessage testMessage = new TestMessage(CALL_ID);
   private byte[] messageBytes;
 
@@ -47,26 +52,26 @@ public class ClientRequestHandlerTest {
   public void setup() throws JMSException, IOException {
     MockitoAnnotations.initMocks(this);
     when(clock.millis()).thenReturn(10000L);
-    ClientRequestHandler.setClock(clock);
+    ClientRequestContext.setClock(clock);
     when(session.createTemporaryQueue()).thenReturn(temporaryQueue);
     when(session.createConsumer(any())).thenReturn(messageConsumer);
     when(requestContext.isClosed()).thenReturn(false);
     when(requestContext.addResponse(any())).thenReturn(true);
     when(requestContext.keepAlive(anyLong())).thenReturn(true);
-    messageBytes = JMSUtils.serialize(testMessage);
-    handler = new ClientRequestHandler(CALL_ID, session, new ClientMetrics(), ClassLoader.getSystemClassLoader(), requestContext, closeListener);
+    messageBytes = TestUtils.serialize(testMessage);
+    handler = new ClientRequestContext(CALL_ID, session, new ClientMetrics(), ClassLoader.getSystemClassLoader(), requestContext, closeListener, new DefaultJavaMessageSerializer());
   }
 
   @After
   public void cleanup() {
-    ClientRequestHandler.setClock(Clock.systemUTC());
+    ClientRequestContext.setClock(Clock.systemUTC());
   }
 
   @Test
   public void testHandleFragments() throws IOException {
     assertTrue(handler.addFragment(new MessageFragment("callID", "responseID", 0, Arrays.copyOfRange(messageBytes, 0, 3))));
     assertTrue(handler.addFragment(new MessageFragment("callID", "responseID", 1, Arrays.copyOfRange(messageBytes, 3, messageBytes.length))));
-    assertTrue(handler.reassembleFragments("responseID", 2, JMSUtils.md5(messageBytes)));
+    assertTrue(handler.reassemble("responseID", 2, md5(messageBytes)));
     verify(requestContext).addResponse(eq(testMessage));
   }
 
@@ -86,16 +91,16 @@ public class ClientRequestHandlerTest {
   public void testMultipleFragmentedResponses() throws IOException {
     TestMessage message1 = new TestMessage("abc");
     TestMessage message2 = new TestMessage("def");
-    byte[] messageBytes1 = JMSUtils.serialize(message1);
-    byte[] messageBytes2 = JMSUtils.serialize(message2);
+    byte[] messageBytes1 = TestUtils.serialize(message1);
+    byte[] messageBytes2 = TestUtils.serialize(message2);
 
     assertTrue(handler.addFragment(new MessageFragment("callID", "responseID1", 0, Arrays.copyOfRange(messageBytes1, 0, 3))));
     assertTrue(handler.addFragment(new MessageFragment("callID", "responseID1", 1, Arrays.copyOfRange(messageBytes1, 3, messageBytes1.length))));
-    assertTrue(handler.reassembleFragments("responseID1", 2, JMSUtils.md5(messageBytes1)));
+    assertTrue(handler.reassemble("responseID1", 2, md5(messageBytes1)));
 
     assertTrue(handler.addFragment(new MessageFragment("callID", "responseID2", 0, Arrays.copyOfRange(messageBytes2, 0, 3))));
     assertTrue(handler.addFragment(new MessageFragment("callID", "responseID2", 1, Arrays.copyOfRange(messageBytes2, 3, messageBytes2.length))));
-    assertTrue(handler.reassembleFragments("responseID2", 2, JMSUtils.md5(messageBytes2)));
+    assertTrue(handler.reassemble("responseID2", 2, md5(messageBytes2)));
 
     verify(requestContext).addResponse(eq(message1));
     verify(requestContext).addResponse(eq(message2));
@@ -105,16 +110,16 @@ public class ClientRequestHandlerTest {
   public void testMultipleFragmentedResponsesOutOfOrder() throws IOException {
     TestMessage message1 = new TestMessage("abc");
     TestMessage message2 = new TestMessage("def");
-    byte[] messageBytes1 = JMSUtils.serialize(message1);
-    byte[] messageBytes2 = JMSUtils.serialize(message2);
+    byte[] messageBytes1 = TestUtils.serialize(message1);
+    byte[] messageBytes2 = TestUtils.serialize(message2);
 
     assertTrue(handler.addFragment(new MessageFragment("callID", "responseID2", 0, Arrays.copyOfRange(messageBytes2, 0, 3))));
     assertTrue(handler.addFragment(new MessageFragment("callID", "responseID2", 1, Arrays.copyOfRange(messageBytes2, 3, messageBytes2.length))));
     assertTrue(handler.addFragment(new MessageFragment("callID", "responseID1", 0, Arrays.copyOfRange(messageBytes1, 0, 3))));
     assertTrue(handler.addFragment(new MessageFragment("callID", "responseID1", 1, Arrays.copyOfRange(messageBytes1, 3, messageBytes1.length))));
 
-    assertTrue(handler.reassembleFragments("responseID2", 2, JMSUtils.md5(messageBytes2)));
-    assertTrue(handler.reassembleFragments("responseID1", 2, JMSUtils.md5(messageBytes1)));
+    assertTrue(handler.reassemble("responseID2", 2, md5(messageBytes2)));
+    assertTrue(handler.reassemble("responseID1", 2, md5(messageBytes1)));
 
     verify(requestContext).addResponse(eq(message1));
     verify(requestContext).addResponse(eq(message2));
@@ -125,26 +130,26 @@ public class ClientRequestHandlerTest {
     when(requestContext.addResponse(any())).thenReturn(false);
     assertTrue(handler.addFragment(new MessageFragment("callID", "responseID", 0, Arrays.copyOfRange(messageBytes, 0, 3))));
     assertTrue(handler.addFragment(new MessageFragment("callID", "responseID", 1, Arrays.copyOfRange(messageBytes, 3, messageBytes.length))));
-    assertFalse(handler.reassembleFragments("responseID", 2, JMSUtils.md5(messageBytes)));
+    assertFalse(handler.reassemble("responseID", 2, md5(messageBytes)));
   }
 
   @Test
   public void testInvalidChecksumRejectsResponse() throws IOException {
     assertTrue(handler.addFragment(new MessageFragment("callID", "responseID", 0, Arrays.copyOfRange(messageBytes, 0, 3))));
     assertTrue(handler.addFragment(new MessageFragment("callID", "responseID", 1, Arrays.copyOfRange(messageBytes, 3, messageBytes.length))));
-    assertFalse(handler.reassembleFragments("responseID", 2, "invalid"));
+    assertFalse(handler.reassemble("responseID", 2, "invalid"));
   }
 
   @Test
   public void testInvalidTotalCountRejectsResponse() throws IOException {
     assertTrue(handler.addFragment(new MessageFragment("callID", "responseID", 0, Arrays.copyOfRange(messageBytes, 0, 3))));
     assertTrue(handler.addFragment(new MessageFragment("callID", "responseID", 1, Arrays.copyOfRange(messageBytes, 3, messageBytes.length))));
-    assertFalse(handler.reassembleFragments("responseID", 3, "invalid"));
+    assertFalse(handler.reassemble("responseID", 3, "invalid"));
   }
 
   @Test
   public void testReassembleWithoutFragmentsRejectsResponse() throws IOException {
-    assertFalse(handler.reassembleFragments("responseID", 2, JMSUtils.md5(messageBytes)));
+    assertFalse(handler.reassemble("responseID", 2, md5(messageBytes)));
   }
 
   @Test
@@ -222,11 +227,11 @@ public class ClientRequestHandlerTest {
   @Test
   public void testFragmentedResponse() throws JMSException, IOException {
     TestMessage message = new TestMessage("abc");
-    byte[] messageBytes = JMSUtils.serialize(message);
+    byte[] messageBytes = TestUtils.serialize(message);
 
     handler.handleResponse(createMessageFragment(CALL_ID, "response1", Arrays.copyOfRange(messageBytes, 0, 3), 0));
     handler.handleResponse(createMessageFragment(CALL_ID, "response1", Arrays.copyOfRange(messageBytes, 3, messageBytes.length), 1));
-    handler.handleResponse(createEOF(CALL_ID, "response1", 2, JMSUtils.md5(messageBytes)));
+    handler.handleResponse(createEOF(CALL_ID, "response1", 2, md5(messageBytes)));
 
     verify(requestContext).addResponse(eq(message));
   }
@@ -254,7 +259,7 @@ public class ClientRequestHandlerTest {
   }
 
   private BytesMessage createResponseMessage(String callID, no.mnemonic.messaging.requestsink.Message message) throws IOException, JMSException {
-    byte[] data = JMSUtils.serialize(message);
+    byte[] data = TestUtils.serialize(message);
     return bytesMessage()
             .withData(data)
             .withCorrelationID(callID)
@@ -274,7 +279,7 @@ public class ClientRequestHandlerTest {
     return bytesMessage()
             .withCorrelationID(callID)
             .withProperty(PROPERTY_MESSAGE_TYPE, MESSAGE_TYPE_EXCEPTION)
-            .withData(JMSUtils.serialize(new ExceptionMessage(callID, error)))
+            .withData(TestUtils.serialize(new ExceptionMessage(callID, error)))
             .build();
   }
 

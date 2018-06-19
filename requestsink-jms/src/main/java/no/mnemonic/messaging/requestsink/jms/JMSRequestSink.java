@@ -9,6 +9,12 @@ import no.mnemonic.commons.utilities.ObjectUtils;
 import no.mnemonic.commons.utilities.lambda.LambdaUtils;
 import no.mnemonic.messaging.requestsink.Message;
 import no.mnemonic.messaging.requestsink.*;
+import no.mnemonic.messaging.requestsink.jms.context.ChannelUploadMessageContext;
+import no.mnemonic.messaging.requestsink.jms.context.ClientRequestContext;
+import no.mnemonic.messaging.requestsink.jms.serializer.DefaultJavaMessageSerializer;
+import no.mnemonic.messaging.requestsink.jms.serializer.MessageSerializer;
+import no.mnemonic.messaging.requestsink.jms.util.ClientMetrics;
+import no.mnemonic.messaging.requestsink.jms.util.ThreadFactoryBuilder;
 
 import javax.jms.*;
 import javax.naming.NamingException;
@@ -28,6 +34,7 @@ import java.util.concurrent.atomic.AtomicReference;
 
 import static no.mnemonic.commons.utilities.ObjectUtils.ifNotNullDo;
 import static no.mnemonic.commons.utilities.collections.ListUtils.list;
+import static no.mnemonic.messaging.requestsink.jms.util.JMSUtils.*;
 
 /**
  * JMSRequestSink is a JMS implementation of the RequestSink using JMS,
@@ -63,11 +70,12 @@ import static no.mnemonic.commons.utilities.collections.ListUtils.list;
  * request will fail. The sink can specify a lesser protocol version, allowing a rolling upgrade by upgrading the code first, but keep
  * using previous version until all components are supporting the new protocol version.
  * <p>
- * The default protocol version is V1, so clients must explicitly enable higher protocol versions.
+ * The default protocol version is V2, so clients must explicitly enable higher protocol versions.
  * <p>
  * Protocol change history:
  * V1 - Initial version, supports requests with multiple replies (streaming result) and upload channel for fragmented request (for large request messages)
  * V2 - Added support for fragmented response (for large single-object response messages)
+ * V3 - Added support for custom message serializers. The client serializer must be supported on the server side, but the server can support multiple serializers.
  */
 public class JMSRequestSink extends JMSBase implements RequestSink, MessageListener, MetricAspect {
 
@@ -77,13 +85,14 @@ public class JMSRequestSink extends JMSBase implements RequestSink, MessageListe
 
   // variables
 
-  private final ConcurrentHashMap<String, ClientRequestHandler> requestHandlers = new ConcurrentHashMap<>();
+  private final ConcurrentHashMap<String, ClientRequestContext> requestHandlers = new ConcurrentHashMap<>();
   private final ExecutorService executor;
 
   private final AtomicReference<MessageProducer> producer = new AtomicReference<>();
   private final AtomicReference<ResponseQueueState> currentResponseQueue = new AtomicReference<>();
   private final Set<ResponseQueueState> invalidatedResponseQueues = Collections.newSetFromMap(new ConcurrentHashMap<>());
   private final AtomicBoolean cleanupRunning = new AtomicBoolean();
+  private final MessageSerializer serializer;
 
   private final ClientMetrics metrics = new ClientMetrics();
 
@@ -92,14 +101,14 @@ public class JMSRequestSink extends JMSBase implements RequestSink, MessageListe
   private JMSRequestSink(String contextFactoryName, String contextURL, String connectionFactoryName,
                          String username, String password, Map<String, String> connectionProperties,
                          String destinationName,
-                         int priority, int maxMessageSize, ProtocolVersion protocolVersion) {
+                         int priority, int maxMessageSize, ProtocolVersion protocolVersion, MessageSerializer serializer) {
     super(contextFactoryName, contextURL, connectionFactoryName, username, password, connectionProperties, destinationName,
             priority, maxMessageSize);
-    if (protocolVersion == null) {
-      throw new IllegalArgumentException("protocolVersion not set");
-    }
-    executor = Executors.newSingleThreadExecutor(new ThreadFactoryBuilder().setNamePrefix("JMSRequestSink").build());
-    this.protocolVersion = protocolVersion;
+    //do not use custom serializer unless version V3 is enabled
+    this.executor = Executors.newSingleThreadExecutor(new ThreadFactoryBuilder().setNamePrefix("JMSRequestSink").build());
+    this.protocolVersion = assertNotNull(protocolVersion, "protocolVersion not set");
+    if (serializer == null || !protocolVersion.atLeast(ProtocolVersion.V3)) serializer = new DefaultJavaMessageSerializer();
+    this.serializer = serializer;
   }
 
   // **************** interface methods **************************
@@ -112,7 +121,7 @@ public class JMSRequestSink extends JMSBase implements RequestSink, MessageListe
   @Override
   public void onMessage(javax.jms.Message message) {
     try {
-      if (!JMSUtils.isCompatible(message)) {
+      if (!isCompatible(message)) {
         LOGGER.warning("Ignoring message of incompatible version");
         metrics.incompatibleMessage();
         return;
@@ -122,7 +131,7 @@ public class JMSRequestSink extends JMSBase implements RequestSink, MessageListe
         metrics.incompatibleMessage();
         return;
       }
-      ClientRequestHandler handler = requestHandlers.get(message.getJMSCorrelationID());
+      ClientRequestContext handler = requestHandlers.get(message.getJMSCorrelationID());
       if (handler == null) {
         //do not notify/count close message as missing handler, as single-value replies often lead to client-initiated stream close
         if (MESSAGE_TYPE_STREAM_CLOSED.equals(message.getStringProperty(PROPERTY_MESSAGE_TYPE))) {
@@ -228,7 +237,7 @@ public class JMSRequestSink extends JMSBase implements RequestSink, MessageListe
   private void cleanState() {
     try {
       //cleanup pending calls
-      for (ClientRequestHandler handler : list(requestHandlers.values())) {
+      for (ClientRequestContext handler : list(requestHandlers.values())) {
         if (handler.isClosed()) {
           cleanupRequest(handler);
         }
@@ -245,7 +254,7 @@ public class JMSRequestSink extends JMSBase implements RequestSink, MessageListe
     }
   }
 
-  private void cleanupRequest(ClientRequestHandler handler) {
+  private void cleanupRequest(ClientRequestContext handler) {
     if (!requestHandlers.containsKey(handler.getCallID())) {
       return;
     }
@@ -259,7 +268,7 @@ public class JMSRequestSink extends JMSBase implements RequestSink, MessageListe
 
   private void checkForFragmentationAndSignal(Message msg, RequestContext ctx, long maxWait) {
     try {
-      byte[] messageBytes = JMSUtils.serialize(msg);
+      byte[] messageBytes = serializer.serialize(msg);
       String messageType = JMSRequestProxy.MESSAGE_TYPE_SIGNAL;
       //check if we need to fragment this request message
       if (messageBytes.length > getMaxMessageSize()) {
@@ -272,10 +281,10 @@ public class JMSRequestSink extends JMSBase implements RequestSink, MessageListe
       //select response queue to use for this request
       ResponseQueueState currentResponseQueue = getCurrentResponseQueueState();
       //setup handler for this request
-      ClientRequestHandler handler = new ClientRequestHandler(
+      ClientRequestContext handler = new ClientRequestContext(
               msg.getCallID(), getSession(), metrics,
               Thread.currentThread().getContextClassLoader(), ctx,
-              () -> currentResponseQueue.endCall(msg.getCallID()));
+              () -> currentResponseQueue.endCall(msg.getCallID()), serializer);
 
       //register handler
       requestHandlers.put(msg.getCallID(), handler);
@@ -312,7 +321,7 @@ public class JMSRequestSink extends JMSBase implements RequestSink, MessageListe
 
   private void sendMessage(byte[] messageBytes, String callID, String messageType, long lifeTime, Destination replyTo) {
     try {
-      javax.jms.Message m = JMSUtils.createByteMessage(getSession(), messageBytes, protocolVersion);
+      javax.jms.Message m = createByteMessage(getSession(), messageBytes, protocolVersion, serializer.serializerID());
       long timeout = System.currentTimeMillis() + lifeTime;
       m.setJMSReplyTo(replyTo);
       m.setJMSCorrelationID(callID);
@@ -355,8 +364,8 @@ public class JMSRequestSink extends JMSBase implements RequestSink, MessageListe
     }
 
     void close() {
-      JMSUtils.closeConsumer(responseConsumer);
-      JMSUtils.deleteTemporaryQueue(responseQueue);
+      closeConsumer(responseConsumer);
+      deleteTemporaryQueue(responseQueue);
     }
   }
 
@@ -408,6 +417,7 @@ public class JMSRequestSink extends JMSBase implements RequestSink, MessageListe
 
     //fields
     private ProtocolVersion protocolVersion = ProtocolVersion.V1;
+    private MessageSerializer serializer = new DefaultJavaMessageSerializer();
 
     private Builder() {
     }
@@ -415,7 +425,7 @@ public class JMSRequestSink extends JMSBase implements RequestSink, MessageListe
     public JMSRequestSink build() {
       return new JMSRequestSink(contextFactoryName, contextURL, connectionFactoryName,
               username, password, connectionProperties, destinationName,
-              priority, maxMessageSize, protocolVersion);
+              priority, maxMessageSize, protocolVersion, serializer);
     }
 
     //setters
@@ -425,10 +435,14 @@ public class JMSRequestSink extends JMSBase implements RequestSink, MessageListe
       return this;
     }
 
+    public Builder setSerializer(MessageSerializer serializer) {
+      this.serializer = serializer;
+      return this;
+    }
   }
 
-  JMSRequestSink setCleanupInSeparateThread(boolean cleanupInSeparateThread) {
+  //allow turning this of for testing
+  void setCleanupInSeparateThread(boolean cleanupInSeparateThread) {
     this.cleanupInSeparateThread = cleanupInSeparateThread;
-    return this;
   }
 }

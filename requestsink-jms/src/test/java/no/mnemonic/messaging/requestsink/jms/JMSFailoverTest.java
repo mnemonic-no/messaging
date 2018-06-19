@@ -6,6 +6,7 @@ import no.mnemonic.commons.utilities.lambda.LambdaUtils;
 import no.mnemonic.messaging.requestsink.RequestContext;
 import no.mnemonic.messaging.requestsink.RequestHandler;
 import no.mnemonic.messaging.requestsink.RequestSink;
+import no.mnemonic.messaging.requestsink.jms.serializer.DefaultJavaMessageSerializer;
 import org.apache.activemq.broker.BrokerService;
 import org.junit.After;
 import org.junit.Before;
@@ -108,7 +109,8 @@ public class JMSFailoverTest {
 
   private JMSRequestSink.Builder createSink() {
     return JMSRequestSink.builder()
-            .setProtocolVersion(ProtocolVersion.V1)
+            .setSerializer(new DefaultJavaMessageSerializer())
+            .setProtocolVersion(ProtocolVersion.V3)
             .setDestinationName("dynamicQueues/testqueue");
   }
 
@@ -116,6 +118,7 @@ public class JMSFailoverTest {
   private JMSRequestProxy.Builder createProxy(RequestSink endpoint) {
     //set up request sink pointing at a vm-local topic
     return JMSRequestProxy.builder()
+            .addSerializer(new DefaultJavaMessageSerializer())
             .setDestinationName("dynamicQueues/testqueue")
             .setRequestSink(endpoint);
   }

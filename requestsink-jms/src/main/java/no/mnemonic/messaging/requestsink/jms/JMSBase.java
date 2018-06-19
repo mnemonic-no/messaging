@@ -24,22 +24,24 @@ public abstract class JMSBase implements LifecycleAspect, AppendMembers, Excepti
 
   static final int DEFAULT_MAX_MAX_MESSAGE_SIZE = 100000;
   static final int DEFAULT_PRIORITY = 1;
-  static final String PROTOCOL_VERSION_KEY = "ArgusMessagingProtocol";
-  static final String PROPERTY_MESSAGE_TYPE = "MessageType";
-  static final String MESSAGE_TYPE_STREAM_CLOSED = "JMSStreamClosed";
-  static final String MESSAGE_TYPE_END_OF_FRAGMENTED_MESSAGE = "JMSFragmentedMessageEnd";
-  static final String MESSAGE_TYPE_EXCEPTION = "JMSException";
-  static final String MESSAGE_TYPE_SIGNAL = "JMSSignal";
-  static final String MESSAGE_TYPE_CHANNEL_REQUEST = "JMSChannelRequest";
-  static final String MESSAGE_TYPE_CHANNEL_SETUP = "JMSChannelSetup";
-  static final String MESSAGE_TYPE_SIGNAL_FRAGMENT = "JMSSignalFragment";
-  static final String MESSAGE_TYPE_SIGNAL_RESPONSE = "JMSSignalResponse";
-  static final String MESSAGE_TYPE_EXTEND_WAIT = "JMSExtendWait";
-  static final String PROPERTY_REQ_TIMEOUT = "RequestTimeout";
-  static final String PROPERTY_FRAGMENTS_TOTAL = "TotalFragments";
-  static final String PROPERTY_FRAGMENTS_IDX = "FragmentIndex";
-  static final String PROPERTY_RESPONSE_ID = "ResponseID";
-  static final String PROPERTY_DATA_CHECKSUM_MD5 = "DataChecksumMD5";
+
+  public static final String SERIALIZER_KEY = "ArgusMessagingSerializer";
+  public static final String PROTOCOL_VERSION_KEY = "ArgusMessagingProtocol";
+  public static final String PROPERTY_MESSAGE_TYPE = "MessageType";
+  public static final String MESSAGE_TYPE_STREAM_CLOSED = "JMSStreamClosed";
+  public static final String MESSAGE_TYPE_END_OF_FRAGMENTED_MESSAGE = "JMSFragmentedMessageEnd";
+  public static final String MESSAGE_TYPE_EXCEPTION = "JMSException";
+  public static final String MESSAGE_TYPE_SIGNAL = "JMSSignal";
+  public static final String MESSAGE_TYPE_CHANNEL_REQUEST = "JMSChannelRequest";
+  public static final String MESSAGE_TYPE_CHANNEL_SETUP = "JMSChannelSetup";
+  public static final String MESSAGE_TYPE_SIGNAL_FRAGMENT = "JMSSignalFragment";
+  public static final String MESSAGE_TYPE_SIGNAL_RESPONSE = "JMSSignalResponse";
+  public static final String MESSAGE_TYPE_EXTEND_WAIT = "JMSExtendWait";
+  public static final String PROPERTY_REQ_TIMEOUT = "RequestTimeout";
+  public static final String PROPERTY_FRAGMENTS_TOTAL = "TotalFragments";
+  public static final String PROPERTY_FRAGMENTS_IDX = "FragmentIndex";
+  public static final String PROPERTY_RESPONSE_ID = "ResponseID";
+  public static final String PROPERTY_DATA_CHECKSUM_MD5 = "DataChecksumMD5";
 
   private static final String ERROR_CLOSED = "closed";
 
@@ -78,7 +80,7 @@ public abstract class JMSBase implements LifecycleAspect, AppendMembers, Excepti
     if (StringUtils.isBlank(connectionFactoryName)) {
       throw new IllegalArgumentException("connectionFactoryName not set");
     }
-    if (destinationName == null) {
+    if (StringUtils.isBlank(destinationName)) {
       throw new IllegalArgumentException("No destination name provided");
     }
     if (maxMessageSize < 1) {

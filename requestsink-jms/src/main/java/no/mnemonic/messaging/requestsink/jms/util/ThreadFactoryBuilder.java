@@ -1,4 +1,4 @@
-package no.mnemonic.messaging.requestsink.jms;
+package no.mnemonic.messaging.requestsink.jms.util;
 
 import java.util.concurrent.ThreadFactory;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -8,17 +8,17 @@ import static no.mnemonic.commons.utilities.ObjectUtils.ifNotNull;
 /**
  * TODO: Move this class to commons, to avoid having to pull inn Guava or Apache commons for this.
  */
-class ThreadFactoryBuilder {
+public class ThreadFactoryBuilder {
 
   private static final AtomicInteger poolNumber = new AtomicInteger(1);
 
   private String namePrefix;
 
-  ThreadFactory build() {
+  public ThreadFactory build() {
     return new ThreadFactoryWithNamePrefix(namePrefix);
   }
 
-  ThreadFactoryBuilder setNamePrefix(String namePrefix) {
+  public ThreadFactoryBuilder setNamePrefix(String namePrefix) {
     this.namePrefix = namePrefix;
     return this;
   }

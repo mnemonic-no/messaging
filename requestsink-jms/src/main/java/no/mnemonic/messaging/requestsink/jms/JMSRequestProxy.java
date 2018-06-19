@@ -7,20 +7,29 @@ import no.mnemonic.commons.metrics.MetricAspect;
 import no.mnemonic.commons.metrics.MetricException;
 import no.mnemonic.commons.metrics.Metrics;
 import no.mnemonic.commons.utilities.ClassLoaderContext;
+import no.mnemonic.commons.utilities.collections.CollectionUtils;
+import no.mnemonic.commons.utilities.collections.ListUtils;
+import no.mnemonic.commons.utilities.collections.MapUtils;
 import no.mnemonic.commons.utilities.collections.SetUtils;
 import no.mnemonic.commons.utilities.lambda.LambdaUtils;
 import no.mnemonic.messaging.requestsink.Message;
 import no.mnemonic.messaging.requestsink.RequestSink;
+import no.mnemonic.messaging.requestsink.jms.context.ServerChannelUploadContext;
+import no.mnemonic.messaging.requestsink.jms.context.ServerContext;
+import no.mnemonic.messaging.requestsink.jms.context.ServerResponseContext;
+import no.mnemonic.messaging.requestsink.jms.serializer.MessageSerializer;
+import no.mnemonic.messaging.requestsink.jms.util.ServerMetrics;
+import no.mnemonic.messaging.requestsink.jms.util.ThreadFactoryBuilder;
 
 import javax.jms.*;
 import javax.naming.NamingException;
 import java.io.IOException;
 import java.lang.IllegalStateException;
-import java.util.HashSet;
-import java.util.Map;
-import java.util.Set;
+import java.util.*;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicLong;
+
+import static no.mnemonic.messaging.requestsink.jms.util.JMSUtils.*;
 
 /**
  * A JMSRequestProxy is the listener component handling messages sent from a
@@ -57,19 +66,23 @@ public class JMSRequestProxy extends JMSBase implements MessageListener, Excepti
   private MessageConsumer consumer;
 
   private final Set<JMSRequestProxyConnectionListener> connectionListeners = new HashSet<>();
+  private final Map<String, MessageSerializer> serializers;
 
   private JMSRequestProxy(String contextFactoryName, String contextURL, String connectionFactoryName,
                           String username, String password, Map<String, String> connectionProperties,
                           String destinationName, int priority, int maxConcurrentCalls,
-                          int maxMessageSize, RequestSink requestSink) {
+                          int maxMessageSize, RequestSink requestSink, Collection<MessageSerializer> serializers) {
     super(contextFactoryName, contextURL, connectionFactoryName,
             username, password, connectionProperties, destinationName,
             priority, maxMessageSize);
 
-    if (requestSink == null) throw new IllegalArgumentException("No requestSink provided");
     if (maxConcurrentCalls < 1)
       throw new IllegalArgumentException("maxConcurrentCalls cannot be lower than 1");
-    this.requestSink = requestSink;
+    if (CollectionUtils.isEmpty(serializers))
+      throw new IllegalArgumentException("no serializers provided");
+
+    this.serializers = MapUtils.map(serializers, s->MapUtils.pair(s.serializerID(), s));
+    this.requestSink = assertNotNull(requestSink, "requestSink not set");
     this.executor = Executors.newFixedThreadPool(
             maxConcurrentCalls,
             new ThreadFactoryBuilder().setNamePrefix("JMSRequestProxy").build()
@@ -141,7 +154,7 @@ public class JMSRequestProxy extends JMSBase implements MessageListener, Excepti
   private void process(javax.jms.Message message) {
     metrics.request();
     try {
-      if (!JMSUtils.isCompatible(message)) {
+      if (!isCompatible(message)) {
         LOGGER.warning("Ignoring request of incompatible version: " + message);
         metrics.incompatibleMessage();
         return;
@@ -194,6 +207,7 @@ public class JMSRequestProxy extends JMSBase implements MessageListener, Excepti
 
   private void handleSignalMessage(javax.jms.Message message, long timeout) throws JMSException, NamingException {
     String callID = message.getJMSCorrelationID();
+    MessageSerializer serializer = determineSerializer(message, serializers);
     Destination responseDestination = message.getJMSReplyTo();
     //ignore requests without a clear response destination/call ID
     if (callID == null || responseDestination == null) {
@@ -205,17 +219,13 @@ public class JMSRequestProxy extends JMSBase implements MessageListener, Excepti
       LOGGER.debug("<< handleSignal [callID=%s]", message.getJMSCorrelationID());
     }
     // create a response context to handle response messages
-    ServerResponseContext ctx = setupServerContext(callID, responseDestination, timeout, JMSUtils.getProtocolVersion(message));
-    try (ClassLoaderContext ignored = ClassLoaderContext.of(requestSink)) {
-      // requestsink will broadcast signal, and responses sent to response mockSink
-      //use the classloader for the receiving sink when extracting object
-      Message request = JMSUtils.extractObject(message);
-      ctx.handle(requestSink, request);
-    }
+    ServerResponseContext ctx = setupServerContext(callID, responseDestination, timeout, getProtocolVersion(message), serializer);
+    ctx.handle(requestSink, extractObject(message, determineSerializer(message, serializers)));
   }
 
   private void handleChannelRequest(javax.jms.Message message, long timeout) throws JMSException, NamingException {
     String callID = message.getJMSCorrelationID();
+    MessageSerializer serializer = determineSerializer(message, serializers);
     Destination responseDestination = message.getJMSReplyTo();
     //ignore requests without a clear response destination/call ID
     if (callID == null || responseDestination == null) {
@@ -226,19 +236,19 @@ public class JMSRequestProxy extends JMSBase implements MessageListener, Excepti
     if (LOGGER.isDebug()) {
       LOGGER.debug("<< channelRequest [callID=%s]", message.getJMSCorrelationID());
     }
-    setupChannel(callID, responseDestination, timeout, JMSUtils.getProtocolVersion(message));
+    setupChannel(callID, responseDestination, timeout, getProtocolVersion(message), serializer);
   }
 
-  private void handleChannelUploadCompleted(String callID, byte[] data, Destination replyTo, long timeout, ProtocolVersion protocolVersion) throws IOException, ClassNotFoundException, JMSException, NamingException {
+  private void handleChannelUploadCompleted(String callID, byte[] data, Destination replyTo, long timeout, ProtocolVersion protocolVersion, MessageSerializer serializer) throws IOException, ClassNotFoundException, JMSException, NamingException {
     // create a response context to handle response messages
-    ServerResponseContext r = new ServerResponseContext(callID, getSession(), replyProducer, replyTo, timeout, protocolVersion, getMaxMessageSize(), metrics);
+    ServerResponseContext r = new ServerResponseContext(callID, getSession(), replyProducer, replyTo, timeout, protocolVersion, getMaxMessageSize(), metrics, serializer);
     // overwrite channel upload context with a server response context
     calls.put(callID, r);
     //send uploaded signal to requestSink
     try (ClassLoaderContext classLoaderCtx = ClassLoaderContext.of(requestSink)) {
       // requestsink will broadcast signal, and responses sent to response mockSink
       //use the classloader for the receiving sink when extracting object
-      Message request = JMSUtils.unserialize(data, classLoaderCtx.getContextClassLoader());
+      Message request = serializer.deserialize(data, classLoaderCtx.getContextClassLoader());
       metrics.fragmentedUploadCompleted();
       r.handle(requestSink, request);
     }
@@ -267,33 +277,27 @@ public class JMSRequestProxy extends JMSBase implements MessageListener, Excepti
    * @param timeout how long this responsesink will forward messages
    * @return a responsesink fulfilling this API
    */
-  private ServerResponseContext setupServerContext(final String callID, Destination replyTo, long timeout, ProtocolVersion protocolVersion) throws JMSException, NamingException {
+  private ServerResponseContext setupServerContext(final String callID, Destination replyTo, long timeout, ProtocolVersion protocolVersion, MessageSerializer serializer) throws JMSException, NamingException {
     ServerContext ctx = calls.get(callID);
     if (ctx != null) return (ServerResponseContext) ctx;
     //create new response context
-    ServerResponseContext context = new ServerResponseContext(callID, getSession(), replyProducer, replyTo, timeout, protocolVersion, getMaxMessageSize(), metrics);
+    ServerResponseContext context = new ServerResponseContext(callID, getSession(), replyProducer, replyTo, timeout, protocolVersion, getMaxMessageSize(), metrics, serializer);
     // register this responsesink
     calls.put(callID, context);
     // and return it
     return context;
   }
 
-  private void setupChannel(String callID, Destination replyTo, long timeout, ProtocolVersion protocolVersion) throws NamingException, JMSException {
+  private void setupChannel(String callID, Destination replyTo, long timeout, ProtocolVersion protocolVersion, MessageSerializer serializer) throws NamingException, JMSException {
     metrics.fragmentedUploadRequested();
     ServerContext ctx = calls.get(callID);
     if (ctx != null) return;
     //create new upload context
-    ServerChannelUploadContext context = new ServerChannelUploadContext(callID, getSession(), replyTo, timeout, protocolVersion, metrics);
+    ServerChannelUploadContext context = new ServerChannelUploadContext(callID, getSession(), replyTo, timeout, protocolVersion, metrics, serializer);
     // register this responsesink
     calls.put(callID, context);
     //listen on upload messages and transmit channel setup
     context.setupChannel(this::handleChannelUploadCompleted);
-  }
-
-  //inner classes
-
-  interface ServerContext {
-    boolean isClosed();
   }
 
   //builder
@@ -308,6 +312,7 @@ public class JMSRequestProxy extends JMSBase implements MessageListener, Excepti
 
     private RequestSink requestSink;
     private int maxConcurrentCalls = DEFAULT_MAX_CONCURRENT_CALLS;
+    private List<MessageSerializer> serializers = ListUtils.list();
 
     private Builder() {
     }
@@ -316,7 +321,7 @@ public class JMSRequestProxy extends JMSBase implements MessageListener, Excepti
 
     public JMSRequestProxy build() {
       return new JMSRequestProxy(contextFactoryName, contextURL, connectionFactoryName, username, password,
-              connectionProperties, destinationName, priority, maxConcurrentCalls, maxMessageSize, requestSink);
+              connectionProperties, destinationName, priority, maxConcurrentCalls, maxMessageSize, requestSink, serializers);
     }
 
     //setters
@@ -331,6 +336,18 @@ public class JMSRequestProxy extends JMSBase implements MessageListener, Excepti
       this.requestSink = requestSink;
       return this;
     }
+
+    public Builder setSerializers(Collection<MessageSerializer> serializers) {
+      this.serializers = ListUtils.list(serializers);
+      return this;
+    }
+
+    public Builder addSerializer(MessageSerializer serializer) {
+      this.serializers = ListUtils.addToList(this.serializers, serializer);
+      return this;
+    }
+
+
   }
 
   //accessors

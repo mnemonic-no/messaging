@@ -1,4 +1,4 @@
-package no.mnemonic.messaging.requestsink.jms;
+package no.mnemonic.messaging.requestsink.jms.serializer;
 
 import java.io.IOException;
 import java.io.InputStream;
@@ -9,7 +9,7 @@ public class ClassLoaderAwareObjectInputStream extends ObjectInputStream {
 
   private ClassLoader classLoader;
 
-  ClassLoaderAwareObjectInputStream(InputStream in, ClassLoader cl) throws IOException {
+  public ClassLoaderAwareObjectInputStream(InputStream in, ClassLoader cl) throws IOException {
     super(in);
     this.classLoader = cl;
   }

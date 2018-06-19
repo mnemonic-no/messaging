@@ -1,4 +1,4 @@
-package no.mnemonic.messaging.requestsink.jms;
+package no.mnemonic.messaging.requestsink.jms.util;
 
 import javax.jms.BytesMessage;
 import javax.jms.JMSException;
@@ -6,21 +6,21 @@ import javax.jms.JMSException;
 import static no.mnemonic.messaging.requestsink.jms.JMSBase.PROPERTY_RESPONSE_ID;
 import static no.mnemonic.messaging.requestsink.jms.JMSRequestProxy.PROPERTY_FRAGMENTS_IDX;
 
-class MessageFragment {
+public class MessageFragment {
 
   private final String callID;
   private final String responseID;
   private final int idx;
   private final byte[] data;
 
-  MessageFragment(String callID, String responseID, int idx, byte[] data) {
+  public MessageFragment(String callID, String responseID, int idx, byte[] data) {
     this.callID = callID;
     this.responseID = responseID;
     this.idx = idx;
     this.data = data;
   }
 
-  MessageFragment(BytesMessage message) throws JMSException {
+  public MessageFragment(BytesMessage message) throws JMSException {
     if (message == null) throw new IllegalArgumentException("message was null");
     this.callID = message.getStringProperty(message.getJMSCorrelationID());
     this.responseID = message.getStringProperty(PROPERTY_RESPONSE_ID);
@@ -37,11 +37,11 @@ class MessageFragment {
     return callID;
   }
 
-  int getIdx() {
+  public int getIdx() {
     return idx;
   }
 
-  byte[] getData() {
+  public byte[] getData() {
     return data;
   }
 }

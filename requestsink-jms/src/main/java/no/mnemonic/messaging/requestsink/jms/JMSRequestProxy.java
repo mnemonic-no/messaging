@@ -10,7 +10,6 @@ import no.mnemonic.commons.utilities.ClassLoaderContext;
 import no.mnemonic.commons.utilities.collections.CollectionUtils;
 import no.mnemonic.commons.utilities.collections.ListUtils;
 import no.mnemonic.commons.utilities.collections.MapUtils;
-import no.mnemonic.commons.utilities.collections.SetUtils;
 import no.mnemonic.commons.utilities.lambda.LambdaUtils;
 import no.mnemonic.messaging.requestsink.Message;
 import no.mnemonic.messaging.requestsink.RequestSink;
@@ -29,6 +28,7 @@ import java.util.*;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicLong;
 
+import static no.mnemonic.commons.utilities.collections.SetUtils.set;
 import static no.mnemonic.messaging.requestsink.jms.util.JMSUtils.*;
 
 /**
@@ -48,6 +48,7 @@ public class JMSRequestProxy extends JMSBase implements MessageListener, Excepti
   private static final Logger LOGGER = Logging.getLogger(JMSRequestProxy.class);
 
   static final int DEFAULT_MAX_CONCURRENT_CALLS = 10;
+  static final int DEFAULT_SHUTDOWN_TIMEOUT = 10000;
 
   // properties
 
@@ -61,17 +62,19 @@ public class JMSRequestProxy extends JMSBase implements MessageListener, Excepti
 
   private final ExecutorService executor;
   private final ServerMetrics metrics = new ServerMetrics();
+  private final long shutdownTimeout;
 
   private MessageProducer replyProducer;
   private MessageConsumer consumer;
 
   private final Set<JMSRequestProxyConnectionListener> connectionListeners = new HashSet<>();
+  private final Set<JMSRequestProxyCloseListener> closeListeners = new HashSet<>();
   private final Map<String, MessageSerializer> serializers;
 
   private JMSRequestProxy(String contextFactoryName, String contextURL, String connectionFactoryName,
                           String username, String password, Map<String, String> connectionProperties,
                           String destinationName, int priority, int maxConcurrentCalls,
-                          int maxMessageSize, RequestSink requestSink, Collection<MessageSerializer> serializers) {
+                          int maxMessageSize, RequestSink requestSink, long shutdownTimeout, Collection<MessageSerializer> serializers) {
     super(contextFactoryName, contextURL, connectionFactoryName,
             username, password, connectionProperties, destinationName,
             priority, maxMessageSize);
@@ -81,6 +84,7 @@ public class JMSRequestProxy extends JMSBase implements MessageListener, Excepti
     if (CollectionUtils.isEmpty(serializers))
       throw new IllegalArgumentException("no serializers provided");
 
+    this.shutdownTimeout = shutdownTimeout;
     this.serializers = MapUtils.map(serializers, s->MapUtils.pair(s.serializerID(), s));
     this.requestSink = assertNotNull(requestSink, "requestSink not set");
     this.executor = Executors.newFixedThreadPool(
@@ -102,7 +106,7 @@ public class JMSRequestProxy extends JMSBase implements MessageListener, Excepti
       replyProducer.setDeliveryMode(DeliveryMode.NON_PERSISTENT);
       consumer = getSession().createConsumer(getDestination());
       consumer.setMessageListener(this);
-      SetUtils.set(connectionListeners).forEach(l -> l.connected(this));
+      set(connectionListeners).forEach(l -> l.connected(this));
     } catch (JMSException | NamingException e) {
       executor.shutdown();
       throw new IllegalStateException(e);
@@ -118,7 +122,7 @@ public class JMSRequestProxy extends JMSBase implements MessageListener, Excepti
       executor.shutdown();
       //wait for ongoing requests to finish
       LambdaUtils.tryTo(
-              () -> executor.awaitTermination(10, TimeUnit.SECONDS),
+              () -> executor.awaitTermination(shutdownTimeout, TimeUnit.MILLISECONDS),
               e -> LOGGER.warning("Error waiting for executor termination")
       );
     } catch (Exception e) {
@@ -126,17 +130,24 @@ public class JMSRequestProxy extends JMSBase implements MessageListener, Excepti
     }
     //now do cleanup of resources
     super.stopComponent();
+    set(closeListeners).forEach(l -> l.closed(this));
   }
 
   @Override
   public void onException(JMSException e) {
     metrics.error();
     super.onException(e);
+    //shut down service on connection exception
+    executor.submit(this::stopComponent);
   }
 
   @SuppressWarnings("WeakerAccess")
   public void addJMSRequestProxyConnectionListener(JMSRequestProxyConnectionListener listener) {
     this.connectionListeners.add(listener);
+  }
+
+  public void addJMSRequestProxyCloseListener(JMSRequestProxyCloseListener listener) {
+    this.closeListeners.add(listener);
   }
 
   public void onMessage(javax.jms.Message message) {
@@ -239,7 +250,7 @@ public class JMSRequestProxy extends JMSBase implements MessageListener, Excepti
     setupChannel(callID, responseDestination, timeout, getProtocolVersion(message), serializer);
   }
 
-  private void handleChannelUploadCompleted(String callID, byte[] data, Destination replyTo, long timeout, ProtocolVersion protocolVersion, MessageSerializer serializer) throws IOException, ClassNotFoundException, JMSException, NamingException {
+  private void handleChannelUploadCompleted(String callID, byte[] data, Destination replyTo, long timeout, ProtocolVersion protocolVersion, MessageSerializer serializer) throws IOException, JMSException, NamingException {
     // create a response context to handle response messages
     ServerResponseContext r = new ServerResponseContext(callID, getSession(), replyProducer, replyTo, timeout, protocolVersion, getMaxMessageSize(), metrics, serializer);
     // overwrite channel upload context with a server response context
@@ -312,6 +323,7 @@ public class JMSRequestProxy extends JMSBase implements MessageListener, Excepti
 
     private RequestSink requestSink;
     private int maxConcurrentCalls = DEFAULT_MAX_CONCURRENT_CALLS;
+    private int shutdownTimeout = DEFAULT_SHUTDOWN_TIMEOUT;
     private List<MessageSerializer> serializers = ListUtils.list();
 
     private Builder() {
@@ -321,7 +333,7 @@ public class JMSRequestProxy extends JMSBase implements MessageListener, Excepti
 
     public JMSRequestProxy build() {
       return new JMSRequestProxy(contextFactoryName, contextURL, connectionFactoryName, username, password,
-              connectionProperties, destinationName, priority, maxConcurrentCalls, maxMessageSize, requestSink, serializers);
+              connectionProperties, destinationName, priority, maxConcurrentCalls, maxMessageSize, requestSink, shutdownTimeout, serializers);
     }
 
     //setters
@@ -347,12 +359,19 @@ public class JMSRequestProxy extends JMSBase implements MessageListener, Excepti
       return this;
     }
 
-
+    public Builder setShutdownTimeout(int shutdownTimeout) {
+      this.shutdownTimeout = shutdownTimeout;
+      return this;
+    }
   }
 
   //accessors
 
   public interface JMSRequestProxyConnectionListener {
     void connected(JMSRequestProxy proxy);
+  }
+
+  public interface JMSRequestProxyCloseListener {
+    void closed(JMSRequestProxy proxy);
   }
 }

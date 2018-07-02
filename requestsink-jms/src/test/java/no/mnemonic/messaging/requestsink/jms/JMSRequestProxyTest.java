@@ -200,6 +200,15 @@ public class JMSRequestProxyTest extends AbstractJMSRequestTest {
     assertEquals(JMSRequestProxy.MESSAGE_TYPE_SIGNAL_RESPONSE, responseMessage.getStringProperty(JMSRequestProxy.PROPERTY_MESSAGE_TYPE));
   }
 
+  @Test
+  public void testJMSExceptionTriggersShutdown() throws Exception {
+    setupEnvironment();
+    Future<Void> closed = listenForProxyClose();
+    requestProxy.onException(new JMSException("connection closed"));
+    closed.get(10, TimeUnit.SECONDS);
+    assertTrue(requestProxy.isClosed());
+  }
+
   //private methods
 
   private void doTestSignalResponse(int numberOfResponses) throws NamingException, JMSException, IOException, InterruptedException, ClassNotFoundException {
@@ -251,9 +260,13 @@ public class JMSRequestProxyTest extends AbstractJMSRequestTest {
 
   private Future<Void> listenForProxyConnection() {
     CompletableFuture<Void> future = new CompletableFuture<>();
-    JMSRequestProxy.JMSRequestProxyConnectionListener connectionListener = mock(JMSRequestProxy.JMSRequestProxyConnectionListener.class);
-    requestProxy.addJMSRequestProxyConnectionListener(connectionListener);
-    doAnswer(i -> future.complete(null)).when(connectionListener).connected(any());
+    requestProxy.addJMSRequestProxyConnectionListener(l -> future.complete(null));
+    return future;
+  }
+
+  private Future<Void> listenForProxyClose() {
+    CompletableFuture<Void> future = new CompletableFuture<>();
+    requestProxy.addJMSRequestProxyCloseListener(l -> future.complete(null));
     return future;
   }
 
@@ -314,6 +327,7 @@ public class JMSRequestProxyTest extends AbstractJMSRequestTest {
   private void setupProxy(String queueName) {
     //set up request sink pointing at a vm-local topic
     requestProxy = addConnection(JMSRequestProxy.builder())
+            .setShutdownTimeout(500)
             .addSerializer(new DefaultJavaMessageSerializer())
             .setDestinationName(queueName)
             .setRequestSink(endpoint)

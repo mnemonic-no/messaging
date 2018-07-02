@@ -178,9 +178,8 @@ public class JMSRequestSink extends JMSBase implements RequestSink, MessageListe
   @Override
   public void startComponent() {
     try {
-      producer.set(getSession().createProducer(getDestination()));
-      producer.get().setDeliveryMode(DeliveryMode.NON_PERSISTENT);
-    } catch (JMSException | NamingException e) {
+      getOrCreateProducer();
+    } catch (Exception e) {
       executor.shutdown();
       throw new IllegalStateException("Error setting up connection", e);
     }
@@ -199,6 +198,19 @@ public class JMSRequestSink extends JMSBase implements RequestSink, MessageListe
   }
 
   // ****************** private methods ************************
+
+  private MessageProducer getOrCreateProducer() {
+    return producer.updateAndGet(prod->{
+      if (prod != null) return prod;
+      try {
+        prod = getSession().createProducer(getDestination());
+        prod.setDeliveryMode(DeliveryMode.NON_PERSISTENT);
+        return prod;
+      } catch (JMSException | NamingException e) {
+        throw new IllegalStateException("Error setting up producer", e);
+      }
+    });
+  }
 
   private void scheduleStateCleanup() {
     //only schedule cleanup if other cleanup is not already running
@@ -327,14 +339,24 @@ public class JMSRequestSink extends JMSBase implements RequestSink, MessageListe
       m.setJMSCorrelationID(callID);
       m.setStringProperty(PROPERTY_MESSAGE_TYPE, messageType);
       m.setLongProperty(JMSRequestProxy.PROPERTY_REQ_TIMEOUT, timeout);
-      producer.get().send(m, DeliveryMode.NON_PERSISTENT, getPriority(), lifeTime);
+      getOrCreateProducer().send(m, DeliveryMode.NON_PERSISTENT, getPriority(), lifeTime);
       if (LOGGER.isDebug()) {
         LOGGER.debug(">> sendMessage [destination=%s callID=%s messageType=%s replyTo=%s timeout=%s]", getDestination(), callID, messageType, replyTo, new Date(timeout));
       }
     } catch (Exception e) {
       LOGGER.warning(e, "Error in sendMessage");
+      closeAllResources();
       throw new MessagingException(e);
     }
+  }
+
+  @Override
+  void closeAllResources() {
+    super.closeAllResources();
+    producer.getAndUpdate(prod->{
+      ifNotNullDo(prod, p->LambdaUtils.tryTo(p::close));
+      return null;
+    });
   }
 
   private static class ResponseQueueState {

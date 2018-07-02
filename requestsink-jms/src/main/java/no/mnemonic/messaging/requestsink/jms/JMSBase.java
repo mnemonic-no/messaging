@@ -138,7 +138,7 @@ public abstract class JMSBase implements LifecycleAspect, AppendMembers, Excepti
     LOGGER.warning(e, "Exception received");
   }
 
-  private void closeAllResources() {
+  void closeAllResources() {
     try {
       // try to nicely shut down all resources
       executeAndReset(session, Session::close, "Error closing session");

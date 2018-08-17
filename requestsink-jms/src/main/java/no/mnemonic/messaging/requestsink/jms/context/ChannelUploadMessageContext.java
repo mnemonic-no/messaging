@@ -26,7 +26,7 @@ import static no.mnemonic.messaging.requestsink.jms.util.JMSUtils.*;
  */
 public class ChannelUploadMessageContext implements RequestContext {
 
-  private static final Logger LOGGER = Logging.getLogger(ServerResponseContext.class);
+  private static final Logger LOGGER = Logging.getLogger(ChannelUploadMessageContext.class);
   private static final int KEEPALIVE_PERIOD = 10000;
   private static final String SERIALIZER_KEY_NONE = "none";
   private static Clock clock = Clock.systemUTC();
@@ -58,15 +58,18 @@ public class ChannelUploadMessageContext implements RequestContext {
       fragment(messageData, fragmentSize, new FragmentConsumer() {
         @Override
         public void fragment(byte[] data, int idx) throws JMSException, IOException {
+          long timeout = clock.millis() + KEEPALIVE_PERIOD;
           //serializerkey "none", since channeluploadmessagecontext does not know/care about the serializer, which is already selected
           BytesMessage fragment = createByteMessage(session, data, protocolVersion, SERIALIZER_KEY_NONE);
           fragment.setJMSCorrelationID(callID);
           fragment.setStringProperty(JMSRequestProxy.PROPERTY_MESSAGE_TYPE, JMSRequestProxy.MESSAGE_TYPE_SIGNAL_FRAGMENT);
           fragment.setIntProperty(JMSRequestProxy.PROPERTY_FRAGMENTS_IDX, idx);
-          fragment.setLongProperty(JMSRequestProxy.PROPERTY_REQ_TIMEOUT, clock.millis() + KEEPALIVE_PERIOD);
+          fragment.setLongProperty(JMSRequestProxy.PROPERTY_REQ_TIMEOUT, timeout);
           metrics.fragmentedUploadFragment();
           //send fragment to upload channel
           producer.send(uploadChannel, fragment);
+          //signal client to keep channel open while still sending fragments
+          realContext.keepAlive(timeout);
           if (LOGGER.isDebug()) {
             LOGGER.debug(">> upload fragment [callID=%s idx=%d size=%d]", callID, idx, data.length);
           }

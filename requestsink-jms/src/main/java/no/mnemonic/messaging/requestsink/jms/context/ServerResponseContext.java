@@ -94,7 +94,7 @@ public class ServerResponseContext implements RequestContext, ServerContext {
         LOGGER.debug(">> keepalive [callID=%s until=%s replyTo=%s]", callID, new Date(until), replyTo);
       }
     } catch (Exception e) {
-      LOGGER.warning("Could not send Extend-Wait for " + callID);
+      LOGGER.warning(e, "Could not send Extend-Wait for " + callID);
     }
     timeout.set(until);
     return true;

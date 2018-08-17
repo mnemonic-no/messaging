@@ -40,13 +40,13 @@
     <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
 
     <!-- mnemonic dependencies -->
-    <mnemonic.commons.version>0.2.12</mnemonic.commons.version>
+    <mnemonic.commons.version>0.2.14</mnemonic.commons.version>
 
     <!-- external dependencies -->
-    <activemq.version>5.15.3</activemq.version>
+    <activemq.version>5.15.5</activemq.version>
     <jms.version>2.0.1</jms.version>
     <junit.version>4.12</junit.version>
-    <mockito.version>2.18.3</mockito.version>
+    <mockito.version>2.21.0</mockito.version>
     <xstream.version>1.4.10</xstream.version>
 
     <!-- build dependencies -->

@@ -264,6 +264,7 @@ public abstract class AbstractJMSRequestSinkTest extends AbstractJMSRequestTest 
     eos(receivedMessage);
 
     waitForEOS();
+    verify(requestContext, atLeastOnce()).keepAlive(anyLong());
     verify(requestContext).addResponse(eq(new TestMessage("response")));
     verify(requestContext).endOfStream();
   }

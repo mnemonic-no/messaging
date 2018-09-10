@@ -201,12 +201,12 @@ public class JMSRequestProxyTest extends AbstractJMSRequestTest {
   }
 
   @Test
-  public void testJMSExceptionTriggersShutdown() throws Exception {
+  public void testJMSExceptionTriggersReconnect() throws Exception {
     setupEnvironment();
-    Future<Void> closed = listenForProxyClose();
+    Future<Void> closed = listenForProxyConnection();
     requestProxy.onException(new JMSException("connection closed"));
     closed.get(10, TimeUnit.SECONDS);
-    assertTrue(requestProxy.isClosed());
+    doTestSignalResponse(1);
   }
 
   //private methods
@@ -261,12 +261,6 @@ public class JMSRequestProxyTest extends AbstractJMSRequestTest {
   private Future<Void> listenForProxyConnection() {
     CompletableFuture<Void> future = new CompletableFuture<>();
     requestProxy.addJMSRequestProxyConnectionListener(l -> future.complete(null));
-    return future;
-  }
-
-  private Future<Void> listenForProxyClose() {
-    CompletableFuture<Void> future = new CompletableFuture<>();
-    requestProxy.addJMSRequestProxyCloseListener(l -> future.complete(null));
     return future;
   }
 

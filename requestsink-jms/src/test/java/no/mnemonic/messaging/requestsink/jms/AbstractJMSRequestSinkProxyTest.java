@@ -72,7 +72,6 @@ public abstract class AbstractJMSRequestSinkProxyTest extends AbstractJMSRequest
 
     //make sure server does not shut down (yet) while request is still being processed
     assertFalse(tryTo(() -> containerShutdown.get(2000, TimeUnit.MILLISECONDS)));
-    assertFalse(requestProxy.isClosed());
 
     //now let the server complete the pending request
     System.out.println("Completing request");

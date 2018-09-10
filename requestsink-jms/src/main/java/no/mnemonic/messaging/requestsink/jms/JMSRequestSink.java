@@ -5,7 +5,6 @@ import no.mnemonic.commons.logging.Logging;
 import no.mnemonic.commons.metrics.MetricAspect;
 import no.mnemonic.commons.metrics.MetricException;
 import no.mnemonic.commons.metrics.Metrics;
-import no.mnemonic.commons.utilities.ObjectUtils;
 import no.mnemonic.commons.utilities.lambda.LambdaUtils;
 import no.mnemonic.messaging.requestsink.Message;
 import no.mnemonic.messaging.requestsink.*;
@@ -33,6 +32,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static no.mnemonic.commons.utilities.ObjectUtils.ifNotNullDo;
+import static no.mnemonic.commons.utilities.ObjectUtils.ifNull;
 import static no.mnemonic.commons.utilities.collections.ListUtils.list;
 import static no.mnemonic.messaging.requestsink.jms.util.JMSUtils.*;
 
@@ -77,7 +77,7 @@ import static no.mnemonic.messaging.requestsink.jms.util.JMSUtils.*;
  * V2 - Added support for fragmented response (for large single-object response messages)
  * V3 - Added support for custom message serializers. The client serializer must be supported on the server side, but the server can support multiple serializers.
  */
-public class JMSRequestSink extends JMSBase implements RequestSink, MessageListener, MetricAspect {
+public class JMSRequestSink extends AbstractJMSRequestBase implements RequestSink, MessageListener, MetricAspect {
 
   private static final Logger LOGGER = Logging.getLogger(JMSRequestSink.class);
 
@@ -107,7 +107,8 @@ public class JMSRequestSink extends JMSBase implements RequestSink, MessageListe
     //do not use custom serializer unless version V3 is enabled
     this.executor = Executors.newSingleThreadExecutor(new ThreadFactoryBuilder().setNamePrefix("JMSRequestSink").build());
     this.protocolVersion = assertNotNull(protocolVersion, "protocolVersion not set");
-    if (serializer == null || !protocolVersion.atLeast(ProtocolVersion.V3)) serializer = new DefaultJavaMessageSerializer();
+    if (serializer == null || !protocolVersion.atLeast(ProtocolVersion.V3))
+      serializer = new DefaultJavaMessageSerializer();
     this.serializer = serializer;
   }
 
@@ -155,12 +156,13 @@ public class JMSRequestSink extends JMSBase implements RequestSink, MessageListe
 
   @Override
   public <T extends RequestContext> T signal(Message msg, final T signalContext, long maxWait) {
+    if (isClosed()) throw new IllegalStateException(ERROR_CLOSED);
     //make sure message has callID set
     if (msg.getCallID() == null) {
       throw new IllegalArgumentException("Cannot accept message with no callID");
     }
     //if no context given by user, create a null context
-    RequestContext ctx = ObjectUtils.ifNull(signalContext, NullRequestContext::new);
+    RequestContext ctx = ifNull(signalContext, NullRequestContext::new);
     //do signal
     checkForFragmentationAndSignal(msg, ctx, maxWait);
     //schedule clean state on every request
@@ -170,7 +172,6 @@ public class JMSRequestSink extends JMSBase implements RequestSink, MessageListe
 
   @Override
   public void onException(JMSException e) {
-    super.onException(e);
     //replace response queue on received exception
     replaceResponseQueue();
   }
@@ -178,29 +179,34 @@ public class JMSRequestSink extends JMSBase implements RequestSink, MessageListe
   @Override
   public void startComponent() {
     try {
+      //prepare producer
       getOrCreateProducer();
+      //initialize response queue
+      replaceResponseQueue();
     } catch (Exception e) {
       executor.shutdown();
       throw new IllegalStateException("Error setting up connection", e);
     }
-    //initialize response queue
-    replaceResponseQueue();
   }
 
   @Override
   public void stopComponent() {
-    super.stopComponent();
+    //stop accepting requests
+    closed.set(true);
+    //shutdown executor and wait for it to finish current requests
     executor.shutdown();
     LambdaUtils.tryTo(
             () -> executor.awaitTermination(10, TimeUnit.SECONDS),
             e -> LOGGER.warning(e, "Error waiting for executor termination")
     );
+    //close all resources
+    closeAllResources();
   }
 
   // ****************** private methods ************************
 
   private MessageProducer getOrCreateProducer() {
-    return producer.updateAndGet(prod->{
+    return producer.updateAndGet(prod -> {
       if (prod != null) return prod;
       try {
         prod = getSession().createProducer(getDestination());
@@ -215,15 +221,15 @@ public class JMSRequestSink extends JMSBase implements RequestSink, MessageListe
   private void scheduleStateCleanup() {
     //only schedule cleanup if other cleanup is not already running
     if (!cleanupRunning.compareAndSet(false, true)) return;
-    
+
     if (cleanupInSeparateThread) {
-        executor.submit(this::cleanState);
+      executor.submit(this::cleanState);
     } else {
       cleanState();
     }
   }
 
-  private void replaceResponseQueue() {
+  private ResponseQueueState replaceResponseQueue() {
     try {
       //create new temporary queue and set a message consumer on it
       TemporaryQueue queue = getSession().createTemporaryQueue();
@@ -241,7 +247,11 @@ public class JMSRequestSink extends JMSBase implements RequestSink, MessageListe
         metrics.invalidatedResponseQueue();
         invalidatedResponseQueues.add(oldState);
       });
+
+      return newState;
     } catch (JMSException | NamingException e) {
+      //if exception is caught when setting up new response queue, we are probably truly disconnected, so close ALL resources and let next request reconnect
+      closeAllResources();
       throw new IllegalStateException(e);
     }
   }
@@ -324,11 +334,11 @@ public class JMSRequestSink extends JMSBase implements RequestSink, MessageListe
   }
 
   private Destination getCurrentResponseQueue() {
-    return currentResponseQueue.get().getResponseQueue();
+    return getCurrentResponseQueueState().getResponseQueue();
   }
 
   private ResponseQueueState getCurrentResponseQueueState() {
-    return currentResponseQueue.get();
+    return ifNull(currentResponseQueue.get(), this::replaceResponseQueue);
   }
 
   private void sendMessage(byte[] messageBytes, String callID, String messageType, long lifeTime, Destination replyTo) {
@@ -345,18 +355,32 @@ public class JMSRequestSink extends JMSBase implements RequestSink, MessageListe
       }
     } catch (Exception e) {
       LOGGER.warning(e, "Error in sendMessage");
+      //if exception is caught when preparing/sending message, we are truly disconnected, so close ALL resources and let next request reconnect
       closeAllResources();
       throw new MessagingException(e);
     }
   }
 
-  @Override
-  void closeAllResources() {
-    super.closeAllResources();
-    producer.getAndUpdate(prod->{
-      ifNotNullDo(prod, p->LambdaUtils.tryTo(p::close));
-      return null;
-    });
+  private synchronized void closeAllResources() {
+    LOGGER.warning("Resetting connection");
+    metrics.disconnected();
+    try {
+      // try to nicely shut down all resources
+      executeAndReset(currentResponseQueue, ResponseQueueState::close, "Error closing response queue");
+      executeAndReset(producer, MessageProducer::close, "Error closing producer");
+      executeAndReset(session, Session::close, "Error closing session");
+      executeAndReset(connection, Connection::close, "Error closing connection");
+      invalidatedResponseQueues.forEach(ResponseQueueState::close);
+    } finally {
+      resetState();
+    }
+  }
+
+  private synchronized void resetState() {
+    currentResponseQueue.set(null);
+    producer.set(null);
+    session.set(null);
+    destination.set(null);
   }
 
   private static class ResponseQueueState {
@@ -435,7 +459,7 @@ public class JMSRequestSink extends JMSBase implements RequestSink, MessageListe
   }
 
   @SuppressWarnings({"WeakerAccess", "unused"})
-  public static class Builder extends JMSBase.BaseBuilder<Builder> {
+  public static class Builder extends AbstractJMSRequestBase.BaseBuilder<Builder> {
 
     //fields
     private ProtocolVersion protocolVersion = ProtocolVersion.V1;

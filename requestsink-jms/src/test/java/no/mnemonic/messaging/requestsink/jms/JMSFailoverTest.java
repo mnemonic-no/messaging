@@ -123,7 +123,7 @@ public class JMSFailoverTest {
             .setRequestSink(endpoint);
   }
 
-  private <T extends JMSBase.BaseBuilder<T>> T addFailoverConnection(T builder) {
+  private <T extends AbstractJMSRequestBase.BaseBuilder<T>> T addFailoverConnection(T builder) {
     //set up a real JMS connection to a vm-local activemq
     return builder
             .setContextFactoryName("org.apache.activemq.jndi.ActiveMQInitialContextFactory")

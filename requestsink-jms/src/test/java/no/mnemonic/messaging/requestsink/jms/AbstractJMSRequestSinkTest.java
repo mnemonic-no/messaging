@@ -94,7 +94,7 @@ public abstract class AbstractJMSRequestSinkTest extends AbstractJMSRequestTest 
     requestSink.signal(testMessage, requestContext, 10000);
     //wait for message to come through and validate
     Message receivedMessage = expectSignal();
-    Assert.assertEquals(ProtocolVersion.V3.getVersionString(), receivedMessage.getStringProperty(JMSBase.PROTOCOL_VERSION_KEY));
+    Assert.assertEquals(ProtocolVersion.V3.getVersionString(), receivedMessage.getStringProperty(AbstractJMSRequestBase.PROTOCOL_VERSION_KEY));
     Assert.assertEquals(JMSRequestProxy.MESSAGE_TYPE_SIGNAL, receivedMessage.getStringProperty(JMSRequestProxy.PROPERTY_MESSAGE_TYPE));
     assertEquals(testMessage, serializer().deserialize(extractMessageBytes(receivedMessage), getClass().getClassLoader()));
     assertTrue(receivedMessage instanceof BytesMessage);
@@ -166,7 +166,7 @@ public abstract class AbstractJMSRequestSinkTest extends AbstractJMSRequestTest 
     requestSink.signal(testMessage, requestContext, 10000);
     //wait for message to come through and validate
     Message receivedMessage = expectSignal();
-    Assert.assertEquals(ProtocolVersion.V1.getVersionString(), receivedMessage.getStringProperty(JMSBase.PROTOCOL_VERSION_KEY));
+    Assert.assertEquals(ProtocolVersion.V1.getVersionString(), receivedMessage.getStringProperty(AbstractJMSRequestBase.PROTOCOL_VERSION_KEY));
   }
 
   @Test
@@ -372,8 +372,8 @@ public abstract class AbstractJMSRequestSinkTest extends AbstractJMSRequestTest 
   BytesMessage byteMsg(no.mnemonic.messaging.requestsink.Message obj, String messageType, String callID) throws JMSException, IOException {
     BytesMessage msg = session.createBytesMessage();
     msg.writeBytes(serializer().serialize(obj));
-    msg.setStringProperty(JMSBase.SERIALIZER_KEY, serializer().serializerID());
-    msg.setStringProperty(JMSBase.PROTOCOL_VERSION_KEY, ProtocolVersion.V1.getVersionString());
+    msg.setStringProperty(AbstractJMSRequestBase.SERIALIZER_KEY, serializer().serializerID());
+    msg.setStringProperty(AbstractJMSRequestBase.PROTOCOL_VERSION_KEY, ProtocolVersion.V1.getVersionString());
     msg.setStringProperty(JMSRequestProxy.PROPERTY_MESSAGE_TYPE, messageType);
     msg.setJMSCorrelationID(callID);
     return msg;

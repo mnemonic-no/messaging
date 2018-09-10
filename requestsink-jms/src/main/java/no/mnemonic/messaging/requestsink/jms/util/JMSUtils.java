@@ -3,12 +3,13 @@ package no.mnemonic.messaging.requestsink.jms.util;
 import no.mnemonic.commons.logging.Logger;
 import no.mnemonic.commons.logging.Logging;
 import no.mnemonic.messaging.requestsink.MessagingException;
-import no.mnemonic.messaging.requestsink.jms.JMSBase;
+import no.mnemonic.messaging.requestsink.jms.AbstractJMSRequestBase;
 import no.mnemonic.messaging.requestsink.jms.ProtocolVersion;
 import no.mnemonic.messaging.requestsink.jms.serializer.DefaultJavaMessageSerializer;
 import no.mnemonic.messaging.requestsink.jms.serializer.MessageSerializer;
 
 import javax.jms.*;
+import javax.naming.NamingException;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
@@ -25,8 +26,10 @@ import static no.mnemonic.commons.utilities.lambda.LambdaUtils.tryTo;
  */
 public class JMSUtils {
 
-  private static final Logger LOGGER = Logging.getLogger(MessageFragment.class);
+  private static final Logger LOGGER = Logging.getLogger(JMSUtils.class);
   private static final MessageSerializer legacySerializer = new DefaultJavaMessageSerializer();
+
+  private JMSUtils() {}
 
   /**
    * Creates a JMS object from a string serializable object
@@ -39,7 +42,7 @@ public class JMSUtils {
     assertNotNull(str, "String not set");
     assertNotNull(protocolVersion, "ProtocolVersion not set");
     TextMessage m = session.createTextMessage(str);
-    m.setStringProperty(JMSBase.PROTOCOL_VERSION_KEY, protocolVersion.getVersionString());
+    m.setStringProperty(AbstractJMSRequestBase.PROTOCOL_VERSION_KEY, protocolVersion.getVersionString());
     return m;
   }
 
@@ -56,8 +59,8 @@ public class JMSUtils {
     assertNotNull(protocolVersion, "ProtocolVersion not set");
     BytesMessage m = session.createBytesMessage();
     m.writeBytes(data);
-    m.setStringProperty(JMSBase.SERIALIZER_KEY, serializerKey);
-    m.setStringProperty(JMSBase.PROTOCOL_VERSION_KEY, protocolVersion.getVersionString());
+    m.setStringProperty(AbstractJMSRequestBase.SERIALIZER_KEY, serializerKey);
+    m.setStringProperty(AbstractJMSRequestBase.PROTOCOL_VERSION_KEY, protocolVersion.getVersionString());
     return m;
   }
 
@@ -122,8 +125,8 @@ public class JMSUtils {
   }
 
   public static boolean isCompatible(Message message) throws JMSException {
-    if (!message.propertyExists(JMSBase.PROTOCOL_VERSION_KEY)) return false;
-    String proto = message.getStringProperty(JMSBase.PROTOCOL_VERSION_KEY);
+    if (!message.propertyExists(AbstractJMSRequestBase.PROTOCOL_VERSION_KEY)) return false;
+    String proto = message.getStringProperty(AbstractJMSRequestBase.PROTOCOL_VERSION_KEY);
     try {
       ProtocolVersion.versionOf(proto);
       return true;
@@ -133,7 +136,7 @@ public class JMSUtils {
   }
 
   public static ProtocolVersion getProtocolVersion(Message message) throws JMSException {
-    return ProtocolVersion.versionOf(message.getStringProperty(JMSBase.PROTOCOL_VERSION_KEY));
+    return ProtocolVersion.versionOf(message.getStringProperty(AbstractJMSRequestBase.PROTOCOL_VERSION_KEY));
   }
 
   public static void removeMessageListenerAndClose(MessageConsumer consumer) {
@@ -166,10 +169,10 @@ public class JMSUtils {
   }
 
   public static MessageSerializer determineSerializer(javax.jms.Message msg, Map<String, MessageSerializer> serializers) throws JMSException {
-    if (!msg.propertyExists(JMSBase.SERIALIZER_KEY)) {
+    if (!msg.propertyExists(AbstractJMSRequestBase.SERIALIZER_KEY)) {
       return legacySerializer;
     }
-    return determineSerializer(msg.getStringProperty(JMSBase.SERIALIZER_KEY), serializers);
+    return determineSerializer(msg.getStringProperty(AbstractJMSRequestBase.SERIALIZER_KEY), serializers);
   }
 
   public static no.mnemonic.messaging.requestsink.Message extractObject(javax.jms.Message message, MessageSerializer serializer) throws JMSException {
@@ -244,4 +247,13 @@ public class JMSUtils {
   }
 
 
+
+
+  public interface JMSSupplier<T> {
+    T get() throws JMSException, NamingException;
+  }
+
+  public interface JMSConsumer<T> {
+    void apply(T val) throws JMSException, NamingException;
+  }
 }

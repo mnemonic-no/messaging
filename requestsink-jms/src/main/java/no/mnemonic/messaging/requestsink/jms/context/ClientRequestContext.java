@@ -4,8 +4,8 @@ import no.mnemonic.commons.logging.Logger;
 import no.mnemonic.commons.logging.Logging;
 import no.mnemonic.commons.utilities.ClassLoaderContext;
 import no.mnemonic.messaging.requestsink.RequestContext;
+import no.mnemonic.messaging.requestsink.jms.AbstractJMSRequestBase;
 import no.mnemonic.messaging.requestsink.jms.ExceptionMessage;
-import no.mnemonic.messaging.requestsink.jms.JMSBase;
 import no.mnemonic.messaging.requestsink.jms.serializer.MessageSerializer;
 import no.mnemonic.messaging.requestsink.jms.util.ClientMetrics;
 import no.mnemonic.messaging.requestsink.jms.util.MessageFragment;
@@ -163,14 +163,14 @@ public class ClientRequestContext {
 
   private boolean handleSignalResponseFragment(javax.jms.Message fragmentSignal) throws JMSException {
     if (fragmentSignal == null) throw new IllegalArgumentException("fragment was null");
-    if (!fragmentSignal.propertyExists(JMSBase.PROPERTY_RESPONSE_ID)) {
+    if (!fragmentSignal.propertyExists(AbstractJMSRequestBase.PROPERTY_RESPONSE_ID)) {
       metrics.incompatibleMessage();
-      LOGGER.warning(RECEIVED_FRAGMENT_WITHOUT + JMSBase.PROPERTY_RESPONSE_ID);
+      LOGGER.warning(RECEIVED_FRAGMENT_WITHOUT + AbstractJMSRequestBase.PROPERTY_RESPONSE_ID);
       return false;
     }
-    if (!fragmentSignal.propertyExists(JMSBase.PROPERTY_FRAGMENTS_IDX)) {
+    if (!fragmentSignal.propertyExists(AbstractJMSRequestBase.PROPERTY_FRAGMENTS_IDX)) {
       metrics.incompatibleMessage();
-      LOGGER.warning(RECEIVED_FRAGMENT_WITHOUT + JMSBase.PROPERTY_FRAGMENTS_IDX);
+      LOGGER.warning(RECEIVED_FRAGMENT_WITHOUT + AbstractJMSRequestBase.PROPERTY_FRAGMENTS_IDX);
       return false;
     }
     metrics.fragmentedReplyFragment();
@@ -185,24 +185,24 @@ public class ClientRequestContext {
 
   private boolean handleEndOfFragmentedResponse(Message endMessage) throws JMSException {
     if (endMessage == null) throw new IllegalArgumentException("end-message was null");
-    if (!endMessage.propertyExists(JMSBase.PROPERTY_RESPONSE_ID)) {
+    if (!endMessage.propertyExists(AbstractJMSRequestBase.PROPERTY_RESPONSE_ID)) {
       metrics.incompatibleMessage();
-      LOGGER.warning(RECEIVED_END_OF_FRAGMENTS_WITHOUT + JMSBase.PROPERTY_RESPONSE_ID);
+      LOGGER.warning(RECEIVED_END_OF_FRAGMENTS_WITHOUT + AbstractJMSRequestBase.PROPERTY_RESPONSE_ID);
       return false;
     }
-    if (!endMessage.propertyExists(JMSBase.PROPERTY_FRAGMENTS_TOTAL)) {
+    if (!endMessage.propertyExists(AbstractJMSRequestBase.PROPERTY_FRAGMENTS_TOTAL)) {
       metrics.incompatibleMessage();
-      LOGGER.warning(RECEIVED_END_OF_FRAGMENTS_WITHOUT + JMSBase.PROPERTY_FRAGMENTS_TOTAL);
+      LOGGER.warning(RECEIVED_END_OF_FRAGMENTS_WITHOUT + AbstractJMSRequestBase.PROPERTY_FRAGMENTS_TOTAL);
       return false;
     }
-    if (!endMessage.propertyExists(JMSBase.PROPERTY_DATA_CHECKSUM_MD5)) {
+    if (!endMessage.propertyExists(AbstractJMSRequestBase.PROPERTY_DATA_CHECKSUM_MD5)) {
       metrics.incompatibleMessage();
-      LOGGER.warning(RECEIVED_END_OF_FRAGMENTS_WITHOUT + JMSBase.PROPERTY_DATA_CHECKSUM_MD5);
+      LOGGER.warning(RECEIVED_END_OF_FRAGMENTS_WITHOUT + AbstractJMSRequestBase.PROPERTY_DATA_CHECKSUM_MD5);
       return false;
     }
-    String responseID = endMessage.getStringProperty(JMSBase.PROPERTY_RESPONSE_ID);
-    int totalFragments = endMessage.getIntProperty(JMSBase.PROPERTY_FRAGMENTS_TOTAL);
-    String checksum = endMessage.getStringProperty(JMSBase.PROPERTY_DATA_CHECKSUM_MD5);
+    String responseID = endMessage.getStringProperty(AbstractJMSRequestBase.PROPERTY_RESPONSE_ID);
+    int totalFragments = endMessage.getIntProperty(AbstractJMSRequestBase.PROPERTY_FRAGMENTS_TOTAL);
+    String checksum = endMessage.getStringProperty(AbstractJMSRequestBase.PROPERTY_DATA_CHECKSUM_MD5);
     if (LOGGER.isDebug()) {
       LOGGER.debug("<< reassemble [callID=%s responseID=%s fragments=%d]",
               callID, responseID, totalFragments);
@@ -258,8 +258,8 @@ public class ClientRequestContext {
   }
 
   private boolean handleSignalExtendWait(Message response) throws JMSException {
-    if (!response.propertyExists(JMSBase.PROPERTY_REQ_TIMEOUT)) {
-      LOGGER.warning("Received ExtendWait signal without property " + JMSBase.PROPERTY_REQ_TIMEOUT);
+    if (!response.propertyExists(AbstractJMSRequestBase.PROPERTY_REQ_TIMEOUT)) {
+      LOGGER.warning("Received ExtendWait signal without property " + AbstractJMSRequestBase.PROPERTY_REQ_TIMEOUT);
       return false;
     }
     long timeout = response.getLongProperty(PROPERTY_REQ_TIMEOUT);

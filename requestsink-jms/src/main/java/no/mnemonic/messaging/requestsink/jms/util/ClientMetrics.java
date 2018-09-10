@@ -8,6 +8,7 @@ import java.util.concurrent.atomic.LongAdder;
 
 public class ClientMetrics {
   private final LongAdder errorCount = new LongAdder();
+  private final LongAdder disconnectedCount = new LongAdder();
   private final LongAdder exceptionSignalCount = new LongAdder();
   private final LongAdder requestCount = new LongAdder();
   private final LongAdder replyCount = new LongAdder();
@@ -26,6 +27,7 @@ public class ClientMetrics {
     return new MetricsData()
             .addData("invalidatedResponseQueues", invalidatedResponseQueues)
             .addData("errors", errorCount)
+            .addData("disconnected", disconnectedCount)
             .addData("exceptionSignal", exceptionSignalCount)
             .addData("requests", requestCount)
             .addData("replies", replyCount)
@@ -48,11 +50,17 @@ public class ClientMetrics {
     requestCount.increment();
   }
 
+  public void disconnected() {
+    disconnectedCount.increment();
+  }
+
   public void error() {
     errorCount.increment();
   }
 
-  public void exceptionSignal() { exceptionSignalCount.increment(); }
+  public void exceptionSignal() {
+    exceptionSignalCount.increment();
+  }
 
   public void fragmentedUploadRequested() {
     fragmentedUploadRequestCounter.increment();

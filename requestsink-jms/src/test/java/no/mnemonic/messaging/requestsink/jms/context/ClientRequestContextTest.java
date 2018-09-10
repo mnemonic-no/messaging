@@ -17,8 +17,8 @@ import java.lang.IllegalStateException;
 import java.time.Clock;
 import java.util.Arrays;
 
-import static no.mnemonic.messaging.requestsink.jms.JMSBase.*;
-import static no.mnemonic.messaging.requestsink.jms.util.JMSUtils.*;
+import static no.mnemonic.messaging.requestsink.jms.AbstractJMSRequestBase.*;
+import static no.mnemonic.messaging.requestsink.jms.util.JMSUtils.md5;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 import static org.mockito.ArgumentMatchers.any;

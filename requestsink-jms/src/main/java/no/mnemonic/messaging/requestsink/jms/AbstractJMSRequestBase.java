@@ -6,6 +6,7 @@ import no.mnemonic.commons.logging.Logging;
 import no.mnemonic.commons.utilities.AppendMembers;
 import no.mnemonic.commons.utilities.AppendUtils;
 import no.mnemonic.commons.utilities.StringUtils;
+import no.mnemonic.messaging.requestsink.jms.util.JMSUtils;
 
 import javax.jms.*;
 import javax.naming.InitialContext;
@@ -18,9 +19,9 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 
 @SuppressWarnings({"ClassReferencesSubclass"})
-public abstract class JMSBase implements LifecycleAspect, AppendMembers, ExceptionListener {
+public abstract class AbstractJMSRequestBase implements LifecycleAspect, AppendMembers, ExceptionListener {
 
-  private static final Logger LOGGER = Logging.getLogger(JMSBase.class);
+  private static final Logger LOGGER = Logging.getLogger(AbstractJMSRequestBase.class);
 
   static final int DEFAULT_MAX_MAX_MESSAGE_SIZE = 100000;
   static final int DEFAULT_PRIORITY = 1;
@@ -43,7 +44,7 @@ public abstract class JMSBase implements LifecycleAspect, AppendMembers, Excepti
   public static final String PROPERTY_RESPONSE_ID = "ResponseID";
   public static final String PROPERTY_DATA_CHECKSUM_MD5 = "DataChecksumMD5";
 
-  private static final String ERROR_CLOSED = "closed";
+  static final String ERROR_CLOSED = "closed";
 
   // common properties
 
@@ -60,16 +61,16 @@ public abstract class JMSBase implements LifecycleAspect, AppendMembers, Excepti
   // variables
 
   private final AtomicReference<InitialContext> initialContext = new AtomicReference<>();
-  private final AtomicBoolean closed = new AtomicBoolean();
-  private final AtomicReference<Connection> connection = new AtomicReference<>();
-  private final AtomicReference<Session> session = new AtomicReference<>();
-  private final AtomicReference<Destination> destination = new AtomicReference<>();
+  final AtomicBoolean closed = new AtomicBoolean();
+  final AtomicReference<Connection> connection = new AtomicReference<>();
+  final AtomicReference<Session> session = new AtomicReference<>();
+  final AtomicReference<Destination> destination = new AtomicReference<>();
 
   // ************************* constructors ********************************
 
-  JMSBase(String contextFactoryName, String contextURL, String connectionFactoryName,
-          String username, String password, Map<String, String> connectionProperties,
-          String destinationName, int priority, int maxMessageSize) {
+  AbstractJMSRequestBase(String contextFactoryName, String contextURL, String connectionFactoryName,
+                         String username, String password, Map<String, String> connectionProperties,
+                         String destinationName, int priority, int maxMessageSize) {
 
     if (StringUtils.isBlank(contextFactoryName)) {
       throw new IllegalArgumentException("contextFactoryName not set");
@@ -89,7 +90,6 @@ public abstract class JMSBase implements LifecycleAspect, AppendMembers, Excepti
     if (priority < 1) {
       throw new IllegalArgumentException("priority cannot be lower than 1");
     }
-
     this.contextFactoryName = contextFactoryName;
     this.contextURL = contextURL;
     this.connectionFactoryName = connectionFactoryName;
@@ -117,51 +117,18 @@ public abstract class JMSBase implements LifecycleAspect, AppendMembers, Excepti
     return AppendUtils.toString(this);
   }
 
-  @Override
-  public void stopComponent() {
-    closed.set(true);
-    closeAllResources();
-  }
+  // ******************** protected and private methods ***********************
 
-  public boolean isClosed() {
+  boolean isClosed() {
     return closed.get();
   }
 
-  public int getMaxMessageSize() {
+  int getPriority() {
+    return priority;
+  }
+
+  int getMaxMessageSize() {
     return maxMessageSize;
-  }
-
-  // ******************** protected and private methods ***********************
-
-  @Override
-  public void onException(JMSException e) {
-    LOGGER.warning(e, "Exception received");
-  }
-
-  void closeAllResources() {
-    try {
-      // try to nicely shut down all resources
-      executeAndReset(session, Session::close, "Error closing session");
-      executeAndReset(connection, Connection::close, "Error closing connection");
-    } finally {
-      resetState();
-    }
-  }
-
-  private <T> void executeAndReset(AtomicReference<T> ref, JMSConsumer<T> op, String errorString) {
-    T val = ref.getAndUpdate(t -> null);
-    if (val != null) {
-      try {
-        op.apply(val);
-      } catch (Exception e) {
-        LOGGER.warning(e, errorString);
-      }
-    }
-  }
-
-  private void resetState() {
-    session.set(null);
-    destination.set(null);
   }
 
   private InitialContext getInitialContext() throws NamingException, JMSException {
@@ -169,19 +136,29 @@ public abstract class JMSBase implements LifecycleAspect, AppendMembers, Excepti
     return getOrUpdateSynchronized(initialContext, this::createInitialContext);
   }
 
-  Destination getDestination() throws JMSException, NamingException {
-    if (isClosed()) throw new IllegalStateException(ERROR_CLOSED);
-    return getOrUpdateSynchronized(destination, () -> lookupDestination(destinationName));
-  }
-
-  Connection getConnection() throws JMSException, NamingException {
+  private Connection getConnection() throws JMSException, NamingException {
     if (isClosed()) throw new IllegalStateException(ERROR_CLOSED);
     return getOrUpdateSynchronized(connection, this::createConnection);
   }
 
+  Destination getDestination() throws JMSException, NamingException {
+    if (isClosed()) throw new IllegalStateException(ERROR_CLOSED);
+    return getOrUpdateSynchronized(destination, this::lookupDestination);
+  }
+
   Session getSession() throws JMSException, NamingException {
     if (isClosed()) throw new IllegalStateException(ERROR_CLOSED);
-    return getOrUpdateSynchronized(session, () -> getConnection().createSession(false, Session.AUTO_ACKNOWLEDGE));
+    return getOrUpdateSynchronized(session, this::createSession);
+  }
+
+  private Session createSession() throws NamingException, JMSException {
+    LOGGER.debug("Creating session");
+    return getConnection().createSession(false, Session.AUTO_ACKNOWLEDGE);
+  }
+
+  private Destination lookupDestination() throws NamingException, JMSException {
+    LOGGER.debug("Looking up destination %s", destinationName);
+    return lookupDestination(destinationName);
   }
 
   private InitialContext createInitialContext() throws NamingException {
@@ -189,7 +166,7 @@ public abstract class JMSBase implements LifecycleAspect, AppendMembers, Excepti
     Hashtable<String, String> env = new Hashtable<>();
     env.put(InitialContext.INITIAL_CONTEXT_FACTORY, contextFactoryName);
     env.put(InitialContext.PROVIDER_URL, contextURL);
-    connectionProperties.forEach((k, v) -> env.put((String) k, (String) v));
+    connectionProperties.forEach(env::put);
     return new InitialContext(env);
   }
 
@@ -232,29 +209,39 @@ public abstract class JMSBase implements LifecycleAspect, AppendMembers, Excepti
     return conn;
   }
 
-  private <U> U getOrUpdateSynchronized(AtomicReference<U> ref, JMSSupplier<U> task) throws NamingException, JMSException {
-    try {
-      return ref.updateAndGet(t -> {
-        if (t != null) return t;
-        try {
-          return task.get();
-        } catch (Exception e) {
-          throw new IllegalStateException(e);
-        }
-      });
-    } catch (RuntimeException e) {
-      if (e.getCause() instanceof JMSException) throw (JMSException) e.getCause();
-      if (e.getCause() instanceof NamingException) throw (NamingException) e.getCause();
-      throw e;
+  private <U> U getOrUpdateSynchronized(AtomicReference<U> ref, JMSUtils.JMSSupplier<U> task) throws NamingException, JMSException {
+    U current = ref.get();
+    if (current != null) return current;
+    //synchronize only if null, to avoid contention
+    //need to synchronize with possible reconnect
+    synchronized (this) {
+      try {
+        return ref.updateAndGet(t -> {
+          if (t != null) return t;
+          try {
+            return task.get();
+          } catch (Exception e) {
+            throw new IllegalStateException(e);
+          }
+        });
+      } catch (RuntimeException e) {
+        if (e.getCause() instanceof JMSException) throw (JMSException) e.getCause();
+        if (e.getCause() instanceof NamingException) throw (NamingException) e.getCause();
+        throw e;
+      }
     }
   }
 
-  private interface JMSSupplier<T> {
-    T get() throws JMSException, NamingException;
-  }
 
-  private interface JMSConsumer<T> {
-    void apply(T val) throws JMSException, NamingException;
+  <T> void executeAndReset(AtomicReference<T> ref, JMSUtils.JMSConsumer<T> op, String errorString) {
+    T val = ref.getAndUpdate(t -> null);
+    if (val != null) {
+      try {
+        op.apply(val);
+      } catch (Exception e) {
+        LOGGER.warning(e, errorString);
+      }
+    }
   }
 
   // ************************* property accessors ********************************
@@ -331,15 +318,4 @@ public abstract class JMSBase implements LifecycleAspect, AppendMembers, Excepti
     }
   }
 
-  boolean hasSession() {
-    return session.get() != null;
-  }
-
-  boolean hasConnection() {
-    return connection.get() != null;
-  }
-
-  public int getPriority() {
-    return priority;
-  }
 }

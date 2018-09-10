@@ -8,6 +8,7 @@ import java.util.concurrent.atomic.LongAdder;
 
 public class ServerMetrics {
   private final LongAdder errorCount = new LongAdder();
+  private final LongAdder reconnectCount = new LongAdder();
   private final LongAdder exceptionSignalCount = new LongAdder();
   private final LongAdder requestCount = new LongAdder();
   private final LongAdder requestTimeoutCount = new LongAdder();
@@ -24,6 +25,7 @@ public class ServerMetrics {
   public Metrics metrics() throws MetricException {
     return new MetricsData()
             .addData("errors", errorCount)
+            .addData("reconnections", reconnectCount)
             .addData("exceptionSignal", exceptionSignalCount)
             .addData("requests", requestCount)
             .addData("requestTimeoutCount", requestTimeoutCount)
@@ -40,6 +42,10 @@ public class ServerMetrics {
 
   public void requestTimeout() {
     requestTimeoutCount.increment();
+  }
+
+  public void reconnected() {
+    reconnectCount.increment();
   }
 
   public void request() {
@@ -62,7 +68,7 @@ public class ServerMetrics {
     fragmentedUploadFragmentsCounter.increment();
   }
 
-  public   void fragmentedUploadCompleted() {
+  public void fragmentedUploadCompleted() {
     fragmentedUploadCompletedCounter.increment();
   }
 

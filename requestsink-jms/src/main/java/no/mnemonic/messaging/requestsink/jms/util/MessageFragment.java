@@ -3,7 +3,7 @@ package no.mnemonic.messaging.requestsink.jms.util;
 import javax.jms.BytesMessage;
 import javax.jms.JMSException;
 
-import static no.mnemonic.messaging.requestsink.jms.JMSBase.PROPERTY_RESPONSE_ID;
+import static no.mnemonic.messaging.requestsink.jms.AbstractJMSRequestBase.PROPERTY_RESPONSE_ID;
 import static no.mnemonic.messaging.requestsink.jms.JMSRequestProxy.PROPERTY_FRAGMENTS_IDX;
 
 public class MessageFragment {

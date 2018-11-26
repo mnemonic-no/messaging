@@ -1,0 +1,99 @@
+package no.mnemonic.messaging.documentchannel.kafka;
+
+import no.mnemonic.messaging.documentchannel.DocumentChannel;
+import no.mnemonic.messaging.documentchannel.DocumentDestination;
+import org.apache.kafka.clients.producer.KafkaProducer;
+import org.apache.kafka.clients.producer.ProducerRecord;
+
+import java.util.concurrent.atomic.AtomicReference;
+
+import static no.mnemonic.commons.utilities.ObjectUtils.ifNotNullDo;
+import static no.mnemonic.commons.utilities.ObjectUtils.ifNull;
+
+/**
+ * Kafka version of a document channel destination, which writes the document to a configured
+ * Kafka topic. The channel supports String or byte array documents.
+ *
+ * @param <T> document type
+ */
+public class KafkaDocumentDestination<T> implements DocumentDestination<T> {
+
+  private final KafkaProducerProvider provider;
+  private final Class<T> type;
+  private final String topicName;
+
+  private final AtomicReference<KafkaProducer<String, T>> currentProducer = new AtomicReference<>();
+
+  private KafkaDocumentDestination(
+          KafkaProducerProvider provider,
+          Class<T> type,
+          String topicName
+  ) {
+    if (provider == null) throw new IllegalArgumentException("provider not set");
+    if (type == null) throw new IllegalArgumentException("type not set");
+    if (topicName == null) throw new IllegalArgumentException("topicName not set");
+    this.provider = provider;
+    this.type = type;
+    this.topicName = topicName;
+  }
+
+  @Override
+  public DocumentChannel<T> getDocumentChannel() {
+    return this::writeDocument;
+  }
+
+  @Override
+  public void close() {
+    currentProducer.updateAndGet(p -> {
+      ifNotNullDo(p, KafkaProducer::close);
+      return null;
+    });
+  }
+
+
+  //private methods
+
+  private void writeDocument(T doc) {
+    getProducer().send(new ProducerRecord<>(topicName, doc));
+  }
+
+  private KafkaProducer<String, T> getProducer() {
+    return currentProducer.updateAndGet(p -> ifNull(p, () -> provider.createProducer(type)));
+  }
+
+
+  public static <T> Builder<T> builder() {
+    return new Builder<>();
+  }
+
+  public static class Builder<T> {
+
+    //fields
+    private KafkaProducerProvider kafkaProducerProvider;
+    private Class<T> type;
+    private String topicName;
+
+    public KafkaDocumentDestination<T> build() {
+      return new KafkaDocumentDestination<>(kafkaProducerProvider, type, topicName);
+    }
+
+    //setters
+
+    public Builder<T> setProducerProvider(KafkaProducerProvider kafkaProducerProvider) {
+      this.kafkaProducerProvider = kafkaProducerProvider;
+      return this;
+    }
+
+    public Builder<T> setType(Class<T> type) {
+      this.type = type;
+      return this;
+    }
+
+    public Builder<T> setTopicName(String topicName) {
+      this.topicName = topicName;
+      return this;
+    }
+  }
+
+
+}

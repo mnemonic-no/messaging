@@ -1,0 +1,61 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+
+  <parent>
+    <groupId>no.mnemonic.messaging</groupId>
+    <artifactId>parent</artifactId>
+    <version>1.2.4-SNAPSHOT</version>
+  </parent>
+  <artifactId>documentchannel-kafka</artifactId>
+
+  <dependencies>
+    <dependency>
+      <groupId>no.mnemonic.messaging</groupId>
+      <artifactId>documentchannel</artifactId>
+      <version>${project.version}</version>
+    </dependency>
+    <dependency>
+      <groupId>no.mnemonic.commons</groupId>
+      <artifactId>utilities</artifactId>
+      <version>${mnemonic.commons.version}</version>
+    </dependency>
+    <dependency>
+      <groupId>no.mnemonic.commons</groupId>
+      <artifactId>logging</artifactId>
+      <version>${mnemonic.commons.version}</version>
+    </dependency>
+    <dependency>
+      <groupId>org.apache.kafka</groupId>
+      <artifactId>kafka-clients</artifactId>
+      <version>${kafka.clients.version}</version>
+    </dependency>
+
+    <dependency>
+      <groupId>no.mnemonic.commons</groupId>
+      <artifactId>testtools</artifactId>
+      <version>${mnemonic.commons.version}</version>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>junit</groupId>
+      <artifactId>junit</artifactId>
+      <version>${junit.version}</version>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.mockito</groupId>
+      <artifactId>mockito-core</artifactId>
+      <version>${mockito.version}</version>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>com.palantir.docker.compose</groupId>
+      <artifactId>docker-compose-rule-junit4</artifactId>
+      <version>${docker.compose.junit.version}</version>
+      <scope>test</scope>
+    </dependency>
+  </dependencies>
+</project>

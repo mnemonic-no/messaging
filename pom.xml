@@ -40,14 +40,16 @@
     <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
 
     <!-- mnemonic dependencies -->
-    <mnemonic.commons.version>0.2.14</mnemonic.commons.version>
+    <mnemonic.commons.version>0.2.17</mnemonic.commons.version>
 
     <!-- external dependencies -->
-    <activemq.version>5.15.5</activemq.version>
+    <activemq.version>5.15.8</activemq.version>
+    <kafka.clients.version>0.10.2.2</kafka.clients.version>
     <jms.version>2.0.1</jms.version>
     <junit.version>4.12</junit.version>
-    <mockito.version>2.21.0</mockito.version>
-    <xstream.version>1.4.10</xstream.version>
+    <mockito.version>2.23.4</mockito.version>
+    <xstream.version>1.4.11.1</xstream.version>
+    <docker.compose.junit.version>0.34.0</docker.compose.junit.version>
 
     <!-- build dependencies -->
     <maven.clean.version>3.0.0</maven.clean.version>
@@ -57,7 +59,7 @@
     <maven.install.version>2.5.2</maven.install.version>
     <maven.jar.version>3.0.2</maven.jar.version>
     <maven.javadoc.version>2.10.4</maven.javadoc.version>
-    <maven.license.version>1.12</maven.license.version>
+    <maven.license.version>1.16</maven.license.version>
     <maven.nexus.staging.version>1.6.8</maven.nexus.staging.version>
     <maven.release.version>2.5.3</maven.release.version>
     <maven.resources.version>3.0.2</maven.resources.version>
@@ -68,6 +70,9 @@
   <modules>
     <module>requestsink</module>
     <module>requestsink-jms</module>
+    <module>documentchannel</module>
+    <module>documentchannel-jms</module>
+    <module>documentchannel-kafka</module>
   </modules>
 
   <scm>

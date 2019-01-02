@@ -28,9 +28,12 @@ import static no.mnemonic.commons.utilities.lambda.LambdaUtils.tryTo;
  */
 public class KafkaDocumentSource<T> implements DocumentSource<T> {
 
+  private static final int CONSUMER_POLL_TIMEOUT_MILLIS = 1000;
+
   private final KafkaConsumerProvider provider;
   private final Class<T> type;
   private final String topicName;
+  private final boolean commitSync;
 
   private final AtomicReference<KafkaConsumer<String, T>> currentConsumer = new AtomicReference<>();
   private final ExecutorService executorService = Executors.newSingleThreadExecutor();
@@ -38,8 +41,9 @@ public class KafkaDocumentSource<T> implements DocumentSource<T> {
   private KafkaDocumentSource(
           KafkaConsumerProvider provider,
           Class<T> type,
-          String topicName
-  ) {
+          String topicName,
+          boolean commitSync) {
+    this.commitSync = commitSync;
     if (provider == null) throw new IllegalArgumentException("provider not set");
     if (type == null) throw new IllegalArgumentException("type not set");
     if (topicName == null) throw new IllegalArgumentException("topicName not set");
@@ -88,9 +92,15 @@ public class KafkaDocumentSource<T> implements DocumentSource<T> {
     public void run() {
       try {
         while (!executorService.isShutdown()) {
-          ConsumerRecords<String, T> records = consumer.poll(1);
+          ConsumerRecords<String, T> records = consumer.poll(CONSUMER_POLL_TIMEOUT_MILLIS);
           for (ConsumerRecord<String, T> record : records) {
             listener.documentReceived(record.value());
+          }
+          //when all documents in batch is consumed, send commit to consumer
+          if (commitSync) {
+            consumer.commitSync();
+          } else {
+            consumer.commitAsync();
           }
         }
       } finally {
@@ -109,12 +119,19 @@ public class KafkaDocumentSource<T> implements DocumentSource<T> {
     private KafkaConsumerProvider kafkaConsumerProvider;
     private Class<T> type;
     private String topicName;
+    private boolean commitSync;
 
     public KafkaDocumentSource<T> build() {
-      return new KafkaDocumentSource<>(kafkaConsumerProvider, type, topicName);
+      return new KafkaDocumentSource<>(kafkaConsumerProvider, type, topicName, commitSync);
     }
 
     //setters
+
+
+    public Builder<T> setCommitSync(boolean commitSync) {
+      this.commitSync = commitSync;
+      return this;
+    }
 
     public Builder<T> setConsumerProvider(KafkaConsumerProvider kafkaConsumerProvider) {
       this.kafkaConsumerProvider = kafkaConsumerProvider;

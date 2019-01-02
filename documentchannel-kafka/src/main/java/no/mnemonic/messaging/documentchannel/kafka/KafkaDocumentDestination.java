@@ -21,20 +21,22 @@ public class KafkaDocumentDestination<T> implements DocumentDestination<T> {
   private final KafkaProducerProvider provider;
   private final Class<T> type;
   private final String topicName;
+  private final boolean flushAfterWrite;
 
   private final AtomicReference<KafkaProducer<String, T>> currentProducer = new AtomicReference<>();
 
   private KafkaDocumentDestination(
           KafkaProducerProvider provider,
           Class<T> type,
-          String topicName
-  ) {
+          String topicName,
+          boolean flushAfterWrite) {
     if (provider == null) throw new IllegalArgumentException("provider not set");
     if (type == null) throw new IllegalArgumentException("type not set");
     if (topicName == null) throw new IllegalArgumentException("topicName not set");
     this.provider = provider;
     this.type = type;
     this.topicName = topicName;
+    this.flushAfterWrite = flushAfterWrite;
   }
 
   @Override
@@ -55,6 +57,7 @@ public class KafkaDocumentDestination<T> implements DocumentDestination<T> {
 
   private void writeDocument(T doc) {
     getProducer().send(new ProducerRecord<>(topicName, doc));
+    if (flushAfterWrite) getProducer().flush();
   }
 
   private KafkaProducer<String, T> getProducer() {
@@ -72,12 +75,19 @@ public class KafkaDocumentDestination<T> implements DocumentDestination<T> {
     private KafkaProducerProvider kafkaProducerProvider;
     private Class<T> type;
     private String topicName;
+    private boolean flushAfterWrite;
 
     public KafkaDocumentDestination<T> build() {
-      return new KafkaDocumentDestination<>(kafkaProducerProvider, type, topicName);
+      return new KafkaDocumentDestination<>(kafkaProducerProvider, type, topicName, flushAfterWrite);
     }
 
     //setters
+
+
+    public Builder<T> setFlushAfterWrite(boolean flushAfterWrite) {
+      this.flushAfterWrite = flushAfterWrite;
+      return this;
+    }
 
     public Builder<T> setProducerProvider(KafkaProducerProvider kafkaProducerProvider) {
       this.kafkaProducerProvider = kafkaProducerProvider;

@@ -1,6 +1,6 @@
 package no.mnemonic.messaging.documentchannel.kafka;
 
-import no.mnemonic.commons.utilities.collections.ListUtils;
+import no.mnemonic.commons.utilities.collections.CollectionUtils;
 import no.mnemonic.messaging.documentchannel.DocumentChannelListener;
 import no.mnemonic.messaging.documentchannel.DocumentChannelSubscription;
 import no.mnemonic.messaging.documentchannel.DocumentSource;
@@ -8,6 +8,7 @@ import org.apache.kafka.clients.consumer.ConsumerRecord;
 import org.apache.kafka.clients.consumer.ConsumerRecords;
 import org.apache.kafka.clients.consumer.KafkaConsumer;
 
+import java.util.List;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
@@ -15,6 +16,8 @@ import java.util.concurrent.atomic.AtomicReference;
 
 import static no.mnemonic.commons.utilities.ObjectUtils.ifNotNullDo;
 import static no.mnemonic.commons.utilities.ObjectUtils.ifNull;
+import static no.mnemonic.commons.utilities.collections.ListUtils.addToList;
+import static no.mnemonic.commons.utilities.collections.ListUtils.list;
 import static no.mnemonic.commons.utilities.lambda.LambdaUtils.tryTo;
 
 /**
@@ -32,7 +35,7 @@ public class KafkaDocumentSource<T> implements DocumentSource<T> {
 
   private final KafkaConsumerProvider provider;
   private final Class<T> type;
-  private final String topicName;
+  private final List<String> topicName;
   private final boolean commitSync;
 
   private final AtomicReference<KafkaConsumer<String, T>> currentConsumer = new AtomicReference<>();
@@ -41,12 +44,12 @@ public class KafkaDocumentSource<T> implements DocumentSource<T> {
   private KafkaDocumentSource(
           KafkaConsumerProvider provider,
           Class<T> type,
-          String topicName,
+          List<String> topicName,
           boolean commitSync) {
     this.commitSync = commitSync;
     if (provider == null) throw new IllegalArgumentException("provider not set");
     if (type == null) throw new IllegalArgumentException("type not set");
-    if (topicName == null) throw new IllegalArgumentException("topicName not set");
+    if (CollectionUtils.isEmpty(topicName)) throw new IllegalArgumentException("topicName not set");
     this.provider = provider;
     this.type = type;
     this.topicName = topicName;
@@ -57,7 +60,7 @@ public class KafkaDocumentSource<T> implements DocumentSource<T> {
     if (listener == null) throw new IllegalArgumentException("listener not set");
     if (currentConsumer.get() != null) throw new IllegalStateException("Subscriber already created");
     KafkaConsumer<String, T> consumer = getConsumer();
-    consumer.subscribe(ListUtils.list(topicName));
+    consumer.subscribe(topicName);
     executorService.submit(new ConsumerWorker(consumer, listener));
     return this::close;
   }
@@ -118,7 +121,7 @@ public class KafkaDocumentSource<T> implements DocumentSource<T> {
     //fields
     private KafkaConsumerProvider kafkaConsumerProvider;
     private Class<T> type;
-    private String topicName;
+    private List<String> topicName;
     private boolean commitSync;
 
     public KafkaDocumentSource<T> build() {
@@ -143,8 +146,18 @@ public class KafkaDocumentSource<T> implements DocumentSource<T> {
       return this;
     }
 
-    public Builder<T> setTopicName(String topicName) {
+    public Builder<T> setTopicName(String... topicName) {
+      this.topicName = list(topicName);
+      return this;
+    }
+
+    public Builder<T> setTopicName(List<String> topicName) {
       this.topicName = topicName;
+      return this;
+    }
+
+    public Builder<T> addTopicName(String topicName) {
+      this.topicName = addToList(this.topicName, topicName);
       return this;
     }
   }

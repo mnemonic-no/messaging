@@ -1,5 +1,7 @@
 package no.mnemonic.messaging.documentchannel.kafka;
 
+import no.mnemonic.commons.logging.Logger;
+import no.mnemonic.commons.logging.Logging;
 import no.mnemonic.commons.utilities.collections.CollectionUtils;
 import no.mnemonic.messaging.documentchannel.DocumentChannelListener;
 import no.mnemonic.messaging.documentchannel.DocumentChannelSubscription;
@@ -32,6 +34,7 @@ import static no.mnemonic.commons.utilities.lambda.LambdaUtils.tryTo;
 public class KafkaDocumentSource<T> implements DocumentSource<T> {
 
   private static final int CONSUMER_POLL_TIMEOUT_MILLIS = 1000;
+  private static final Logger LOGGER = Logging.getLogger(KafkaDocumentSource.class);
 
   private final KafkaConsumerProvider provider;
   private final Class<T> type;
@@ -95,19 +98,25 @@ public class KafkaDocumentSource<T> implements DocumentSource<T> {
     public void run() {
       try {
         while (!executorService.isShutdown()) {
-          ConsumerRecords<String, T> records = consumer.poll(CONSUMER_POLL_TIMEOUT_MILLIS);
-          for (ConsumerRecord<String, T> record : records) {
-            listener.documentReceived(record.value());
-          }
-          //when all documents in batch is consumed, send commit to consumer
-          if (commitSync) {
-            consumer.commitSync();
-          } else {
-            consumer.commitAsync();
-          }
+         consumeBatch();
         }
+      } catch (Exception e){
+        LOGGER.error(e, "Error in ConsumeWorker");
       } finally {
         consumer.close();
+      }
+    }
+
+    private void consumeBatch() {
+      ConsumerRecords<String, T> records = consumer.poll(CONSUMER_POLL_TIMEOUT_MILLIS);
+      for (ConsumerRecord<String, T> record : records) {
+        listener.documentReceived(record.value());
+      }
+      //when all documents in batch is consumed, send commit to consumer
+      if (commitSync) {
+        consumer.commitSync();
+      } else {
+        consumer.commitAsync();
       }
     }
   }

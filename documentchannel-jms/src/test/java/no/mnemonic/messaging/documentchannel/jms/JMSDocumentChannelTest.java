@@ -1,6 +1,7 @@
 package no.mnemonic.messaging.documentchannel.jms;
 
 import no.mnemonic.commons.testtools.AvailablePortFinder;
+import no.mnemonic.messaging.documentchannel.DocumentBatch;
 import no.mnemonic.messaging.documentchannel.DocumentChannelListener;
 import org.apache.activemq.broker.BrokerService;
 import org.junit.After;
@@ -17,6 +18,7 @@ import java.util.Collection;
 import java.util.concurrent.Semaphore;
 import java.util.concurrent.TimeUnit;
 
+import static no.mnemonic.commons.utilities.collections.ListUtils.list;
 import static no.mnemonic.commons.utilities.lambda.LambdaUtils.tryTo;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertTrue;
@@ -54,8 +56,8 @@ public class JMSDocumentChannelTest {
   @Test
   public void subscriberQueue() throws InterruptedException {
     JMSDocumentDestination<String> senderChannel = setupDestination("dynamicQueues/myqueue", false);
-    JMSDocumentSource<String> receiverChannel1 = setupSource("dynamicQueues/myqueue", false);
-    JMSDocumentSource<String> receiverChannel2 = setupSource("dynamicQueues/myqueue", false);
+    JMSDocumentSource<String> receiverChannel1 = setupSource("dynamicQueues/myqueue", false, false);
+    JMSDocumentSource<String> receiverChannel2 = setupSource("dynamicQueues/myqueue", false, false);
     receiverChannel1.createDocumentSubscription(listener);
     receiverChannel2.createDocumentSubscription(listener);
 
@@ -65,10 +67,39 @@ public class JMSDocumentChannelTest {
   }
 
   @Test
+  public void receiveFromPoll() {
+    JMSDocumentDestination<String> senderChannel = setupDestination("dynamicQueues/myqueue", false);
+    JMSDocumentSource<String> receiverChannel1 = setupSource("dynamicQueues/myqueue", false, false);
+
+    senderChannel.getDocumentChannel().sendDocument("mydoc");
+    assertEquals(list("mydoc"), list(receiverChannel1.poll(1, TimeUnit.SECONDS).getDocuments()));
+  }
+
+  @Test
+  public void receiveFromPollWithoutAck() {
+    JMSDocumentDestination<String> senderChannel = setupDestination("dynamicQueues/myqueue", false);
+
+    JMSDocumentSource<String> receiverChannel1 = setupSource("dynamicQueues/myqueue", false, true);
+
+    senderChannel.getDocumentChannel().sendDocument("mydoc");
+    senderChannel.getDocumentChannel().sendDocument("mydoc2");
+
+    receiverChannel1.poll(1, TimeUnit.SECONDS);
+    receiverChannel1.close();
+
+    JMSDocumentSource<String> receiverChannel2 = setupSource("dynamicQueues/myqueue", false, true);
+    DocumentBatch<String> batch = receiverChannel2.poll(1, TimeUnit.SECONDS);
+    assertEquals(list("mydoc"), list(batch.getDocuments()));
+    batch.acknowledge();
+
+    assertEquals(list("mydoc2"), list(receiverChannel2.poll(1, TimeUnit.SECONDS).getDocuments()));
+  }
+
+  @Test
   public void subscriberTopic() throws InterruptedException {
     JMSDocumentDestination<String> senderChannel = setupDestination("dynamicTopics/mytopic", false);
-    JMSDocumentSource<String> receiverChannel1 = setupSource("dynamicTopics/mytopic", false);
-    JMSDocumentSource<String> receiverChannel2 = setupSource("dynamicTopics/mytopic", false);
+    JMSDocumentSource<String> receiverChannel1 = setupSource("dynamicTopics/mytopic", false, false);
+    JMSDocumentSource<String> receiverChannel2 = setupSource("dynamicTopics/mytopic", false, false);
     receiverChannel1.createDocumentSubscription(listener);
     receiverChannel2.createDocumentSubscription(listener);
 
@@ -80,7 +111,7 @@ public class JMSDocumentChannelTest {
   @Test
   public void subscriberStaysConnectedWithFailover() throws Exception {
     JMSDocumentDestination<String> senderChannel = setupDestination("dynamicQueues/myqueue", true);
-    JMSDocumentSource<String> receiverChannel = setupSource("dynamicQueues/myqueue", true);
+    JMSDocumentSource<String> receiverChannel = setupSource("dynamicQueues/myqueue", true, false);
     receiverChannel.createDocumentSubscription(listener);
 
     senderChannel.getDocumentChannel().sendDocument("mydoc1");
@@ -100,7 +131,7 @@ public class JMSDocumentChannelTest {
   @Test
   public void subscriberReconnectsWithoutFailover() throws Exception {
     JMSDocumentDestination<String> senderChannel = setupDestination("dynamicQueues/myqueue", false);
-    JMSDocumentSource<String> receiverChannel = setupSource("dynamicQueues/myqueue", false);
+    JMSDocumentSource<String> receiverChannel = setupSource("dynamicQueues/myqueue", false, false);
     receiverChannel.createDocumentSubscription(listener);
 
     senderChannel.getDocumentChannel().sendDocument("mydoc1");
@@ -121,7 +152,7 @@ public class JMSDocumentChannelTest {
 
   @Test
   public void senderProducerFailure() throws Exception {
-    JMSDocumentSource<String> receiverChannel = setupSource("dynamicQueues/myqueue", true);
+    JMSDocumentSource<String> receiverChannel = setupSource("dynamicQueues/myqueue", true, false);
     receiverChannel.createDocumentSubscription(listener);
 
     JMSDocumentDestination<String> senderChannel = setupDestination("dynamicQueues/myqueue", false);
@@ -159,7 +190,7 @@ public class JMSDocumentChannelTest {
     startBroker();
   }
 
-  private JMSSession createSession(String destination, boolean failover) {
+  private JMSSession createSession(String destination, boolean failover, boolean clientAck) {
     String contextURL = "tcp://localhost:" + port;
     if (failover) {
       contextURL = String.format("failover:(tcp://localhost:%d)?initialReconnectDelay=100&maxReconnectAttempts=2&timeout=100", port);
@@ -167,6 +198,7 @@ public class JMSDocumentChannelTest {
     try {
       return JMSSession.builder()
               .setContextURL(contextURL)
+              .setAcknowledgeMode(clientAck ? JMSSession.AcknowledgeMode.client : JMSSession.AcknowledgeMode.auto)
               .setDestination(destination)
               .build();
     } catch (NamingException | JMSException e) {
@@ -174,9 +206,9 @@ public class JMSDocumentChannelTest {
     }
   }
 
-  private JMSDocumentSource<String> setupSource(String destination, boolean failover) {
+  private JMSDocumentSource<String> setupSource(String destination, boolean failover, boolean clientAck) {
     JMSDocumentSource<String> channel = JMSDocumentSource.<String>builder()
-            .setSessionProvider(() -> createSession(destination, failover))
+            .setSessionProvider(() -> createSession(destination, failover, clientAck))
             .setType(String.class)
             .build();
     channels.add(channel);
@@ -185,7 +217,7 @@ public class JMSDocumentChannelTest {
 
   private JMSDocumentDestination<String> setupDestination(String destination, boolean failover) {
     JMSDocumentDestination<String> channel = JMSDocumentDestination.<String>builder()
-            .setSessionProvider(() -> createSession(destination, failover))
+            .setSessionProvider(() -> createSession(destination, failover, false))
             .setType(String.class)
             .build();
     channels.add(channel);

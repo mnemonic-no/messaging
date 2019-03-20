@@ -3,6 +3,7 @@ package no.mnemonic.messaging.documentchannel.kafka;
 import com.palantir.docker.compose.DockerComposeRule;
 import com.palantir.docker.compose.configuration.ProjectName;
 import com.palantir.docker.compose.connection.waiting.HealthChecks;
+import no.mnemonic.messaging.documentchannel.DocumentBatch;
 import no.mnemonic.messaging.documentchannel.DocumentChannelListener;
 import org.junit.After;
 import org.junit.Before;
@@ -21,7 +22,9 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 import static no.mnemonic.commons.utilities.ObjectUtils.ifNotNull;
+import static no.mnemonic.commons.utilities.collections.ListUtils.list;
 import static no.mnemonic.commons.utilities.lambda.LambdaUtils.tryTo;
+import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.*;
@@ -57,10 +60,49 @@ public class KafkaDocumentChannelTest {
   }
 
   @Test
+  public void pollWithAcknowledge() throws InterruptedException {
+    KafkaDocumentDestination<String> senderChannel = setupDestination();
+
+    KafkaDocumentSource<String> receiverChannel1 = setupSource("group", false);
+
+    senderChannel.getDocumentChannel().sendDocument("mydoc1");
+    senderChannel.getDocumentChannel().sendDocument("mydoc2");
+    senderChannel.getDocumentChannel().sendDocument("mydoc3");
+
+    DocumentBatch<String> batch = receiverChannel1.poll(10, TimeUnit.SECONDS);
+    assertEquals(list("mydoc1", "mydoc2"), list(batch.getDocuments()));
+    batch.acknowledge();
+
+    batch = receiverChannel1.poll(10, TimeUnit.SECONDS);
+    assertEquals(list("mydoc3"), list(batch.getDocuments()));
+    batch.acknowledge();
+  }
+
+  @Test
+  public void pollWithoutAcknowledgeResends() throws InterruptedException {
+    KafkaDocumentDestination<String> senderChannel = setupDestination();
+
+    KafkaDocumentSource<String> receiverChannel1 = setupSource("group", false);
+
+    senderChannel.getDocumentChannel().sendDocument("mydoc1");
+    senderChannel.getDocumentChannel().sendDocument("mydoc2");
+    senderChannel.getDocumentChannel().sendDocument("mydoc3");
+
+    DocumentBatch<String> batch = receiverChannel1.poll(10, TimeUnit.SECONDS);
+    assertEquals(list("mydoc1", "mydoc2"), list(batch.getDocuments()));
+    receiverChannel1.close();
+
+    KafkaDocumentSource<String> receiverChannel2 = setupSource("group", false);
+    batch = receiverChannel2.poll(10, TimeUnit.SECONDS);
+    assertEquals(list("mydoc1", "mydoc2"), list(batch.getDocuments()));
+
+  }
+
+  @Test
   public void singleConsumerGroup() throws InterruptedException {
     KafkaDocumentDestination<String> senderChannel = setupDestination();
-    KafkaDocumentSource<String> receiverChannel1 = setupSource("group");
-    KafkaDocumentSource<String> receiverChannel2 = setupSource("group");
+    KafkaDocumentSource<String> receiverChannel1 = setupSource("group", true);
+    KafkaDocumentSource<String> receiverChannel2 = setupSource("group", true);
     receiverChannel1.createDocumentSubscription(listener);
     receiverChannel2.createDocumentSubscription(listener);
 
@@ -76,8 +118,8 @@ public class KafkaDocumentChannelTest {
   @Test
   public void multipleConsumerGroup() throws InterruptedException {
     KafkaDocumentDestination<String> senderChannel = setupDestination();
-    KafkaDocumentSource<String> receiverChannel1 = setupSource("group1");
-    KafkaDocumentSource<String> receiverChannel2 = setupSource("group2");
+    KafkaDocumentSource<String> receiverChannel1 = setupSource("group1", true);
+    KafkaDocumentSource<String> receiverChannel2 = setupSource("group2", true);
     receiverChannel1.createDocumentSubscription(listener);
     receiverChannel2.createDocumentSubscription(listener);
 
@@ -102,9 +144,9 @@ public class KafkaDocumentChannelTest {
     return channel;
   }
 
-  private KafkaDocumentSource<String> setupSource(String group) {
+  private KafkaDocumentSource<String> setupSource(String group, boolean autoCommit) {
     KafkaDocumentSource<String> channel = KafkaDocumentSource.<String>builder()
-            .setConsumerProvider(createConsumerProvider(group))
+            .setConsumerProvider(createConsumerProvider(group, autoCommit))
             .setTopicName(topic)
             .setType(String.class)
             .build();
@@ -119,8 +161,10 @@ public class KafkaDocumentChannelTest {
             .build();
   }
 
-  private KafkaConsumerProvider createConsumerProvider(String group) {
+  private KafkaConsumerProvider createConsumerProvider(String group, boolean autoCommit) {
     return KafkaConsumerProvider.builder()
+            .setMaxPollRecords(2)
+            .setAutoCommit(autoCommit)
             .setKafkaHosts(kafkaHost())
             .setKafkaPort(kafkaPort())
             .setGroupID(group)

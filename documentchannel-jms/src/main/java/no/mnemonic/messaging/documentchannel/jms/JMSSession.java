@@ -31,16 +31,28 @@ public class JMSSession {
   private final AtomicReference<MessageProducer> producer = new AtomicReference<>();
   private final AtomicReference<MessageConsumer> consumer = new AtomicReference<>();
 
+  public enum AcknowledgeMode {
+    auto(Session.AUTO_ACKNOWLEDGE),
+    client(Session.CLIENT_ACKNOWLEDGE),
+    dupsOK(Session.DUPS_OK_ACKNOWLEDGE);
+
+    int mode;
+
+    AcknowledgeMode(int mode) {
+      this.mode = mode;
+    }
+  }
+
   private JMSSession(
           String contextURL,
           String username,
           String password,
-          String destination
-  ) throws JMSException, NamingException {
+          String destination,
+          AcknowledgeMode acknowledgeMode) throws JMSException, NamingException {
     this.initialContext = createInitialContext(contextURL);
     this.destination = lookupDestination(destination);
     this.connection = createConnection(username, password);
-    this.session = connection.createSession(false, Session.AUTO_ACKNOWLEDGE);
+    this.session = connection.createSession(false, acknowledgeMode.mode);
   }
 
   void close() {
@@ -155,12 +167,18 @@ public class JMSSession {
     private String username;
     private String password;
     private String destination;
+    private AcknowledgeMode acknowledgeMode = AcknowledgeMode.auto;
 
     public JMSSession build() throws NamingException, JMSException {
-      return new JMSSession(contextURL, username, password, destination);
+      return new JMSSession(contextURL, username, password, destination, acknowledgeMode);
     }
 
     //setters
+
+    public Builder setAcknowledgeMode(AcknowledgeMode acknowledgeMode) {
+      this.acknowledgeMode = acknowledgeMode;
+      return this;
+    }
 
     public Builder setContextURL(String contextURL) {
       this.contextURL = contextURL;

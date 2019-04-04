@@ -16,7 +16,7 @@ public class XStreamMessageSerializerTest {
   @Test(expected = IOException.class)
   public void testNonAllowedClassNotDeserialized() throws IOException {
     XStreamMessageSerializer serializer = XStreamMessageSerializer.builder()
-            .addAllowedPackage("org.acme.*")
+            .addAllowedClass("org.acme.*")
             .build();
     serializer.deserialize(serializer.serialize(new TestMessage("msg")), getClass().getClassLoader());
   }
@@ -24,7 +24,7 @@ public class XStreamMessageSerializerTest {
   @Test
   public void testDeserializationPermitsPrimitives() throws IOException {
     XStreamMessageSerializer serializer = XStreamMessageSerializer.builder()
-            .addAllowedPackage(TestMessage.class.getName())
+            .addAllowedClass(TestMessage.class.getName())
             .build();
     TestMessage msg = new TestMessage("msg");
     TestMessage msg2 = serializer.deserialize(serializer.serialize(msg), getClass().getClassLoader());

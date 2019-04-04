@@ -53,7 +53,7 @@ public class JMSRequestSinkProxyXStreamTest extends AbstractJMSRequestSinkProxyT
 
   private XStreamMessageSerializer createXstream() {
     return XStreamMessageSerializer.builder()
-            .addAllowedPackage("no.mnemonic.*")
+            .addAllowedClass("no.mnemonic.*")
             .setDriver(new BinaryStreamDriver())
             .build();
   }

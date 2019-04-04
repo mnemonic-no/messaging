@@ -33,13 +33,13 @@ public class XStreamMessageSerializer implements MessageSerializer {
   private final String serializerID;
 
   /**
-   * @param allowedPackageRegex list of allowed package regex
+   * @param allowedClassesRegex list of allowed classes regex
    * @param packageAliases      map of alias->package
    * @param serializerID        ID of this serializer
    */
   private XStreamMessageSerializer(HierarchicalStreamDriver driver,
                                    Collection<Class> allowedClasses,
-                                   Collection<String> allowedPackageRegex,
+                                   Collection<String> allowedClassesRegex,
                                    Map<String, Class> typeAliases,
                                    Map<String, String> packageAliases,
                                    Map<String, Class> decodingTypeAliases,
@@ -52,7 +52,7 @@ public class XStreamMessageSerializer implements MessageSerializer {
     decodingXstream.addPermission(NoTypePermission.NONE);
     decodingXstream.addPermission(PrimitiveTypePermission.PRIMITIVES);
     decodingXstream.addPermission(NullPermission.NULL);
-    decodingXstream.allowTypesByRegExp(list(allowedPackageRegex).toArray(new String[]{}));
+    decodingXstream.allowTypesByRegExp(list(allowedClassesRegex).toArray(new String[]{}));
     decodingXstream.allowTypes(list(allowedClasses).toArray(new Class[]{}));
     decodingXstream.ignoreUnknownElements();
 
@@ -104,7 +104,7 @@ public class XStreamMessageSerializer implements MessageSerializer {
   public static class Builder {
 
     private HierarchicalStreamDriver driver = new Xpp3Driver();
-    private Set<String> allowedPackageRegex = set();
+    private Set<String> allowedClassesRegex = set();
     private Set<Class> allowedClasses = set();
     private Map<String, String> packageAliases = map();
     private Map<String, Class> typeAliases = map();
@@ -119,7 +119,7 @@ public class XStreamMessageSerializer implements MessageSerializer {
 
     public XStreamMessageSerializer build() {
       return new XStreamMessageSerializer(driver,
-              allowedClasses, allowedPackageRegex,
+              allowedClasses, allowedClassesRegex,
               typeAliases, packageAliases,
               decodingTypeAliases, decodingPackageAliases,
               serializerID);
@@ -157,8 +157,8 @@ public class XStreamMessageSerializer implements MessageSerializer {
       return this;
     }
 
-    public Builder addAllowedPackage(String allowedPackage) {
-      this.allowedPackageRegex = addToSet(this.allowedPackageRegex, allowedPackage + ".*");
+    public Builder addAllowedClass(String allowedClassRegex) {
+      this.allowedClassesRegex = addToSet(this.allowedClassesRegex, allowedClassRegex);
       return this;
     }
 

@@ -8,7 +8,7 @@ import java.io.IOException;
 public class JMSRequestSinkXStreamTest extends AbstractJMSRequestSinkTest {
 
   private MessageSerializer serializer = XStreamMessageSerializer.builder()
-          .addAllowedPackage("no.mnemonic.*")
+          .addAllowedClass("no.mnemonic.*")
           .build();
 
   @Override

@@ -105,7 +105,7 @@ public class KafkaConsumerProvider {
     private String groupID;
 
     private OffsetResetStrategy offsetResetStrategy = OffsetResetStrategy.earliest;
-    private boolean autoCommit = true;
+    private boolean autoCommit = false;
     private int heartbeatIntervalMs = DEFAULT_HEARTBEAT_INTERVAL_MILLIS;
     private int requestTimeoutMs = DEFAULT_REQUEST_TIMEOUT_MILLIS;
     private int sessionTimeoutMs = DEFAULT_SESSION_TIMEOUT_MILLIS;

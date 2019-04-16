@@ -17,5 +17,6 @@ services:
       KAFKA_INTER_BROKER_LISTENER_NAME: INSIDE
       KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: INSIDE:PLAINTEXT,OUTSIDE:PLAINTEXT
       KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+      KAFKA_CREATE_TOPICS: "singleConsumerGroupTest:1:1 retryOnErrorTest:1:1 multipleConsumerGroupTest:1:1 retryWithMultipleConsumersTest:4:1"
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock

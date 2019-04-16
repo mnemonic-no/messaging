@@ -202,7 +202,7 @@ public class RequestHandlerTest {
   @Test
   public void testWaitForEndOfStreamTimeout() throws InterruptedException, ExecutionException, TimeoutException {
     RequestHandler handler = new RequestHandler(false, "callid", 100);
-    Future<Boolean> msg = executor.submit(() -> handler.waitForEndOfStream(100));
+    Future<Boolean> msg = executor.submit(() -> handler.waitForEndOfStream(150));
     assertFalse(msg.isDone());
     assertTrue(msg.get(1000, TimeUnit.MILLISECONDS));
   }
@@ -211,7 +211,7 @@ public class RequestHandlerTest {
   public void testWaitForEndOfStreamKeepAliveNotEnabled() throws InterruptedException, ExecutionException, TimeoutException {
     RequestHandler handler = new RequestHandler(false, "callid", 500);
     //wait for end of stream, wait at most 100ms before closing
-    Future<Boolean> msg = executor.submit(() -> handler.waitForEndOfStream(500));
+    Future<Boolean> msg = executor.submit(() -> handler.waitForEndOfStream(600));
     assertFalse(msg.isDone());
     //send a keepalive to handler, which should be ignored (allowKeepAlive is false)
     assertFalse(handler.keepAlive(System.currentTimeMillis() + 1000));

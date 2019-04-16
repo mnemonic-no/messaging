@@ -18,6 +18,7 @@ import java.util.Collection;
 import java.util.UUID;
 import java.util.concurrent.Semaphore;
 import java.util.concurrent.TimeUnit;
+import java.util.function.Consumer;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -43,6 +44,8 @@ public class KafkaDocumentChannelTest {
 
   @Mock
   private DocumentChannelListener<String> listener;
+  @Mock
+  private Consumer<Exception> errorListener;
   private Collection<AutoCloseable> channels = new ArrayList<>();
   private String topic = UUID.randomUUID().toString();
 
@@ -63,7 +66,7 @@ public class KafkaDocumentChannelTest {
   public void pollWithAcknowledge() throws InterruptedException {
     KafkaDocumentDestination<String> senderChannel = setupDestination();
 
-    KafkaDocumentSource<String> receiverChannel1 = setupSource("group", false);
+    KafkaDocumentSource<String> receiverChannel1 = setupSource("group");
 
     senderChannel.getDocumentChannel().sendDocument("mydoc1");
     senderChannel.getDocumentChannel().sendDocument("mydoc2");
@@ -82,7 +85,7 @@ public class KafkaDocumentChannelTest {
   public void pollWithoutAcknowledgeResends() throws InterruptedException {
     KafkaDocumentDestination<String> senderChannel = setupDestination();
 
-    KafkaDocumentSource<String> receiverChannel1 = setupSource("group", false);
+    KafkaDocumentSource<String> receiverChannel1 = setupSource("group");
 
     senderChannel.getDocumentChannel().sendDocument("mydoc1");
     senderChannel.getDocumentChannel().sendDocument("mydoc2");
@@ -92,7 +95,7 @@ public class KafkaDocumentChannelTest {
     assertEquals(list("mydoc1", "mydoc2"), list(batch.getDocuments()));
     receiverChannel1.close();
 
-    KafkaDocumentSource<String> receiverChannel2 = setupSource("group", false);
+    KafkaDocumentSource<String> receiverChannel2 = setupSource("group");
     batch = receiverChannel2.poll(10, TimeUnit.SECONDS);
     assertEquals(list("mydoc1", "mydoc2"), list(batch.getDocuments()));
 
@@ -100,9 +103,10 @@ public class KafkaDocumentChannelTest {
 
   @Test
   public void singleConsumerGroup() throws InterruptedException {
+    topic="singleConsumerGroupTest";
     KafkaDocumentDestination<String> senderChannel = setupDestination();
-    KafkaDocumentSource<String> receiverChannel1 = setupSource("group", true);
-    KafkaDocumentSource<String> receiverChannel2 = setupSource("group", true);
+    KafkaDocumentSource<String> receiverChannel1 = setupSource("group");
+    KafkaDocumentSource<String> receiverChannel2 = setupSource("group");
     receiverChannel1.createDocumentSubscription(listener);
     receiverChannel2.createDocumentSubscription(listener);
 
@@ -116,10 +120,56 @@ public class KafkaDocumentChannelTest {
   }
 
   @Test
-  public void multipleConsumerGroup() throws InterruptedException {
+  public void retryOnError() throws InterruptedException {
+    topic="retryOnErrorTest";
+    doThrow(new RuntimeException())
+            .doAnswer(i -> {
+              semaphore.release();
+              return null;
+            })
+            .when(listener).documentReceived(any());
+
     KafkaDocumentDestination<String> senderChannel = setupDestination();
-    KafkaDocumentSource<String> receiverChannel1 = setupSource("group1", true);
-    KafkaDocumentSource<String> receiverChannel2 = setupSource("group2", true);
+    KafkaDocumentSource<String> receiverChannel = setupSource("group");
+    receiverChannel.createDocumentSubscription(listener);
+
+    senderChannel.getDocumentChannel().sendDocument("mydoc1");
+    assertTrue(semaphore.tryAcquire(1, 20, TimeUnit.SECONDS));
+    verify(listener, times(2)).documentReceived("mydoc1");
+    verify(errorListener).accept(isA(RuntimeException.class));
+  }
+
+  @Test
+  public void retryWithMultipleConsumers() throws InterruptedException {
+    topic = "retryWithMultipleConsumersTest";
+
+    doThrow(new RuntimeException())
+            .doAnswer(i -> {
+              semaphore.release();
+              return null;
+            })
+            .when(listener).documentReceived(any());
+
+    KafkaDocumentDestination<String> senderChannel = setupDestination();
+    KafkaDocumentSource<String> receiverChannel1 = setupSource("group");
+    KafkaDocumentSource<String> receiverChannel2 = setupSource("group");
+    receiverChannel1.createDocumentSubscription(listener);
+    receiverChannel2.createDocumentSubscription(listener);
+
+    for (int i = 0; i< 1000; i++) {
+      senderChannel.getDocumentChannel().sendDocument("mydoc1");
+    }
+    assertTrue(semaphore.tryAcquire(1000, 20, TimeUnit.SECONDS));
+    verify(listener, times(1001)).documentReceived("mydoc1");
+    verify(errorListener).accept(isA(RuntimeException.class));
+  }
+
+  @Test
+  public void multipleConsumerGroup() throws InterruptedException {
+    topic = "multipleConsumerGroupTest";
+    KafkaDocumentDestination<String> senderChannel = setupDestination();
+    KafkaDocumentSource<String> receiverChannel1 = setupSource("group1");
+    KafkaDocumentSource<String> receiverChannel2 = setupSource("group2");
     receiverChannel1.createDocumentSubscription(listener);
     receiverChannel2.createDocumentSubscription(listener);
 
@@ -144,9 +194,10 @@ public class KafkaDocumentChannelTest {
     return channel;
   }
 
-  private KafkaDocumentSource<String> setupSource(String group, boolean autoCommit) {
+  private KafkaDocumentSource<String> setupSource(String group) {
     KafkaDocumentSource<String> channel = KafkaDocumentSource.<String>builder()
-            .setConsumerProvider(createConsumerProvider(group, autoCommit))
+            .setConsumerProvider(createConsumerProvider(group))
+            .addErrorListener(errorListener)
             .setTopicName(topic)
             .setType(String.class)
             .build();
@@ -161,12 +212,15 @@ public class KafkaDocumentChannelTest {
             .build();
   }
 
-  private KafkaConsumerProvider createConsumerProvider(String group, boolean autoCommit) {
+  private KafkaConsumerProvider createConsumerProvider(String group) {
     return KafkaConsumerProvider.builder()
             .setMaxPollRecords(2)
-            .setAutoCommit(autoCommit)
             .setKafkaHosts(kafkaHost())
             .setKafkaPort(kafkaPort())
+            .setAutoCommit(false)
+            .setHeartbeatIntervalMs(1000)
+            .setRequestTimeoutMs(11000)
+            .setSessionTimeoutMs(10000)
             .setGroupID(group)
             .build();
   }

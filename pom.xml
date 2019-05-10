@@ -43,29 +43,29 @@
     <mnemonic.commons.version>0.2.19</mnemonic.commons.version>
 
     <!-- external dependencies -->
-    <activemq.version>5.15.8</activemq.version>
+    <activemq.version>5.15.9</activemq.version>
     <kafka.clients.version>0.10.2.2</kafka.clients.version>
     <jms.version>2.0.1</jms.version>
     <junit.version>4.12</junit.version>
-    <mockito.version>2.25.0</mockito.version>
+    <mockito.version>2.27.0</mockito.version>
     <xstream.version>1.4.11.1</xstream.version>
     <docker.compose.junit.version>0.35.0</docker.compose.junit.version>
 
     <!-- build dependencies -->
     <maven.clean.version>3.1.0</maven.clean.version>
-    <maven.compile.version>3.8.0</maven.compile.version>
+    <maven.compiler.version>3.8.1</maven.compiler.version>
     <maven.deploy.version>2.8.2</maven.deploy.version>
+    <maven.enforcer.version>1.4.1</maven.enforcer.version>
     <maven.gpg.version>1.6</maven.gpg.version>
     <maven.install.version>2.5.2</maven.install.version>
     <maven.jar.version>3.1.1</maven.jar.version>
-    <maven.javadoc.version>3.0.1</maven.javadoc.version>
-    <maven.license.version>1.18</maven.license.version>
+    <maven.javadoc.version>3.1.0</maven.javadoc.version>
+    <maven.license.version>1.20</maven.license.version>
     <maven.nexus.staging.version>1.6.8</maven.nexus.staging.version>
     <maven.release.version>2.5.3</maven.release.version>
     <maven.resources.version>3.1.0</maven.resources.version>
     <maven.source.version>3.0.1</maven.source.version>
-    <maven.surefire.version>2.22.1</maven.surefire.version>
-    <maven.dependencyCheck.version>4.0.2</maven.dependencyCheck.version>
+    <maven.surefire.version>2.22.2</maven.surefire.version>
   </properties>
 
   <modules>
@@ -99,9 +99,28 @@
     </resources>
     <plugins>
       <plugin>
+        <artifactId>maven-enforcer-plugin</artifactId>
+        <version>${maven.enforcer.version}</version>
+        <executions>
+          <execution>
+            <id>enforce-maven</id>
+            <goals>
+              <goal>enforce</goal>
+            </goals>
+            <configuration>
+              <rules>
+                <requireMavenVersion>
+                  <version>3.0.5</version>
+                </requireMavenVersion>
+              </rules>
+            </configuration>
+          </execution>
+        </executions>
+      </plugin>
+      <plugin>
         <groupId>org.apache.maven.plugins</groupId>
         <artifactId>maven-compiler-plugin</artifactId>
-        <version>${maven.compile.version}</version>
+        <version>${maven.compiler.version}</version>
         <configuration>
           <source>1.8</source>
           <target>1.8</target>
@@ -132,7 +151,6 @@
         <configuration>
           <autoVersionSubmodules>true</autoVersionSubmodules>
           <resume>false</resume>
-          <!-- Don't interact with the remote repository, use release.sh instead. -->
           <pushChanges>false</pushChanges>
           <localCheckout>true</localCheckout>
         </configuration>
@@ -161,11 +179,6 @@
         <groupId>org.apache.maven.plugins</groupId>
         <artifactId>maven-javadoc-plugin</artifactId>
         <version>${maven.javadoc.version}</version>
-        <configuration>
-          <show>protected</show>
-          <aggregate>true</aggregate>
-          <failOnError>false</failOnError>
-        </configuration>
         <executions>
           <execution>
             <id>attach-javadocs</id>
@@ -217,27 +230,6 @@
             <licenseMerge>Eclipse|Eclipse Public License 1.0|Eclipse Public License - Version 1.0</licenseMerge>
             <licenseMerge>MIT|The MIT License</licenseMerge>
           </licenseMerges>
-        </configuration>
-      </plugin>
-      <plugin>
-        <groupId>org.owasp</groupId>
-        <artifactId>dependency-check-maven</artifactId>
-        <version>${maven.dependencyCheck.version}</version>
-        <executions>
-          <execution>
-            <id>check-vulnerabilities</id>
-            <goals>
-              <goal>aggregate</goal>
-            </goals>
-          </execution>
-        </executions>
-        <configuration>
-          <!-- The assembly analyzer is triggered but fails on Linux because it requires mono. Deactivate it because this is Java and not .NET. -->
-          <assemblyAnalyzerEnabled>false</assemblyAnalyzerEnabled>
-          <failBuildOnAnyVulnerability>${failBuildOnAnyVulnerability}</failBuildOnAnyVulnerability>
-          <suppressionFiles>
-            <suppressionFile>vulnerability-suppression.xml</suppressionFile>
-          </suppressionFiles>
         </configuration>
       </plugin>
     </plugins>

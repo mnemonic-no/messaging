@@ -43,7 +43,7 @@
     <jdk.version>1.8</jdk.version>
 
     <!-- mnemonic dependencies -->
-    <mnemonic.commons.version>0.2.19</mnemonic.commons.version>
+    <mnemonic.commons.version>0.2.21</mnemonic.commons.version>
 
     <!-- external dependencies -->
     <activemq.version>5.15.9</activemq.version>

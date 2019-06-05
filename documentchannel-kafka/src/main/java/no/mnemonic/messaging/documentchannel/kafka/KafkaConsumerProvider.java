@@ -6,6 +6,7 @@ import org.apache.kafka.common.serialization.Deserializer;
 import org.apache.kafka.common.serialization.StringDeserializer;
 
 import java.util.*;
+import java.util.concurrent.TimeUnit;
 import java.util.stream.Collectors;
 
 import static org.apache.kafka.clients.consumer.ConsumerConfig.*;
@@ -19,6 +20,7 @@ public class KafkaConsumerProvider {
   private static final int DEFAULT_SESSION_TIMEOUT_MILLIS = 15000; // Need > consumer poll timeout, to avoid exception of time between subsequent calls to poll() was longer than the configured session.timeout.ms
   private static final int DEFAULT_HEARTBEAT_INTERVAL_MILLIS = 3000;
   private static final int DEFAULT_MAX_POLL_RECORDS = 500;
+  private static final int DEFAULT_MAX_POLL_INTERVAL_MILLIS = (int) TimeUnit.MINUTES.toMillis(5L);
 
   public enum OffsetResetStrategy {
     latest, earliest, none;
@@ -33,6 +35,7 @@ public class KafkaConsumerProvider {
   private final int requestTimeoutMs;
   private final int sessionTimeoutMs;
   private final int maxPollRecords;
+  private final int maxPollIntervalMs;
 
   private KafkaConsumerProvider(
           String kafkaHosts,
@@ -43,7 +46,8 @@ public class KafkaConsumerProvider {
           int heartbeatIntervalMs,
           int requestTimeoutMs,
           int sessionTimeoutMs,
-          int maxPollRecords
+          int maxPollRecords,
+          int maxPollIntervalMs
   ) {
     this.kafkaHosts = kafkaHosts;
     this.kafkaPort = kafkaPort;
@@ -54,6 +58,7 @@ public class KafkaConsumerProvider {
     this.requestTimeoutMs = requestTimeoutMs;
     this.sessionTimeoutMs = sessionTimeoutMs;
     this.maxPollRecords = maxPollRecords;
+    this.maxPollIntervalMs = maxPollIntervalMs;
   }
 
   public <T> KafkaConsumer<String, T> createConsumer(Class<T> type) {
@@ -85,6 +90,7 @@ public class KafkaConsumerProvider {
     properties.put(REQUEST_TIMEOUT_MS_CONFIG, requestTimeoutMs);
     properties.put(SESSION_TIMEOUT_MS_CONFIG, sessionTimeoutMs);
     properties.put(MAX_POLL_RECORDS_CONFIG, maxPollRecords);
+    properties.put(MAX_POLL_INTERVAL_MS_CONFIG, maxPollIntervalMs);
     properties.put(HEARTBEAT_INTERVAL_MS_CONFIG, heartbeatIntervalMs);
     return properties;
   }
@@ -110,10 +116,11 @@ public class KafkaConsumerProvider {
     private int requestTimeoutMs = DEFAULT_REQUEST_TIMEOUT_MILLIS;
     private int sessionTimeoutMs = DEFAULT_SESSION_TIMEOUT_MILLIS;
     private int maxPollRecords = DEFAULT_MAX_POLL_RECORDS;
+    private int maxPollIntervalMs = DEFAULT_MAX_POLL_INTERVAL_MILLIS;
 
 
     public KafkaConsumerProvider build() {
-      return new KafkaConsumerProvider(kafkaHosts, kafkaPort, groupID, offsetResetStrategy, autoCommit, heartbeatIntervalMs, requestTimeoutMs, sessionTimeoutMs, maxPollRecords);
+      return new KafkaConsumerProvider(kafkaHosts, kafkaPort, groupID, offsetResetStrategy, autoCommit, heartbeatIntervalMs, requestTimeoutMs, sessionTimeoutMs, maxPollRecords, maxPollIntervalMs);
     }
 
     public Builder setKafkaHosts(String kafkaHosts) {
@@ -158,6 +165,11 @@ public class KafkaConsumerProvider {
 
     public Builder setMaxPollRecords(int maxPollRecords) {
       this.maxPollRecords = maxPollRecords;
+      return this;
+    }
+
+    public Builder setMaxPollIntervalMs(int maxPollIntervalMs) {
+      this.maxPollIntervalMs = maxPollIntervalMs;
       return this;
     }
   }

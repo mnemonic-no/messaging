@@ -5,6 +5,7 @@ import com.palantir.docker.compose.configuration.ProjectName;
 import com.palantir.docker.compose.connection.waiting.HealthChecks;
 import no.mnemonic.messaging.documentchannel.DocumentBatch;
 import no.mnemonic.messaging.documentchannel.DocumentChannelListener;
+import org.apache.kafka.clients.consumer.CommitFailedException;
 import org.junit.After;
 import org.junit.Before;
 import org.junit.ClassRule;
@@ -35,10 +36,10 @@ public class KafkaDocumentChannelTest {
 
   @ClassRule
   public static DockerComposeRule docker = DockerComposeRule.builder()
-          .file("src/test/resources/docker-compose-kafka.yml")
-          .projectName(ProjectName.fromString(UUID.randomUUID().toString().replace("-", "")))
-          .waitingForService("kafka", HealthChecks.toHaveAllPortsOpen())
-          .build();
+      .file("src/test/resources/docker-compose-kafka.yml")
+      .projectName(ProjectName.fromString(UUID.randomUUID().toString().replace("-", "")))
+      .waitingForService("kafka", HealthChecks.toHaveAllPortsOpen())
+      .build();
 
   private Semaphore semaphore = new Semaphore(0);
 
@@ -63,7 +64,7 @@ public class KafkaDocumentChannelTest {
   }
 
   @Test
-  public void pollWithAcknowledge() throws InterruptedException {
+  public void pollWithAcknowledge() {
     KafkaDocumentDestination<String> senderChannel = setupDestination();
 
     KafkaDocumentSource<String> receiverChannel1 = setupSource("group");
@@ -82,7 +83,7 @@ public class KafkaDocumentChannelTest {
   }
 
   @Test
-  public void pollWithoutAcknowledgeResends() throws InterruptedException {
+  public void pollWithoutAcknowledgeResends() {
     KafkaDocumentDestination<String> senderChannel = setupDestination();
 
     KafkaDocumentSource<String> receiverChannel1 = setupSource("group");
@@ -122,39 +123,95 @@ public class KafkaDocumentChannelTest {
   @Test
   public void retryOnError() throws InterruptedException {
     topic="retryOnErrorTest";
-    doThrow(new RuntimeException())
-            .doAnswer(i -> {
-              semaphore.release();
-              return null;
-            })
-            .when(listener).documentReceived(any());
+    doAnswer(i -> {
+      semaphore.release();
+      return null;
+    })
+        .doThrow(new RuntimeException())  // Failed on second message
+        .doAnswer(i -> {
+          semaphore.release();
+          return null;
+        })
+        .when(listener).documentReceived(any());
 
     KafkaDocumentDestination<String> senderChannel = setupDestination();
     KafkaDocumentSource<String> receiverChannel = setupSource("group");
     receiverChannel.createDocumentSubscription(listener);
 
     senderChannel.getDocumentChannel().sendDocument("mydoc1");
-    assertTrue(semaphore.tryAcquire(1, 20, TimeUnit.SECONDS));
-    verify(listener, times(2)).documentReceived("mydoc1");
+    // make sure the first message has been received, so that there is offset committed
+    assertTrue(semaphore.tryAcquire(1, 10, TimeUnit.SECONDS));
+
+    senderChannel.getDocumentChannel().sendDocument("mydoc2");
+    // check second message has been received
+    assertTrue(semaphore.tryAcquire(1, 10, TimeUnit.SECONDS));
+
+    verify(listener, times(1)).documentReceived("mydoc1");
+    verify(listener, times(2)).documentReceived("mydoc2");
     verify(errorListener).accept(isA(RuntimeException.class));
+  }
+
+  @Test
+  public void retryOnKafkaRebalanced() throws InterruptedException {
+    topic="retryOnKafkaRebalancedTest";
+    doAnswer(i -> {
+      // Let first message succeed, so there is offset committed
+      semaphore.release();
+      return null;
+    })
+        .doAnswer(i -> {
+          // Demonstrate processing took longer than max.poll.interval.ms that would trigger rebalance of kafka consumer
+          TimeUnit.SECONDS.sleep(3L);
+          return null;
+        })
+        .doAnswer(i -> {
+          semaphore.release();
+          return null;
+        })
+        .when(listener).documentReceived(any());
+
+    KafkaDocumentDestination<String> senderChannel = setupDestination();
+    KafkaDocumentSource<String> receiverChannel = setupSource("group");
+    receiverChannel.createDocumentSubscription(listener);
+
+    senderChannel.getDocumentChannel().sendDocument("mydoc1");
+    // make sure the first message has been received, so that there is offset committed
+    assertTrue(semaphore.tryAcquire(1, 20, TimeUnit.SECONDS));
+
+    senderChannel.getDocumentChannel().sendDocument("mydoc2");
+    // check second message has been received
+    assertTrue(semaphore.tryAcquire(1, 20, TimeUnit.SECONDS));
+
+    verify(listener, times(1)).documentReceived("mydoc1");
+    verify(listener, times(2)).documentReceived("mydoc2");
+    verify(errorListener).accept(isA(CommitFailedException.class));
   }
 
   @Test
   public void retryWithMultipleConsumers() throws InterruptedException {
     topic = "retryWithMultipleConsumersTest";
 
-    doThrow(new RuntimeException())
-            .doAnswer(i -> {
-              semaphore.release();
-              return null;
-            })
-            .when(listener).documentReceived(any());
+    doAnswer(i -> {
+      // Accepts initial message
+      semaphore.release();
+      return null;
+    })
+        .doThrow(new RuntimeException())
+        .doAnswer(i -> {
+          semaphore.release();
+          return null;
+        })
+        .when(listener).documentReceived(any());
 
     KafkaDocumentDestination<String> senderChannel = setupDestination();
     KafkaDocumentSource<String> receiverChannel1 = setupSource("group");
     KafkaDocumentSource<String> receiverChannel2 = setupSource("group");
     receiverChannel1.createDocumentSubscription(listener);
     receiverChannel2.createDocumentSubscription(listener);
+
+    senderChannel.getDocumentChannel().sendDocument("initialDoc");
+    // wait for initial message consumed and trigger commit to kafka
+    assertTrue(semaphore.tryAcquire(1, 20, TimeUnit.SECONDS));
 
     for (int i = 0; i< 1000; i++) {
       senderChannel.getDocumentChannel().sendDocument("mydoc1");
@@ -186,43 +243,46 @@ public class KafkaDocumentChannelTest {
   //private
   private KafkaDocumentDestination<String> setupDestination() {
     KafkaDocumentDestination<String> channel = KafkaDocumentDestination.<String>builder()
-            .setProducerProvider(createProducerProvider())
-            .setTopicName(topic)
-            .setType(String.class)
-            .build();
+        .setProducerProvider(createProducerProvider())
+        .setTopicName(topic)
+        .setType(String.class)
+        .build();
     channels.add(channel);
     return channel;
   }
 
   private KafkaDocumentSource<String> setupSource(String group) {
+    // noinspection unchecked
     KafkaDocumentSource<String> channel = KafkaDocumentSource.<String>builder()
-            .setConsumerProvider(createConsumerProvider(group))
-            .addErrorListener(errorListener)
-            .setTopicName(topic)
-            .setType(String.class)
-            .build();
+        .setConsumerProvider(createConsumerProvider(group))
+        .addErrorListener(errorListener)
+        .setTopicName(topic)
+        .setType(String.class)
+        .setCommitSync(true)
+        .build();
     channels.add(channel);
     return channel;
   }
 
   private KafkaProducerProvider createProducerProvider() {
     return KafkaProducerProvider.builder()
-            .setKafkaHosts(kafkaHost())
-            .setKafkaPort(kafkaPort())
-            .build();
+        .setKafkaHosts(kafkaHost())
+        .setKafkaPort(kafkaPort())
+        .build();
   }
 
   private KafkaConsumerProvider createConsumerProvider(String group) {
     return KafkaConsumerProvider.builder()
-            .setMaxPollRecords(2)
-            .setKafkaHosts(kafkaHost())
-            .setKafkaPort(kafkaPort())
-            .setAutoCommit(false)
-            .setHeartbeatIntervalMs(1000)
-            .setRequestTimeoutMs(11000)
-            .setSessionTimeoutMs(10000)
-            .setGroupID(group)
-            .build();
+        .setMaxPollRecords(2)
+        .setKafkaHosts(kafkaHost())
+        .setKafkaPort(kafkaPort())
+        .setAutoCommit(false)
+        .setHeartbeatIntervalMs(1000)
+        .setRequestTimeoutMs(11000)
+        .setSessionTimeoutMs(10000)
+        .setMaxPollIntervalMs(2000)
+        .setGroupID(group)
+        .build();
   }
 
   private String kafkaHost() {
@@ -231,9 +291,9 @@ public class KafkaDocumentChannelTest {
 
   private int kafkaPort() {
     return docker.containers()
-            .container("kafka")
-            .port(9094)
-            .getExternalPort();
+        .container("kafka")
+        .port(9094)
+        .getExternalPort();
   }
 
   private String extractHost(String dockerHost) {

@@ -26,6 +26,11 @@
       <version>${mnemonic.commons.version}</version>
     </dependency>
     <dependency>
+      <groupId>no.mnemonic.commons</groupId>
+      <artifactId>metrics</artifactId>
+      <version>${mnemonic.commons.version}</version>
+    </dependency>
+    <dependency>
       <groupId>org.apache.kafka</groupId>
       <artifactId>kafka-clients</artifactId>
       <version>${kafka.clients.version}</version>

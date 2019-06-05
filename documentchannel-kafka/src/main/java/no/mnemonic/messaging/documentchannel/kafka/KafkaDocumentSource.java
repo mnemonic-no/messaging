@@ -2,15 +2,18 @@ package no.mnemonic.messaging.documentchannel.kafka;
 
 import no.mnemonic.commons.logging.Logger;
 import no.mnemonic.commons.logging.Logging;
+import no.mnemonic.commons.metrics.MetricAspect;
+import no.mnemonic.commons.metrics.MetricException;
+import no.mnemonic.commons.metrics.Metrics;
+import no.mnemonic.commons.metrics.MetricsData;
 import no.mnemonic.commons.utilities.collections.CollectionUtils;
 import no.mnemonic.commons.utilities.collections.ListUtils;
 import no.mnemonic.messaging.documentchannel.DocumentBatch;
 import no.mnemonic.messaging.documentchannel.DocumentChannelListener;
 import no.mnemonic.messaging.documentchannel.DocumentChannelSubscription;
 import no.mnemonic.messaging.documentchannel.DocumentSource;
-import org.apache.kafka.clients.consumer.ConsumerRecord;
-import org.apache.kafka.clients.consumer.ConsumerRecords;
-import org.apache.kafka.clients.consumer.KafkaConsumer;
+import org.apache.kafka.clients.consumer.*;
+import org.apache.kafka.common.TopicPartition;
 
 import java.util.Collection;
 import java.util.List;
@@ -20,6 +23,7 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.concurrent.atomic.LongAdder;
 import java.util.function.Consumer;
 
 import static no.mnemonic.commons.utilities.ObjectUtils.ifNotNullDo;
@@ -39,7 +43,7 @@ import static no.mnemonic.commons.utilities.lambda.LambdaUtils.tryTo;
  *
  * @param <T> document type
  */
-public class KafkaDocumentSource<T> implements DocumentSource<T> {
+public class KafkaDocumentSource<T> implements DocumentSource<T>, MetricAspect {
 
   private static final int CONSUMER_POLL_TIMEOUT_MILLIS = 1000;
   private static final Logger LOGGER = Logging.getLogger(KafkaDocumentSource.class);
@@ -54,6 +58,10 @@ public class KafkaDocumentSource<T> implements DocumentSource<T> {
   private final ExecutorService executorService = Executors.newSingleThreadExecutor();
   private final Set<Consumer<Exception>> errorListeners;
 
+  private final AtomicBoolean consumerRunning = new AtomicBoolean();
+  private final LongAdder consumerRetryProcessError = new LongAdder();
+  private final LongAdder consumerRetryKafkaError = new LongAdder();
+
   private KafkaDocumentSource(
           KafkaConsumerProvider provider,
           Class<T> type,
@@ -67,6 +75,14 @@ public class KafkaDocumentSource<T> implements DocumentSource<T> {
     this.provider = provider;
     this.type = type;
     this.topicName = topicName;
+  }
+
+  @Override
+  public Metrics getMetrics() throws MetricException {
+    return new MetricsData()
+        .addData("kafka.consumer.alive", consumerRunning.get() ? 1 : 0)
+        .addData("kafka.consumer.processing.error.retry", consumerRetryProcessError.longValue())
+        .addData("kafka.consumer.kafka.error.retry", consumerRetryKafkaError.longValue());
   }
 
   @Override
@@ -145,32 +161,49 @@ public class KafkaDocumentSource<T> implements DocumentSource<T> {
     @Override
     public void run() {
       try {
+        consumerRunning.set(true);
         while (!executorService.isShutdown()) {
-          consumeBatchNoError();
+          consumeBatchWithResubscribeWhenFail();
         }
+      } catch (Exception e) {
+        LOGGER.error(e, "Kafka ConsumerWorker failed unrecoverable, stopping ConsumerWorker thread");
       } finally {
+        LOGGER.info("Close Kafka Consumer");
+        consumerRunning.set(false);
         consumer.close();
       }
     }
 
-    private void consumeBatchNoError() {
+    private void consumeBatchWithResubscribeWhenFail() {
       try {
         consumeBatch();
       } catch (Exception e) {
-        LOGGER.error(e, "Error in ConsumeWorker");
+        // Error from Kafka clients polling or committing offsets
+        LOGGER.error(e, "Kafka ConsumerWorker fail, " +
+            "reset consumer offsets and resubscribing to the topics: " + String.join(",", topicName));
+        consumerRetryKafkaError.increment();
         errorListeners.forEach(l -> l.accept(e));
-        //after error in batch, unsubscribe and resubscribe to topic to trigger rebalancing
+        resetOffsets();
         consumer.unsubscribe();
-        consumer.subscribe(set(topicName));
+        consumer.subscribe(topicName);
       }
     }
 
     private void consumeBatch() {
       ConsumerRecords<String, T> records = consumer.poll(CONSUMER_POLL_TIMEOUT_MILLIS);
       boolean consumed = false;
-      for (ConsumerRecord<String, T> record : records) {
-        listener.documentReceived(record.value());
-        consumed = true;
+      try {
+        for (ConsumerRecord<String, T> record : records) {
+          listener.documentReceived(record.value());
+          consumed = true;
+        }
+      } catch (Exception e) {
+        // Error when processing events
+        LOGGER.error(e, "Error when processing Kafka consumed records, reset consumer offsets");
+        consumerRetryProcessError.increment();
+        errorListeners.forEach(l -> l.accept(e));
+        resetOffsets();
+        return; // cause next poll with new offsets
       }
       //when all documents in batch is consumed, send commit to consumer
       if (consumed) {
@@ -179,6 +212,18 @@ public class KafkaDocumentSource<T> implements DocumentSource<T> {
         } else {
           consumer.commitAsync();
         }
+      }
+    }
+
+    private void resetOffsets() {
+      LOGGER.info("Reset offsets for assigned Kafka partitions " + consumer.assignment());
+      for (TopicPartition partition : consumer.assignment()) {
+        OffsetAndMetadata offset = consumer.committed(partition);
+        if (offset == null) {
+          continue; // no offsets can be fetched from Kafka broker (e.g. no commits has been performed on the partition)
+        }
+        LOGGER.info("Reset Kafka partition '%s' with offsets %d", partition, offset.offset());
+        consumer.seek(partition, offset.offset());
       }
     }
   }

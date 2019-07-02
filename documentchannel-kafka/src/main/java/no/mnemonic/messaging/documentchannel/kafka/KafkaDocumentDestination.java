@@ -41,7 +41,22 @@ public class KafkaDocumentDestination<T> implements DocumentDestination<T> {
 
   @Override
   public DocumentChannel<T> getDocumentChannel() {
-    return this::writeDocument;
+    return new DocumentChannel<T>() {
+      @Override
+      public void sendDocument(T doc) {
+        writeDocument(doc);
+      }
+
+      @Override
+      public <K> void sendDocument(T document, K documentKey, DocumentCallback<K> callback) {
+        writeDocument(document, documentKey, callback);
+      }
+
+      @Override
+      public void flush() {
+        getProducer().flush();
+      }
+    };
   }
 
   @Override
@@ -57,6 +72,14 @@ public class KafkaDocumentDestination<T> implements DocumentDestination<T> {
 
   private void writeDocument(T doc) {
     getProducer().send(new ProducerRecord<>(topicName, doc));
+    if (flushAfterWrite) getProducer().flush();
+  }
+
+  private <K> void writeDocument(T doc, K documentKey, DocumentChannel.DocumentCallback<K> callback) {
+    getProducer().send(new ProducerRecord<>(topicName, doc), (metadata, exception) -> {
+      if (metadata != null) callback.documentAccepted(documentKey);
+      else if (exception != null) callback.channelError(documentKey, exception);
+    });
     if (flushAfterWrite) getProducer().flush();
   }
 

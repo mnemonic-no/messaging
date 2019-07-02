@@ -62,6 +62,14 @@ public class JMSSession {
     ifNotNullDo(consumer.get(), c -> tryTo(c::close));
   }
 
+  void commit() throws JMSDocumentChannelException {
+    try {
+      session.commit();
+    } catch (JMSException e) {
+      throw new JMSDocumentChannelException(e);
+    }
+  }
+
   MessageProducer getProducer() throws JMSDocumentChannelException {
     try {
       return producer.updateAndGet(p -> ifNull(p, this::createProducer));

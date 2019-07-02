@@ -43,7 +43,38 @@ public class JMSDocumentDestination<T> implements DocumentDestination<T> {
 
   @Override
   public DocumentChannel<T> getDocumentChannel() {
-    return this::sendMessage;
+    return new DocumentChannel<T>() {
+      @Override
+      public void sendDocument(T document) {
+        try {
+          sendMessage(createMessage(document));
+        } catch (JMSDocumentChannelException | JMSException e) {
+          producerExceptions.increment();
+          LOGGER.warning(e, "Error writing to JMS DocumentDestination");
+          closeSession();
+        }
+      }
+
+      @Override
+      public <K> void sendDocument(T document, K documentKey, DocumentCallback<K> callback) {
+        try {
+          sendMessage(createMessage(document));
+          //seems like CompletionListener is not implemented by ActiveMQ
+          flush();
+          callback.documentAccepted(documentKey);
+        } catch (JMSDocumentChannelException | JMSException e) {
+          producerExceptions.increment();
+          LOGGER.warning(e, "Error writing to JMS DocumentDestination");
+          callback.channelError(documentKey, e);
+          closeSession();
+        }
+      }
+
+      @Override
+      public void flush() {
+        commitSession();
+      }
+    };
   }
 
   @Override
@@ -53,23 +84,31 @@ public class JMSDocumentDestination<T> implements DocumentDestination<T> {
 
   //private methods
 
-  private void sendMessage(T document) {
+  private void commitSession() {
     try {
-      JMSSession session = getSession();
-      Message msg;
-      if (type.equals(String.class) && document instanceof String) {
-        msg = session.createTextMessage((String) document);
-      } else if (type.equals(byte[].class) && document instanceof byte[]) {
-        msg = session.createByteMessage((byte[]) document);
-      } else {
-        throw new IllegalStateException("Unexpected type: " + type);
-      }
-      session.getProducer().send(msg);
-    } catch (JMSDocumentChannelException | JMSException e) {
-      producerExceptions.increment();
-      LOGGER.warning(e, "Error writing to JMS DocumentDestination");
-      closeSession();
+      getSession().commit();
+    } catch (JMSDocumentChannelException e) {
+      LOGGER.error(e, "Error committing session");
     }
+  }
+
+  private Message createMessage(T document) throws JMSDocumentChannelException {
+    JMSSession session = getSession();
+    Message msg;
+    if (type.equals(String.class) && document instanceof String) {
+      msg = session.createTextMessage((String) document);
+    } else if (type.equals(byte[].class) && document instanceof byte[]) {
+      msg = session.createByteMessage((byte[]) document);
+    } else {
+      throw new IllegalStateException("Unexpected type: " + type);
+    }
+    return msg;
+  }
+
+  private void sendMessage(Message msg) throws JMSDocumentChannelException, JMSException {
+    if (msg == null) throw new IllegalArgumentException("Message was null");
+    JMSSession session = getSession();
+    session.getProducer().send(msg);
   }
 
   private void closeSession() {
@@ -102,7 +141,7 @@ public class JMSDocumentDestination<T> implements DocumentDestination<T> {
 
   //builders
 
-  public static <T>Builder<T> builder() {
+  public static <T> Builder<T> builder() {
     return new Builder<>();
   }
 

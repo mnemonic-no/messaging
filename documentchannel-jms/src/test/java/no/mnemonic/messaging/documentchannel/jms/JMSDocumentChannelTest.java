@@ -2,6 +2,7 @@ package no.mnemonic.messaging.documentchannel.jms;
 
 import no.mnemonic.commons.testtools.AvailablePortFinder;
 import no.mnemonic.messaging.documentchannel.DocumentBatch;
+import no.mnemonic.messaging.documentchannel.DocumentChannel;
 import no.mnemonic.messaging.documentchannel.DocumentChannelListener;
 import org.apache.activemq.broker.BrokerService;
 import org.junit.After;
@@ -32,6 +33,8 @@ public class JMSDocumentChannelTest {
   private int port = AvailablePortFinder.getAvailablePort(10000);
   @Mock
   private DocumentChannelListener<String> listener;
+  @Mock
+  private DocumentChannel.DocumentCallback<String> callback;
   private Semaphore semaphore = new Semaphore(0);
 
   private Collection<AutoCloseable> channels = new ArrayList<>();
@@ -73,6 +76,16 @@ public class JMSDocumentChannelTest {
 
     senderChannel.getDocumentChannel().sendDocument("mydoc");
     assertEquals(list("mydoc"), list(receiverChannel1.poll(1, TimeUnit.SECONDS).getDocuments()));
+  }
+
+  @Test
+  public void submitWithCallback() {
+    JMSDocumentDestination<String> senderChannel = setupDestination("dynamicQueues/myqueue", false);
+    JMSDocumentSource<String> receiverChannel1 = setupSource("dynamicQueues/myqueue", false, false);
+
+    senderChannel.getDocumentChannel().sendDocument("mydoc", "mydoc", callback);
+    assertEquals(list("mydoc"), list(receiverChannel1.poll(1, TimeUnit.SECONDS).getDocuments()));
+    verify(callback).documentAccepted("mydoc");
   }
 
   @Test

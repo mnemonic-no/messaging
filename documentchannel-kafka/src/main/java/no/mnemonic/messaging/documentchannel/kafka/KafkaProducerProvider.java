@@ -8,6 +8,7 @@ import org.apache.kafka.common.serialization.StringSerializer;
 import java.util.*;
 import java.util.stream.Collectors;
 
+import static no.mnemonic.commons.utilities.collections.MapUtils.map;
 import static org.apache.kafka.clients.producer.ProducerConfig.*;
 
 /**
@@ -54,6 +55,7 @@ public class KafkaProducerProvider {
   private final Acknowledgement acknowledgements;
   private final int lingerMs;
   private final int retries;
+  private final Map<Class<?>, Serializer<?>> serializers;
 
   private KafkaProducerProvider(
           String kafkaHosts,
@@ -66,8 +68,8 @@ public class KafkaProducerProvider {
           Compression compression,
           Acknowledgement acknowledgements,
           int lingerMs,
-          int retries
-  ) {
+          int retries,
+          Map<Class<?>, Serializer<?>> serializers) {
     this.kafkaHosts = kafkaHosts;
     this.kafkaPort = kafkaPort;
     this.maxRequestSize = maxRequestSize;
@@ -79,24 +81,29 @@ public class KafkaProducerProvider {
     this.acknowledgements = acknowledgements;
     this.lingerMs = lingerMs;
     this.retries = retries;
+    this.serializers = serializers;
+
+    this.serializers.put(String.class, new StringSerializer());
+    this.serializers.put(byte[].class, new ByteArraySerializer());
   }
 
   public <T> KafkaProducer<String, T> createProducer(Class<T> type) {
     return new KafkaProducer<>(
             createProperties(),
             new StringSerializer(),  // Key serializer
-            createSerializer(type) // Value serializer
+            getSerializer(type) // Value serializer
     );
   }
 
-  private <T> Serializer<T> createSerializer(Class<T> type) {
-    if (type.equals(String.class)) {
-      return (Serializer<T>) new StringSerializer();
-    } else if (type.equals(byte[].class)) {
-      return (Serializer<T>) new ByteArraySerializer();
-    } else {
+  public boolean hasType(Class<?> type) {
+    return serializers.containsKey(type);
+  }
+
+  private <T> Serializer<T> getSerializer(Class<T> type) {
+    if (!hasType(type))
       throw new IllegalArgumentException("Invalid type: " + type);
-    }
+    //noinspection unchecked
+    return (Serializer<T>) serializers.get(type);
   }
 
   private Map<String, Object> createProperties() {
@@ -138,9 +145,10 @@ public class KafkaProducerProvider {
     private Acknowledgement acknowledgements = Acknowledgement.leader;
     private int lingerMs = DEFAULT_LINGER_MILLIS;
     private int retries = DEFAULT_RETRIES;
+    private Map<Class<?>, Serializer<?>> serializers = map();
 
     public KafkaProducerProvider build() {
-      return new KafkaProducerProvider(kafkaHosts, kafkaPort, maxRequestSize, requestTimeoutMs, maxBlockMs, sendBuffer, batchSize, compression, acknowledgements, lingerMs, retries);
+      return new KafkaProducerProvider(kafkaHosts, kafkaPort, maxRequestSize, requestTimeoutMs, maxBlockMs, sendBuffer, batchSize, compression, acknowledgements, lingerMs, retries, serializers);
     }
 
     public Builder setKafkaHosts(String kafkaHosts) {
@@ -197,6 +205,14 @@ public class KafkaProducerProvider {
       this.retries = retries;
       return this;
     }
+
+    public <T> Builder addSerializer(Class<T> type, Serializer<T> serializer) {
+      if (type == null) throw new IllegalArgumentException("type not set");
+      if (serializer == null) throw new IllegalArgumentException("serializer not set");
+      this.serializers.put(type, serializer);
+      return this;
+    }
+
   }
 
 }

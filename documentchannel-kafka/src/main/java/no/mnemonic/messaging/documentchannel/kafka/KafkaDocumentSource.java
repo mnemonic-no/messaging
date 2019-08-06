@@ -72,6 +72,7 @@ public class KafkaDocumentSource<T> implements DocumentSource<T>, MetricAspect {
     if (provider == null) throw new IllegalArgumentException("provider not set");
     if (type == null) throw new IllegalArgumentException("type not set");
     if (CollectionUtils.isEmpty(topicName)) throw new IllegalArgumentException("topicName not set");
+    if (!provider.hasType(type)) throw new IllegalArgumentException("Provider does not support type, maybe add a deserializer for " + type);
     this.provider = provider;
     this.type = type;
     this.topicName = topicName;

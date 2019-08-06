@@ -9,6 +9,7 @@ import java.util.*;
 import java.util.concurrent.TimeUnit;
 import java.util.stream.Collectors;
 
+import static no.mnemonic.commons.utilities.collections.MapUtils.map;
 import static org.apache.kafka.clients.consumer.ConsumerConfig.*;
 
 /**
@@ -36,6 +37,7 @@ public class KafkaConsumerProvider {
   private final int sessionTimeoutMs;
   private final int maxPollRecords;
   private final int maxPollIntervalMs;
+  private final Map<Class<?>, Deserializer<?>> deserializers;
 
   private KafkaConsumerProvider(
           String kafkaHosts,
@@ -47,8 +49,8 @@ public class KafkaConsumerProvider {
           int requestTimeoutMs,
           int sessionTimeoutMs,
           int maxPollRecords,
-          int maxPollIntervalMs
-  ) {
+          int maxPollIntervalMs,
+          Map<Class<?>, Deserializer<?>> deserializers) {
     this.kafkaHosts = kafkaHosts;
     this.kafkaPort = kafkaPort;
     this.groupID = groupID;
@@ -59,24 +61,31 @@ public class KafkaConsumerProvider {
     this.sessionTimeoutMs = sessionTimeoutMs;
     this.maxPollRecords = maxPollRecords;
     this.maxPollIntervalMs = maxPollIntervalMs;
+    this.deserializers = deserializers;
+
+    this.deserializers.put(String.class, new StringDeserializer());
+    this.deserializers.put(byte[].class, new ByteArrayDeserializer());
+
   }
 
   public <T> KafkaConsumer<String, T> createConsumer(Class<T> type) {
     return new KafkaConsumer<>(
             createProperties(),
             new StringDeserializer(),
-            createDeserializer(type)
+            getDeserializer(type)
     );
   }
 
-  private <T> Deserializer<T> createDeserializer(Class<T> type) {
-    if (type.equals(String.class)) {
-      return (Deserializer<T>) new StringDeserializer();
-    } else if (type.equals(byte[].class)) {
-      return (Deserializer<T>) new ByteArrayDeserializer();
-    } else {
+  public boolean hasType(Class<?> type) {
+    return deserializers.containsKey(type);
+  }
+
+  private <T> Deserializer<T> getDeserializer(Class<T> type) {
+    if (!hasType(type))
       throw new IllegalArgumentException("Invalid type: " + type);
-    }
+    //noinspection unchecked
+    return (Deserializer<T>) deserializers.get(type);
+
   }
 
   private Map<String, Object> createProperties() {
@@ -117,10 +126,10 @@ public class KafkaConsumerProvider {
     private int sessionTimeoutMs = DEFAULT_SESSION_TIMEOUT_MILLIS;
     private int maxPollRecords = DEFAULT_MAX_POLL_RECORDS;
     private int maxPollIntervalMs = DEFAULT_MAX_POLL_INTERVAL_MILLIS;
-
+    private Map<Class<?>, Deserializer<?>> deserializers = map();
 
     public KafkaConsumerProvider build() {
-      return new KafkaConsumerProvider(kafkaHosts, kafkaPort, groupID, offsetResetStrategy, autoCommit, heartbeatIntervalMs, requestTimeoutMs, sessionTimeoutMs, maxPollRecords, maxPollIntervalMs);
+      return new KafkaConsumerProvider(kafkaHosts, kafkaPort, groupID, offsetResetStrategy, autoCommit, heartbeatIntervalMs, requestTimeoutMs, sessionTimeoutMs, maxPollRecords, maxPollIntervalMs, deserializers);
     }
 
     public Builder setKafkaHosts(String kafkaHosts) {
@@ -170,6 +179,13 @@ public class KafkaConsumerProvider {
 
     public Builder setMaxPollIntervalMs(int maxPollIntervalMs) {
       this.maxPollIntervalMs = maxPollIntervalMs;
+      return this;
+    }
+
+    public <T> Builder addDeserializer(Class<T> type, Deserializer<T> deserializer) {
+      if (type == null) throw new IllegalArgumentException("type not set");
+      if (deserializer == null) throw new IllegalArgumentException("deserializer not set");
+      this.deserializers.put(type, deserializer);
       return this;
     }
   }

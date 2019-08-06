@@ -43,6 +43,12 @@
       <scope>test</scope>
     </dependency>
     <dependency>
+      <groupId>no.mnemonic.commons</groupId>
+      <artifactId>junit-docker</artifactId>
+      <version>${mnemonic.commons.version}</version>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
       <groupId>junit</groupId>
       <artifactId>junit</artifactId>
       <version>${junit.version}</version>

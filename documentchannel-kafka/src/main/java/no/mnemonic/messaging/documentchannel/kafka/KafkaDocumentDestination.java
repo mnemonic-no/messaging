@@ -22,6 +22,7 @@ public class KafkaDocumentDestination<T> implements DocumentDestination<T> {
   private final Class<T> type;
   private final String topicName;
   private final boolean flushAfterWrite;
+  private final boolean disabled;
 
   private final AtomicReference<KafkaProducer<String, T>> currentProducer = new AtomicReference<>();
 
@@ -29,10 +30,12 @@ public class KafkaDocumentDestination<T> implements DocumentDestination<T> {
           KafkaProducerProvider provider,
           Class<T> type,
           String topicName,
-          boolean flushAfterWrite) {
+          boolean flushAfterWrite, boolean disabled) {
     if (provider == null) throw new IllegalArgumentException("provider not set");
     if (type == null) throw new IllegalArgumentException("type not set");
     if (topicName == null) throw new IllegalArgumentException("topicName not set");
+    if (!provider.hasType(type)) throw new IllegalArgumentException("Provider does not support type, maybe add a serializer for " + type);
+    this.disabled = disabled;
     this.provider = provider;
     this.type = type;
     this.topicName = topicName;
@@ -41,6 +44,7 @@ public class KafkaDocumentDestination<T> implements DocumentDestination<T> {
 
   @Override
   public DocumentChannel<T> getDocumentChannel() {
+    if (disabled) return new NullChannel<>();
     return new DocumentChannel<T>() {
       @Override
       public void sendDocument(T doc) {
@@ -99,9 +103,10 @@ public class KafkaDocumentDestination<T> implements DocumentDestination<T> {
     private Class<T> type;
     private String topicName;
     private boolean flushAfterWrite;
+    private boolean disabled;
 
     public KafkaDocumentDestination<T> build() {
-      return new KafkaDocumentDestination<>(kafkaProducerProvider, type, topicName, flushAfterWrite);
+      return new KafkaDocumentDestination<>(kafkaProducerProvider, type, topicName, flushAfterWrite, disabled);
     }
 
     //setters
@@ -124,6 +129,11 @@ public class KafkaDocumentDestination<T> implements DocumentDestination<T> {
 
     public Builder<T> setTopicName(String topicName) {
       this.topicName = topicName;
+      return this;
+    }
+
+    public Builder<T> setDisabled(boolean disabled) {
+      this.disabled = disabled;
       return this;
     }
   }

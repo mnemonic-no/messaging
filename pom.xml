@@ -47,7 +47,7 @@
 
     <!-- external dependencies -->
     <activemq.version>5.15.9</activemq.version>
-    <kafka.clients.version>0.10.2.2</kafka.clients.version>
+    <kafka.clients.version>2.1.1</kafka.clients.version>
     <jms.version>2.0.1</jms.version>
     <junit.version>4.12</junit.version>
     <mockito.version>2.27.0</mockito.version>

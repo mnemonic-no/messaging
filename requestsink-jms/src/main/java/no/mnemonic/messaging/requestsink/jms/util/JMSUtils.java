@@ -175,14 +175,10 @@ public class JMSUtils {
     return determineSerializer(msg.getStringProperty(AbstractJMSRequestBase.SERIALIZER_KEY), serializers);
   }
 
-  public static no.mnemonic.messaging.requestsink.Message extractObject(javax.jms.Message message, MessageSerializer serializer) throws JMSException {
+  public static no.mnemonic.messaging.requestsink.Message extractObject(javax.jms.Message message, MessageSerializer serializer)
+          throws JMSException, IOException {
     MessageSerializer ser = getProtocolVersion(message).atLeast(ProtocolVersion.V3) ? serializer : legacySerializer;
-    try {
-      return ser.deserialize(extractMessageBytes(message), Thread.currentThread().getContextClassLoader());
-    } catch (IOException e) {
-      LOGGER.error(e, "Error deserializing response");
-      throw new JMSException(e.getMessage());
-    }
+    return ser.deserialize(extractMessageBytes(message), Thread.currentThread().getContextClassLoader());
   }
 
   public static byte[] extractMessageBytes(Message msg) throws JMSException {
@@ -245,8 +241,6 @@ public class JMSUtils {
     result.add(arraySubSeq(bytes, off, bytes.length - off));
     return result;
   }
-
-
 
 
   public interface JMSSupplier<T> {

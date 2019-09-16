@@ -275,7 +275,13 @@ public class JMSRequestProxy extends AbstractJMSRequestBase implements MessageLi
     }
     // create a response context to handle response messages
     ServerResponseContext ctx = setupServerContext(callID, responseDestination, timeout, getProtocolVersion(message), serializer);
-    ctx.handle(requestSink, extractObject(message, determineSerializer(message, serializers)));
+    try {
+      ctx.handle(requestSink, extractObject(message, determineSerializer(message, serializers)));
+    } catch (IOException e) {
+      LOGGER.error(e, "Illegal deserialization reading message from client");
+      ctx.notifyError(e);
+      ctx.endOfStream();
+    }
   }
 
   private void handleChannelRequest(javax.jms.Message message, long timeout) throws JMSException, NamingException {
@@ -306,6 +312,10 @@ public class JMSRequestProxy extends AbstractJMSRequestBase implements MessageLi
       Message request = serializer.deserialize(data, classLoaderCtx.getContextClassLoader());
       metrics.fragmentedUploadCompleted();
       r.handle(requestSink, request);
+    } catch (IllegalDeserializationException e) {
+      LOGGER.error(e, "Illegal deserialization reading fragmented client message");
+      r.notifyError(e);
+      r.endOfStream();
     }
   }
 

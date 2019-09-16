@@ -1,6 +1,7 @@
 package no.mnemonic.messaging.requestsink.jms.serializer;
 
 import no.mnemonic.messaging.requestsink.Message;
+import no.mnemonic.messaging.requestsink.jms.IllegalDeserializationException;
 import no.mnemonic.messaging.requestsink.jms.TestMessage;
 import no.mnemonic.messaging.requestsink.jms.serializer.packagea.*;
 import org.junit.Test;
@@ -13,7 +14,7 @@ import static org.junit.Assert.assertTrue;
 
 public class XStreamMessageSerializerTest {
 
-  @Test(expected = IOException.class)
+  @Test(expected = IllegalDeserializationException.class)
   public void testNonAllowedClassNotDeserialized() throws IOException {
     XStreamMessageSerializer serializer = XStreamMessageSerializer.builder()
             .addAllowedClass("org.acme.*")
@@ -41,7 +42,7 @@ public class XStreamMessageSerializerTest {
     assertEquals(msg, msg2);
   }
 
-  @Test(expected = IOException.class)
+  @Test(expected = IllegalDeserializationException.class)
   public void testDeserializationChecksAbstractInnerClasses() throws IOException {
     XStreamMessageSerializer serializer = XStreamMessageSerializer.builder()
             .addAllowedClass(MyComplexMessageWithAbstractType.class)

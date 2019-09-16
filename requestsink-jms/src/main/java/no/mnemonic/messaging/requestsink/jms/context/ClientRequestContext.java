@@ -102,6 +102,7 @@ public class ClientRequestContext {
       return requestContext.addResponse(serializer.deserialize(reassembledData, classLoader));
     } catch (JMSException | IOException e) {
       LOGGER.warning(e, "Error unpacking fragments");
+      requestContext.notifyError(e);
       return false;
     }
   }
@@ -220,6 +221,7 @@ public class ClientRequestContext {
       return requestContext.addResponse(serializer.deserialize(extractMessageBytes(response), classLoader));
     } catch (IOException e) {
       LOGGER.error(e, "Error deserializing response");
+      requestContext.notifyError(e);
       throw new JMSException(e.getMessage());
     }
   }
@@ -282,6 +284,7 @@ public class ClientRequestContext {
       requestContext.notifyError(em.getException());
     } catch (IOException e) {
       LOGGER.error(e, "Error deserializing response");
+      requestContext.notifyError(e);
       throw new JMSException(e.getMessage());
     }
     return true;

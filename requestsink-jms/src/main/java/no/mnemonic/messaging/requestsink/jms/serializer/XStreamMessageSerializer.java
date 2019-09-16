@@ -3,17 +3,22 @@ package no.mnemonic.messaging.requestsink.jms.serializer;
 import com.thoughtworks.xstream.XStream;
 import com.thoughtworks.xstream.io.HierarchicalStreamDriver;
 import com.thoughtworks.xstream.io.xml.Xpp3Driver;
+import com.thoughtworks.xstream.security.ForbiddenClassException;
 import com.thoughtworks.xstream.security.NoTypePermission;
 import com.thoughtworks.xstream.security.NullPermission;
 import com.thoughtworks.xstream.security.PrimitiveTypePermission;
 import no.mnemonic.commons.logging.Logger;
 import no.mnemonic.commons.logging.Logging;
 import no.mnemonic.commons.utilities.collections.MapUtils;
+import no.mnemonic.messaging.requestsink.jms.ExceptionMessage;
+import no.mnemonic.messaging.requestsink.jms.IllegalDeserializationException;
 
+import javax.jms.JMSException;
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.util.Collection;
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
@@ -56,13 +61,23 @@ public class XStreamMessageSerializer implements MessageSerializer {
     decodingXstream.allowTypes(list(allowedClasses).toArray(new Class[]{}));
     decodingXstream.ignoreUnknownElements();
 
-    map(packageAliases).forEach((a,p) -> {
+    //allow types needed for proper error handling
+    decodingXstream.allowTypes(new Class[]{
+            JMSException.class,
+            List.class,
+            StackTraceElement.class,
+            IllegalDeserializationException.class,
+            ExceptionMessage.class
+    });
+    decodingXstream.allowTypesByRegExp(new String[]{"java.util.Collections\\$UnmodifiableList"});
+
+    map(packageAliases).forEach((a, p) -> {
       decodingXstream.aliasPackage(a, p);
       encodingXstream.aliasPackage(a, p);
     });
-    map(typeAliases).forEach((a,c) -> {
-      decodingXstream.alias(a,c);
-      encodingXstream.alias(a,c);
+    map(typeAliases).forEach((a, c) -> {
+      decodingXstream.alias(a, c);
+      encodingXstream.alias(a, c);
     });
     map(decodingPackageAliases).forEach(decodingXstream::aliasPackage);
     map(decodingTypeAliases).forEach(decodingXstream::alias);
@@ -91,9 +106,17 @@ public class XStreamMessageSerializer implements MessageSerializer {
       LOGGER.debug("XStream deserialize driver=%s size=%d", driver.getClass(), msgbytes.length);
       //noinspection unchecked
       return (T) decodingXstream.unmarshal(driver.createReader(bais));
+    } catch (ForbiddenClassException e) {
+      LOGGER.error(e, "Forbidden class in deserialize");
+      throw new IllegalDeserializationException(e.getMessage());
     } catch (Exception e) {
-      LOGGER.error(e, "Error in deserialize");
-      throw new IOException(e);
+      if (e.getCause() instanceof ForbiddenClassException) {
+        LOGGER.error(e, "Forbidden class in deserialize");
+        throw new IllegalDeserializationException(e.getMessage());
+      } else {
+        LOGGER.error(e, "Error in deserialize");
+        throw new IOException(e);
+      }
     }
   }
 

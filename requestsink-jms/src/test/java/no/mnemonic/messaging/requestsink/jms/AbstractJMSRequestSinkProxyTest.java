@@ -178,13 +178,13 @@ public abstract class AbstractJMSRequestSinkProxyTest extends AbstractJMSRequest
 
   //helpers
 
-  private Future<TestMessage> mockEndpointSignal(TestMessage... replies) {
-    CompletableFuture<TestMessage> signal = new CompletableFuture<>();
-    when(endpoint.signal(isA(TestMessage.class), isA(RequestContext.class), anyLong())).thenAnswer(i -> {
-      TestMessage msg = i.getArgument(0);
+  <T extends Message> Future<T> mockEndpointSignal(T... replies) {
+    CompletableFuture<T> signal = new CompletableFuture<>();
+    when(endpoint.signal(any(), any(), anyLong())).thenAnswer(i -> {
+      T msg = i.getArgument(0);
       RequestContext ctx = (RequestContext) i.getArguments()[1];
       System.out.println(String.format("Received request, responding with %d replies", replies.length));
-      for (TestMessage reply : replies) {
+      for (T reply : replies) {
         ctx.addResponse(reply);
       }
       System.out.println("Closing");
@@ -195,16 +195,25 @@ public abstract class AbstractJMSRequestSinkProxyTest extends AbstractJMSRequest
     return signal;
   }
 
-  private Future<List<TestMessage>> mockReceiveResponse() {
-    List<TestMessage> responses = new ArrayList<>();
-    CompletableFuture<List<TestMessage>> endOfStream = new CompletableFuture<>();
-    when(requestContext.addResponse(isA(TestMessage.class))).thenAnswer(i -> {
-      if (endOfStream.isDone()) throw new IllegalStateException("Received response to closed client");
+  <T extends Message> Future<List<T>> mockReceiveResponse() {
+    List<T> responses = new ArrayList<>();
+    CompletableFuture<List<T>> responseFuture = new CompletableFuture<>();
+    when(requestContext.addResponse(any())).thenAnswer(i -> {
+      if (responseFuture.isDone()) throw new IllegalStateException("Received response to closed client");
       responses.add(i.getArgument(0));
       return true;
     });
-    doAnswer(i -> endOfStream.complete(responses)).when(requestContext).endOfStream();
-    return endOfStream;
+    doAnswer(i -> responseFuture.complete(responses)).when(requestContext).endOfStream();
+    return responseFuture;
+  }
+
+  <T extends Throwable> Future<T> mockNotifyError() {
+    CompletableFuture<T> exceptionFuture = new CompletableFuture<>();
+    doAnswer(i->{
+      exceptionFuture.complete(i.getArgument(0));
+      return null;
+    }).when(requestContext).notifyError(any());
+    return exceptionFuture;
   }
 
 }

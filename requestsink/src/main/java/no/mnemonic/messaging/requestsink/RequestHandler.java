@@ -157,6 +157,7 @@ public class RequestHandler implements RequestContext {
       return isClosed();
     } catch (InterruptedException e) {
       LOGGER.warning(e, "Interrupted");
+      Thread.currentThread().interrupt();
       return isClosed();
     }
   }
@@ -247,7 +248,8 @@ public class RequestHandler implements RequestContext {
       //noinspection unchecked
       return (T) responses.poll();
     } catch (InterruptedException e) {
-      throw new RuntimeException(e);
+      Thread.currentThread().interrupt();
+      throw new IllegalStateException(e);
     }
   }
 
@@ -275,7 +277,8 @@ public class RequestHandler implements RequestContext {
           this.wait(Math.max(1, timeout - clock.millis()));
         }
       } catch (InterruptedException e) {
-        throw new RuntimeException(e);
+        Thread.currentThread().interrupt();
+        throw new IllegalStateException(e);
       }
     }
     //if timeout has passed, return responses received so far

@@ -21,6 +21,7 @@ import java.util.Collection;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.function.Consumer;
 
 import static no.mnemonic.commons.utilities.collections.ListUtils.list;
 import static no.mnemonic.commons.utilities.collections.MapUtils.map;
@@ -36,11 +37,15 @@ public class XStreamMessageSerializer implements MessageSerializer {
   private final XStream encodingXstream;
   private final HierarchicalStreamDriver driver;
   private final String serializerID;
+  private final Consumer<XStream> decodingXstreamCustomizer;
+  private final Consumer<XStream> encodingXstreamCustomizer;
 
   /**
    * @param allowedClassesRegex list of allowed classes regex
    * @param packageAliases      map of alias->package
    * @param serializerID        ID of this serializer
+   * @param decodingXstreamCustomizer
+   * @param encodingXstreamCustomizer
    */
   private XStreamMessageSerializer(HierarchicalStreamDriver driver,
                                    Collection<Class> allowedClasses,
@@ -49,11 +54,13 @@ public class XStreamMessageSerializer implements MessageSerializer {
                                    Map<String, String> packageAliases,
                                    Map<String, Class> decodingTypeAliases,
                                    Map<String, String> decodingPackageAliases,
-                                   String serializerID) {
+                                   String serializerID, Consumer<XStream> decodingXstreamCustomizer, Consumer<XStream> encodingXstreamCustomizer) {
     this.driver = assertNotNull(driver, "driver not set");
     this.serializerID = assertNotNull(serializerID, "serializerID not set");
     decodingXstream = new XStream(driver);
     encodingXstream = new XStream(driver);
+    this.decodingXstreamCustomizer = decodingXstreamCustomizer;
+    this.encodingXstreamCustomizer = encodingXstreamCustomizer;
     decodingXstream.addPermission(NoTypePermission.NONE);
     decodingXstream.addPermission(PrimitiveTypePermission.PRIMITIVES);
     decodingXstream.addPermission(NullPermission.NULL);
@@ -81,6 +88,10 @@ public class XStreamMessageSerializer implements MessageSerializer {
     });
     map(decodingPackageAliases).forEach(decodingXstream::aliasPackage);
     map(decodingTypeAliases).forEach(decodingXstream::alias);
+
+    //allow non-standard customization
+    if (decodingXstreamCustomizer != null) decodingXstreamCustomizer.accept(decodingXstream);
+    if (encodingXstreamCustomizer != null) encodingXstreamCustomizer.accept(encodingXstream);
   }
 
   @Override
@@ -133,6 +144,8 @@ public class XStreamMessageSerializer implements MessageSerializer {
     private Map<String, Class> typeAliases = map();
     private Map<String, String> decodingPackageAliases = map();
     private Map<String, Class> decodingTypeAliases = map();
+    private Consumer<XStream> decodingXstreamCustomizer;
+    private Consumer<XStream> encodingXstreamCustomizer;
     private String serializerID = DEFAULT_SERIALIZER_ID;
 
     private Builder() {
@@ -145,10 +158,30 @@ public class XStreamMessageSerializer implements MessageSerializer {
               allowedClasses, allowedClassesRegex,
               typeAliases, packageAliases,
               decodingTypeAliases, decodingPackageAliases,
-              serializerID);
+              serializerID, decodingXstreamCustomizer, encodingXstreamCustomizer);
     }
 
     //setters
+
+    /**
+     * Allow arbitrary non-standard customization of the decoding xstream converter
+     * <b>WARNING</b> Use with care!
+     * @param decodingXstreamCustomizer any code modifying the config of the decoding converter
+     */
+    public Builder setDecodingXstreamCustomizer(Consumer<XStream> decodingXstreamCustomizer) {
+      this.decodingXstreamCustomizer = decodingXstreamCustomizer;
+      return this;
+    }
+
+    /**
+     * Allow arbitrary non-standard customization of the encoding xstream converter
+     * <b>WARNING</b> Use with care!
+     * @param encodingXstreamCustomizer any code modifying the config of the encoding converter
+     */
+    public Builder setEncodingXstreamCustomizer(Consumer<XStream> encodingXstreamCustomizer) {
+      this.encodingXstreamCustomizer = encodingXstreamCustomizer;
+      return this;
+    }
 
     public Builder setSerializerID(String serializerID) {
       this.serializerID = serializerID;

@@ -3,6 +3,12 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [1.2.21] - 2020-01-06
+### Changed
+- ARGUS-16366 - Expose methods `setEncodingXstreamCustomizer(XStream)` and `setDecodingXstreamCustomizer(XStream)`
+in XStreamMessageSerializer to allow advanced use cases needing access to arbitrary XStream
+configuration options. 
+
 ## [1.2.20] - 2019-09-16
 ### Changed
 ARGUS-14845

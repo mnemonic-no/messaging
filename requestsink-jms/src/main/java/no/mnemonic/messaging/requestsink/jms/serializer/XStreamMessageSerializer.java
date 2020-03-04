@@ -9,7 +9,12 @@ import com.thoughtworks.xstream.security.NullPermission;
 import com.thoughtworks.xstream.security.PrimitiveTypePermission;
 import no.mnemonic.commons.logging.Logger;
 import no.mnemonic.commons.logging.Logging;
+import no.mnemonic.commons.metrics.MetricException;
+import no.mnemonic.commons.metrics.Metrics;
+import no.mnemonic.commons.metrics.MetricsData;
+import no.mnemonic.commons.metrics.TimerContext;
 import no.mnemonic.commons.utilities.collections.MapUtils;
+import no.mnemonic.messaging.requestsink.Message;
 import no.mnemonic.messaging.requestsink.jms.ExceptionMessage;
 import no.mnemonic.messaging.requestsink.jms.IllegalDeserializationException;
 
@@ -21,6 +26,7 @@ import java.util.Collection;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.atomic.LongAdder;
 import java.util.function.Consumer;
 
 import static no.mnemonic.commons.utilities.collections.ListUtils.list;
@@ -37,8 +43,16 @@ public class XStreamMessageSerializer implements MessageSerializer {
   private final XStream encodingXstream;
   private final HierarchicalStreamDriver driver;
   private final String serializerID;
-  private final Consumer<XStream> decodingXstreamCustomizer;
-  private final Consumer<XStream> encodingXstreamCustomizer;
+
+  private final LongAdder serializeCount = new LongAdder();
+  private final LongAdder serializeError = new LongAdder();
+  private final LongAdder serializeTime = new LongAdder();
+  private final LongAdder serializeMsgSize = new LongAdder();
+  private final LongAdder deserializeCount = new LongAdder();
+  private final LongAdder deserializeError = new LongAdder();
+  private final LongAdder deserializeForbiddenClassError = new LongAdder();
+  private final LongAdder deserializeTime = new LongAdder();
+  private final LongAdder deserializeMsgSize = new LongAdder();
 
   /**
    * @param allowedClassesRegex list of allowed classes regex
@@ -54,13 +68,13 @@ public class XStreamMessageSerializer implements MessageSerializer {
                                    Map<String, String> packageAliases,
                                    Map<String, Class> decodingTypeAliases,
                                    Map<String, String> decodingPackageAliases,
-                                   String serializerID, Consumer<XStream> decodingXstreamCustomizer, Consumer<XStream> encodingXstreamCustomizer) {
+                                   String serializerID,
+                                   Consumer<XStream> decodingXstreamCustomizer,
+                                   Consumer<XStream> encodingXstreamCustomizer) {
     this.driver = assertNotNull(driver, "driver not set");
     this.serializerID = assertNotNull(serializerID, "serializerID not set");
     decodingXstream = new XStream(driver);
     encodingXstream = new XStream(driver);
-    this.decodingXstreamCustomizer = decodingXstreamCustomizer;
-    this.encodingXstreamCustomizer = encodingXstreamCustomizer;
     decodingXstream.addPermission(NoTypePermission.NONE);
     decodingXstream.addPermission(PrimitiveTypePermission.PRIMITIVES);
     decodingXstream.addPermission(NullPermission.NULL);
@@ -100,33 +114,63 @@ public class XStreamMessageSerializer implements MessageSerializer {
   }
 
   @Override
-  public byte[] serialize(no.mnemonic.messaging.requestsink.Message msg) throws IOException {
-    try (ByteArrayOutputStream baos = new ByteArrayOutputStream()) {
+  public Metrics getMetrics() throws MetricException {
+    return new MetricsData()
+            .addData("serializeCount", serializeCount)
+            .addData("serializeError", serializeError)
+            .addData("serializeTime", serializeTime)
+            .addData("serializeMsgSize", serializeMsgSize)
+            .addData("deserializeCount", deserializeCount)
+            .addData("deserializeError", deserializeError)
+            .addData("deserializeForbiddenClassError", deserializeForbiddenClassError)
+            .addData("deserializeTime", deserializeTime)
+            .addData("deserializeMsgSize", deserializeMsgSize);
+  }
+
+  @Override
+  public byte[] serialize(Message msg) throws IOException {
+    serializeCount.increment();
+
+    try (
+            TimerContext ignored = TimerContext.timerMillis(serializeTime::add);
+            ByteArrayOutputStream baos = new ByteArrayOutputStream()
+    ) {
       encodingXstream.marshal(msg, driver.createWriter(baos));
+      serializeMsgSize.add(baos.size());
       LOGGER.debug("XStream serialize driver=%s size=%d", driver.getClass(), baos.size());
       return baos.toByteArray();
     } catch (Exception e) {
+      serializeError.increment();
       LOGGER.error(e, "Error in serialize");
       throw new IOException("Error in serialize", e);
     }
   }
 
   @Override
-  public <T extends no.mnemonic.messaging.requestsink.Message> T deserialize(byte[] msgbytes, ClassLoader classLoader) throws IOException {
-    try (ByteArrayInputStream bais = new ByteArrayInputStream(msgbytes)) {
-      LOGGER.debug("XStream deserialize driver=%s size=%d", driver.getClass(), msgbytes.length);
+  public <T extends Message> T deserialize(byte[] msgbytes, ClassLoader classLoader) throws IOException {
+    deserializeCount.increment();
+    deserializeMsgSize.add(msgbytes.length);
+    LOGGER.debug("XStream deserialize driver=%s size=%d", driver.getClass(), msgbytes.length);
+
+    try (
+            TimerContext ignored = TimerContext.timerMillis(deserializeTime::add);
+            ByteArrayInputStream bais = new ByteArrayInputStream(msgbytes)
+    ) {
       //noinspection unchecked
       return (T) decodingXstream.unmarshal(driver.createReader(bais));
     } catch (ForbiddenClassException e) {
+      deserializeForbiddenClassError.increment();
       LOGGER.error(e, "Forbidden class in deserialize");
       throw new IllegalDeserializationException(e.getMessage());
     } catch (Exception e) {
       if (e.getCause() instanceof ForbiddenClassException) {
+        deserializeForbiddenClassError.increment();
         LOGGER.error(e, "Forbidden class in deserialize");
         throw new IllegalDeserializationException(e.getMessage());
       } else {
+        deserializeError.increment();
         LOGGER.error(e, "Error in deserialize");
-        throw new IOException(e);
+        throw new IOException("Error in deserialize", e);
       }
     }
   }

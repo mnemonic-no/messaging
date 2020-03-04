@@ -1,10 +1,11 @@
 package no.mnemonic.messaging.requestsink.jms.serializer;
 
+import no.mnemonic.commons.metrics.MetricAspect;
 import no.mnemonic.messaging.requestsink.Message;
 
 import java.io.IOException;
 
-public interface MessageSerializer {
+public interface MessageSerializer extends MetricAspect {
 
   /**
    * @return a serializer identifier, to allow JMS receiver to distinguish between sender formats

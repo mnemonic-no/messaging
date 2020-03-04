@@ -6,6 +6,7 @@ import no.mnemonic.commons.logging.Logging;
 import no.mnemonic.commons.metrics.MetricAspect;
 import no.mnemonic.commons.metrics.MetricException;
 import no.mnemonic.commons.metrics.Metrics;
+import no.mnemonic.commons.metrics.MetricsGroup;
 import no.mnemonic.commons.utilities.ClassLoaderContext;
 import no.mnemonic.commons.utilities.collections.CollectionUtils;
 import no.mnemonic.commons.utilities.collections.ListUtils;
@@ -99,7 +100,15 @@ public class JMSRequestProxy extends AbstractJMSRequestBase implements MessageLi
 
   @Override
   public Metrics getMetrics() throws MetricException {
-    return metrics.metrics();
+    MetricsGroup m = new MetricsGroup();
+    // Add all server metrics.
+    m.addSubMetrics("server", metrics.metrics());
+    // Add metrics for all serializers.
+    for (MessageSerializer serializer : serializers.values()) {
+      m.addSubMetrics(serializer.serializerID(), serializer.getMetrics());
+    }
+
+    return m;
   }
 
   @Override

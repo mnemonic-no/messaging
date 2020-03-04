@@ -5,6 +5,7 @@ import no.mnemonic.commons.logging.Logging;
 import no.mnemonic.commons.metrics.MetricAspect;
 import no.mnemonic.commons.metrics.MetricException;
 import no.mnemonic.commons.metrics.Metrics;
+import no.mnemonic.commons.metrics.MetricsGroup;
 import no.mnemonic.commons.utilities.lambda.LambdaUtils;
 import no.mnemonic.messaging.requestsink.Message;
 import no.mnemonic.messaging.requestsink.*;
@@ -116,7 +117,13 @@ public class JMSRequestSink extends AbstractJMSRequestBase implements RequestSin
 
   @Override
   public Metrics getMetrics() throws MetricException {
-    return metrics.metrics();
+    MetricsGroup m = new MetricsGroup();
+    // Add all client metrics.
+    m.addSubMetrics("client", metrics.metrics());
+    // Add serializer metrics.
+    m.addSubMetrics(serializer.serializerID(), serializer.getMetrics());
+
+    return m;
   }
 
   @Override

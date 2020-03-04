@@ -43,14 +43,14 @@
     <jdk.version>1.8</jdk.version>
 
     <!-- mnemonic dependencies -->
-    <mnemonic.commons.version>0.3.3</mnemonic.commons.version>
+    <mnemonic.commons.version>0.3.4</mnemonic.commons.version>
 
     <!-- external dependencies -->
     <activemq.version>5.15.11</activemq.version>
     <kafka.clients.version>2.1.1</kafka.clients.version>
     <jms.version>2.0.1</jms.version>
     <junit.version>4.13</junit.version>
-    <mockito.version>3.2.4</mockito.version>
+    <mockito.version>3.3.0</mockito.version>
     <xstream.version>1.4.11.1</xstream.version>
     <docker.compose.junit.version>1.4.2</docker.compose.junit.version>
 

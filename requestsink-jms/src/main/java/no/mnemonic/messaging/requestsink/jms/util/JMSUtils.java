@@ -5,7 +5,6 @@ import no.mnemonic.commons.logging.Logging;
 import no.mnemonic.messaging.requestsink.MessagingException;
 import no.mnemonic.messaging.requestsink.jms.AbstractJMSRequestBase;
 import no.mnemonic.messaging.requestsink.jms.ProtocolVersion;
-import no.mnemonic.messaging.requestsink.jms.serializer.DefaultJavaMessageSerializer;
 import no.mnemonic.messaging.requestsink.jms.serializer.MessageSerializer;
 
 import javax.jms.*;
@@ -27,7 +26,6 @@ import static no.mnemonic.commons.utilities.lambda.LambdaUtils.tryTo;
 public class JMSUtils {
 
   private static final Logger LOGGER = Logging.getLogger(JMSUtils.class);
-  private static final MessageSerializer legacySerializer = new DefaultJavaMessageSerializer();
 
   private JMSUtils() {}
 
@@ -161,24 +159,33 @@ public class JMSUtils {
     );
   }
 
-  public static MessageSerializer determineSerializer(String serializerKey, Map<String, MessageSerializer> serializers) throws JMSException {
-    if (!serializers.containsKey(serializerKey)) {
-      throw new JMSException("Received message encoded with unknown serializer: " + serializerKey);
-    }
-    return serializers.get(serializerKey);
-  }
+  public static MessageSerializer determineSerializer(
+          Message msg,
+          MessageSerializer legacySerializer,
+          Map<String, MessageSerializer> serializers
+  ) throws JMSException {
+    if (msg == null) throw new IllegalArgumentException("msg cannot be null!");
+    if (legacySerializer == null) throw new IllegalArgumentException("legacySerializer cannot be null");
+    if (serializers == null) serializers = new HashMap<>();
 
-  public static MessageSerializer determineSerializer(javax.jms.Message msg, Map<String, MessageSerializer> serializers) throws JMSException {
+    // Message doesn't specify a serializer, fall back to Java serialization by default.
     if (!msg.propertyExists(AbstractJMSRequestBase.SERIALIZER_KEY)) {
       return legacySerializer;
     }
-    return determineSerializer(msg.getStringProperty(AbstractJMSRequestBase.SERIALIZER_KEY), serializers);
-  }
 
-  public static no.mnemonic.messaging.requestsink.Message extractObject(javax.jms.Message message, MessageSerializer serializer)
-          throws JMSException, IOException {
-    MessageSerializer ser = getProtocolVersion(message).atLeast(ProtocolVersion.V3) ? serializer : legacySerializer;
-    return ser.deserialize(extractMessageBytes(message), Thread.currentThread().getContextClassLoader());
+    // Only V3 and later support custom serializers. For older protocol versions the default is Java serialization.
+    if (!getProtocolVersion(msg).atLeast(ProtocolVersion.V3)) {
+      return legacySerializer;
+    }
+
+    // Pick out serializer specified in message.
+    String serializerKey = msg.getStringProperty(AbstractJMSRequestBase.SERIALIZER_KEY);
+    if (serializers.containsKey(serializerKey)) {
+      return serializers.get(serializerKey);
+    }
+
+    // Throw an exception if specified serializer isn't configured server-side
+    throw new JMSException("Received message encoded with unknown serializer: " + serializerKey);
   }
 
   public static byte[] extractMessageBytes(Message msg) throws JMSException {

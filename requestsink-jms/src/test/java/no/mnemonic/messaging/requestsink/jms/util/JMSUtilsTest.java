@@ -1,7 +1,12 @@
 package no.mnemonic.messaging.requestsink.jms.util;
 
 import no.mnemonic.commons.utilities.collections.ListUtils;
+import no.mnemonic.messaging.requestsink.jms.AbstractJMSRequestBase;
 import no.mnemonic.messaging.requestsink.jms.TestUtils;
+import no.mnemonic.messaging.requestsink.jms.serializer.DefaultJavaMessageSerializer;
+import no.mnemonic.messaging.requestsink.jms.serializer.MessageSerializer;
+import no.mnemonic.messaging.requestsink.jms.serializer.XStreamMessageSerializer;
+import org.apache.activemq.command.ActiveMQTextMessage;
 import org.junit.Test;
 import org.mockito.Mockito;
 
@@ -11,16 +16,16 @@ import java.io.ByteArrayInputStream;
 import java.io.IOException;
 import java.io.Serializable;
 import java.security.MessageDigest;
-import java.util.Arrays;
-import java.util.List;
+import java.util.*;
 
 import static no.mnemonic.messaging.requestsink.jms.JMSRequestProxy.PROPERTY_FRAGMENTS_IDX;
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertTrue;
-import static org.mockito.Mockito.*;
 import static no.mnemonic.messaging.requestsink.jms.util.JMSUtils.*;
+import static org.junit.Assert.*;
+import static org.mockito.Mockito.*;
 
 public class JMSUtilsTest {
+
+  private static final MessageSerializer legacySerializer = new DefaultJavaMessageSerializer();
 
   @Test(expected = IllegalArgumentException.class)
   public void testMessageDigestWithNullStringNotAllowed() {
@@ -142,6 +147,50 @@ public class JMSUtilsTest {
             ListUtils.list(new byte[]{1, 2, 3, 4}, new byte[]{5, 6, 7, 8}),
             splitArray(new byte[]{1, 2, 3, 4, 5, 6, 7, 8}, 4)
     ));
+  }
+
+  @Test(expected = IllegalArgumentException.class)
+  public void testDetermineSerializerFailsOnNullMessage() throws JMSException {
+    determineSerializer(null, legacySerializer, new HashMap<>());
+  }
+
+  @Test(expected = IllegalArgumentException.class)
+  public void testDetermineSerializerFailsOnNullLegacySerializer() throws JMSException {
+    determineSerializer(new ActiveMQTextMessage(), null, new HashMap<>());
+  }
+
+  @Test
+  public void testDetermineSerializerFallsBackToLegacySerializer() throws JMSException {
+    assertSame(legacySerializer, determineSerializer(new ActiveMQTextMessage(), legacySerializer, new HashMap<>()));
+  }
+
+  @Test
+  public void testDetermineSerializerFallsBackToLegacySerializerWithOldProtocolVersion() throws JMSException {
+    ActiveMQTextMessage msg = new ActiveMQTextMessage();
+    msg.setStringProperty(AbstractJMSRequestBase.PROTOCOL_VERSION_KEY, "2");
+
+    assertSame(legacySerializer, determineSerializer(msg, legacySerializer, new HashMap<>()));
+  }
+
+  @Test
+  public void testDetermineSerializerPicksSerializerFromMap() throws JMSException {
+    MessageSerializer customSerializer = XStreamMessageSerializer.builder().build();
+    Map<String, MessageSerializer> serializers = Collections.singletonMap(customSerializer.serializerID(), customSerializer);
+
+    ActiveMQTextMessage msg = new ActiveMQTextMessage();
+    msg.setStringProperty(AbstractJMSRequestBase.SERIALIZER_KEY, customSerializer.serializerID());
+    msg.setStringProperty(AbstractJMSRequestBase.PROTOCOL_VERSION_KEY, "3");
+
+    assertSame(customSerializer, determineSerializer(msg, legacySerializer, serializers));
+  }
+
+  @Test(expected = JMSException.class)
+  public void testDetermineSerializerFailsWithoutConfiguredSerializer() throws JMSException {
+    ActiveMQTextMessage msg = new ActiveMQTextMessage();
+    msg.setStringProperty(AbstractJMSRequestBase.SERIALIZER_KEY, "error");
+    msg.setStringProperty(AbstractJMSRequestBase.PROTOCOL_VERSION_KEY, "3");
+
+    determineSerializer(msg, legacySerializer, new HashMap<>());
   }
 
   //helpers

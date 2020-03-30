@@ -16,6 +16,7 @@ import no.mnemonic.messaging.requestsink.RequestSink;
 import no.mnemonic.messaging.requestsink.jms.context.ServerChannelUploadContext;
 import no.mnemonic.messaging.requestsink.jms.context.ServerContext;
 import no.mnemonic.messaging.requestsink.jms.context.ServerResponseContext;
+import no.mnemonic.messaging.requestsink.jms.serializer.DefaultJavaMessageSerializer;
 import no.mnemonic.messaging.requestsink.jms.serializer.MessageSerializer;
 import no.mnemonic.messaging.requestsink.jms.util.ServerMetrics;
 import no.mnemonic.messaging.requestsink.jms.util.ThreadFactoryBuilder;
@@ -85,11 +86,9 @@ public class JMSRequestProxy extends AbstractJMSRequestBase implements MessageLi
 
     if (maxConcurrentCalls < 1)
       throw new IllegalArgumentException("maxConcurrentCalls cannot be lower than 1");
-    if (CollectionUtils.isEmpty(serializers))
-      throw new IllegalArgumentException("no serializers provided");
 
     this.shutdownTimeout = shutdownTimeout;
-    this.serializers = MapUtils.map(serializers, s -> MapUtils.pair(s.serializerID(), s));
+    this.serializers = configureSerializersWithDefault(serializers);
     this.requestSink = assertNotNull(requestSink, "requestSink not set");
     this.executor = Executors.newFixedThreadPool(
             maxConcurrentCalls,
@@ -271,7 +270,7 @@ public class JMSRequestProxy extends AbstractJMSRequestBase implements MessageLi
 
   private void handleSignalMessage(javax.jms.Message message, long timeout) throws JMSException, NamingException {
     String callID = message.getJMSCorrelationID();
-    MessageSerializer serializer = determineSerializer(message, serializers);
+    MessageSerializer serializer = determineSerializer(message, pickLegacySerializer(), serializers);
     Destination responseDestination = message.getJMSReplyTo();
     //ignore requests without a clear response destination/call ID
     if (callID == null || responseDestination == null) {
@@ -285,7 +284,7 @@ public class JMSRequestProxy extends AbstractJMSRequestBase implements MessageLi
     // create a response context to handle response messages
     ServerResponseContext ctx = setupServerContext(callID, responseDestination, timeout, getProtocolVersion(message), serializer);
     try {
-      ctx.handle(requestSink, extractObject(message, determineSerializer(message, serializers)));
+      ctx.handle(requestSink, serializer.deserialize(extractMessageBytes(message), Thread.currentThread().getContextClassLoader()));
     } catch (IOException e) {
       LOGGER.error(e, "Illegal deserialization reading message from client");
       ctx.notifyError(e);
@@ -295,7 +294,7 @@ public class JMSRequestProxy extends AbstractJMSRequestBase implements MessageLi
 
   private void handleChannelRequest(javax.jms.Message message, long timeout) throws JMSException, NamingException {
     String callID = message.getJMSCorrelationID();
-    MessageSerializer serializer = determineSerializer(message, serializers);
+    MessageSerializer serializer = determineSerializer(message, pickLegacySerializer(), serializers);
     Destination responseDestination = message.getJMSReplyTo();
     //ignore requests without a clear response destination/call ID
     if (callID == null || responseDestination == null) {
@@ -372,6 +371,25 @@ public class JMSRequestProxy extends AbstractJMSRequestBase implements MessageLi
     calls.put(callID, context);
     //listen on upload messages and transmit channel setup
     context.setupChannel(this::handleChannelUploadCompleted);
+  }
+
+  private Map<String, MessageSerializer> configureSerializersWithDefault(Collection<MessageSerializer> serializers) {
+    if (CollectionUtils.isEmpty(serializers)) serializers = new ArrayList<>();
+
+    // Server must support at least Java serialization for Protocol version < V3.
+    if (serializers.stream().noneMatch(ser -> ser instanceof DefaultJavaMessageSerializer)) {
+      serializers.add(new DefaultJavaMessageSerializer());
+    }
+
+    return MapUtils.map(serializers, ser -> MapUtils.pair(ser.serializerID(), ser));
+  }
+
+  private MessageSerializer pickLegacySerializer() {
+    return this.serializers.values()
+            .stream()
+            .filter(ser -> ser instanceof DefaultJavaMessageSerializer)
+            .findFirst()
+            .orElseThrow(() -> new IllegalStateException("Default serializer not configured"));
   }
 
   //builder

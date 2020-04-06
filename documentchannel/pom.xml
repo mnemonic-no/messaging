@@ -9,4 +9,11 @@
   </parent>
   <artifactId>documentchannel</artifactId>
 
+  <dependencies>
+    <dependency>
+      <groupId>no.mnemonic.commons</groupId>
+      <artifactId>logging</artifactId>
+      <version>${mnemonic.commons.version}</version>
+    </dependency>
+  </dependencies>
 </project>

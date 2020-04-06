@@ -2,6 +2,7 @@ package no.mnemonic.messaging.documentchannel.kafka;
 
 import no.mnemonic.messaging.documentchannel.DocumentChannel;
 import no.mnemonic.messaging.documentchannel.DocumentDestination;
+import no.mnemonic.messaging.documentchannel.noop.NullChannel;
 import org.apache.kafka.clients.producer.KafkaProducer;
 import org.apache.kafka.clients.producer.ProducerRecord;
 

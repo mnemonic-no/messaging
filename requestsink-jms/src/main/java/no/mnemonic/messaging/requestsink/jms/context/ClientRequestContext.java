@@ -37,7 +37,7 @@ public class ClientRequestContext {
   private static final Logger LOGGER = Logging.getLogger(ClientRequestContext.class);
   private static final String RECEIVED_FRAGMENT_WITHOUT = "Received fragment without ";
   private static final String RECEIVED_END_OF_FRAGMENTS_WITHOUT = "Received end-of-fragments without ";
-  private static final long KEEPALIVE_ON_FRAGMENT = 1000;
+  private static final long KEEPALIVE_ON_FRAGMENT = 10000;
 
   private static Clock clock = Clock.systemUTC();
 

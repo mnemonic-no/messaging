@@ -78,7 +78,7 @@ public class ClientRequestContextTest {
   @Test
   public void testHandleFragmentSubmitsKeepalive() throws IOException {
     assertTrue(handler.addFragment(new MessageFragment("callID", "responseID", 0, Arrays.copyOfRange(messageBytes, 0, 3))));
-    verify(requestContext).keepAlive(11000L);
+    verify(requestContext).keepAlive(20000L);
   }
 
   @Test

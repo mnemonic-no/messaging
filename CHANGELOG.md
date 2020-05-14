@@ -3,6 +3,19 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [1.2.27] - 2020-05-14
+### Added
+ARGUS-18043
+- Added metrics of running/pending requests to JMSRequestProxy.
+
+### Changed
+ARGUS-18043
+- Upgrade mnemonic-commons from 0.3.4 to 0.4.0.
+- Upgrade ActiveMQ from 5.15.11 to 5.15.12.
+- Upgrade XStream from 1.4.11.1 to 1.4.12.
+- Upgrade Mockito from 3.3.0 to 3.3.3.
+- Upgrade docker-compose-rule-junit4 from 1.4.2 to 1.5.0.
+
 ## [1.2.26] - 2020-04-30
 ### Fixed
 ARGUS-18031

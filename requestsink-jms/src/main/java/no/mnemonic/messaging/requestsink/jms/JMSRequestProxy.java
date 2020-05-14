@@ -3,10 +3,7 @@ package no.mnemonic.messaging.requestsink.jms;
 import no.mnemonic.commons.component.Dependency;
 import no.mnemonic.commons.logging.Logger;
 import no.mnemonic.commons.logging.Logging;
-import no.mnemonic.commons.metrics.MetricAspect;
-import no.mnemonic.commons.metrics.MetricException;
-import no.mnemonic.commons.metrics.Metrics;
-import no.mnemonic.commons.metrics.MetricsGroup;
+import no.mnemonic.commons.metrics.*;
 import no.mnemonic.commons.utilities.ClassLoaderContext;
 import no.mnemonic.commons.utilities.collections.CollectionUtils;
 import no.mnemonic.commons.utilities.collections.ListUtils;
@@ -30,6 +27,7 @@ import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.concurrent.atomic.LongAdder;
 
 import static no.mnemonic.commons.utilities.ObjectUtils.ifNotNull;
 import static no.mnemonic.commons.utilities.collections.SetUtils.set;
@@ -66,8 +64,10 @@ public class JMSRequestProxy extends AbstractJMSRequestBase implements MessageLi
   private final AtomicLong lastCleanupTimestamp = new AtomicLong();
   private final AtomicBoolean reconnecting = new AtomicBoolean();
 
-  private final ExecutorService executor;
   private final ServerMetrics metrics = new ServerMetrics();
+  private final LongAdder awaitPermitTime = new LongAdder();
+
+  private final ExecutorService executor;
   private final long shutdownTimeout;
 
   private final Set<JMSRequestProxyConnectionListener> connectionListeners = new HashSet<>();
@@ -102,6 +102,12 @@ public class JMSRequestProxy extends AbstractJMSRequestBase implements MessageLi
     MetricsGroup m = new MetricsGroup();
     // Add all server metrics.
     m.addSubMetrics("server", metrics.metrics());
+    m.addSubMetrics("requests", new MetricsData()
+            .addData("runningRequests", calls.size()) // Approximation as finished contexts are counted until they are cleaned up.
+            .addData("pendingRequests", semaphore.getQueueLength())
+            .addData("availablePermits", semaphore.availablePermits())
+            .addData("awaitPermitTime", awaitPermitTime)
+    );
     // Add metrics for all serializers.
     for (MessageSerializer serializer : serializers.values()) {
       m.addSubMetrics(serializer.serializerID(), serializer.getMetrics());
@@ -235,9 +241,13 @@ public class JMSRequestProxy extends AbstractJMSRequestBase implements MessageLi
         LOGGER.debug("<< process [callID=%s type=%s]", message.getJMSCorrelationID(), messageType);
       }
 
-      //avoid enqueueing a lot of messages into the executor queue, we rather want them to stay in JMS
-      //if semaphore is depleted, this should block the activemq consumer, causing messages to queue up in JMS
-      semaphore.acquire();
+      try (TimerContext ignored = TimerContext.timerMillis(awaitPermitTime::add)) {
+        //avoid enqueueing a lot of messages into the executor queue, we rather want them to stay in JMS
+        //if semaphore is depleted, this should block the activemq consumer, causing messages to queue up in JMS
+        semaphore.acquire();
+      }
+
+      //schedule message for processing
       executor.submit(() -> doProcessMessage(message, messageType, timeout));
     } catch (Exception e) {
       metrics.error();

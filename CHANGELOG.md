@@ -3,6 +3,15 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [1.2.28] - 2020-12-16
+### Changed
+ARGUS-20893
+- Upgrade mnemonic-commons from 0.4.0 to 0.4.2.
+- Upgrade ActiveMQ from 5.15.12 to 5.16.0.
+- Upgrade XStream from 1.4.12 to 1.4.15.
+- Upgrade JUnit from 4.13 to 4.13.1.
+- Upgrade Mockito from 3.3.3 to 3.6.28.
+
 ## [1.2.27] - 2020-05-14
 ### Added
 ARGUS-18043

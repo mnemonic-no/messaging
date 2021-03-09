@@ -5,9 +5,9 @@ import no.mnemonic.messaging.documentchannel.DocumentChannelListener;
 import no.mnemonic.messaging.documentchannel.DocumentChannelSubscription;
 import no.mnemonic.messaging.documentchannel.DocumentSource;
 
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Collection;
-import java.util.concurrent.TimeUnit;
 
 /**
  * Empty implementation of a DocumentSource, which does absolutely nothing.
@@ -25,7 +25,7 @@ public class NullDocumentSource<T> implements DocumentSource<T> {
   }
 
   @Override
-  public DocumentBatch<T> poll(long l, TimeUnit timeUnit) {
+  public DocumentBatch<T> poll(Duration duration) {
     return new DocumentBatch<T>() {
       @Override
       public Collection<T> getDocuments() {

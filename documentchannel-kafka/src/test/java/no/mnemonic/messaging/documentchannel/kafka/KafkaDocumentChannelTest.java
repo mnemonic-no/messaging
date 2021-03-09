@@ -3,6 +3,7 @@ package no.mnemonic.messaging.documentchannel.kafka;
 import com.palantir.docker.compose.DockerComposeRule;
 import com.palantir.docker.compose.configuration.ProjectName;
 import com.palantir.docker.compose.connection.waiting.HealthChecks;
+import no.mnemonic.commons.junit.docker.DockerTestUtils;
 import no.mnemonic.messaging.documentchannel.DocumentBatch;
 import no.mnemonic.messaging.documentchannel.DocumentChannel;
 import no.mnemonic.messaging.documentchannel.DocumentChannelListener;
@@ -15,25 +16,42 @@ import org.junit.runner.RunWith;
 import org.mockito.Mock;
 import org.mockito.junit.MockitoJUnitRunner;
 
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Collection;
+import java.util.Iterator;
 import java.util.UUID;
 import java.util.concurrent.Semaphore;
 import java.util.concurrent.TimeUnit;
 import java.util.function.Consumer;
-import java.util.regex.Matcher;
-import java.util.regex.Pattern;
 
-import static no.mnemonic.commons.utilities.ObjectUtils.ifNotNull;
+import static no.mnemonic.commons.utilities.ObjectUtils.ifNotNullDo;
 import static no.mnemonic.commons.utilities.collections.ListUtils.list;
 import static no.mnemonic.commons.utilities.lambda.LambdaUtils.tryTo;
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.Mockito.*;
+import static org.mockito.Mockito.doAnswer;
+import static org.mockito.Mockito.isA;
+import static org.mockito.Mockito.times;
+import static org.mockito.Mockito.verify;
 
 @RunWith(MockitoJUnitRunner.class)
 public class KafkaDocumentChannelTest {
+
+  private Semaphore semaphore = new Semaphore(0);
+
+  @Mock
+  private DocumentChannelListener<String> listener;
+  @Mock
+  private DocumentChannel.DocumentCallback<String> callback;
+
+  @Mock
+  Consumer<Exception> errorListener;
+
+  Collection<AutoCloseable> channels = new ArrayList<>();
+  private String topic = UUID.randomUUID().toString();
 
   @ClassRule
   public static DockerComposeRule docker = DockerComposeRule.builder()
@@ -42,16 +60,10 @@ public class KafkaDocumentChannelTest {
           .waitingForService("kafka", HealthChecks.toHaveAllPortsOpen())
           .build();
 
-  private Semaphore semaphore = new Semaphore(0);
-
-  @Mock
-  private DocumentChannelListener<String> listener;
-  @Mock
-  private DocumentChannel.DocumentCallback<String> callback;
-  @Mock
-  private Consumer<Exception> errorListener;
-  private Collection<AutoCloseable> channels = new ArrayList<>();
-  private String topic = UUID.randomUUID().toString();
+  @After
+  public void tearDown() {
+    channels.forEach(c -> tryTo(c::close));
+  }
 
   @Before
   public void setUp() {
@@ -61,34 +73,29 @@ public class KafkaDocumentChannelTest {
     }).when(listener).documentReceived(any());
   }
 
-  @After
-  public void tearDown() {
-    channels.forEach(c -> tryTo(c::close));
-  }
-
   @Test
   public void pollWithAcknowledge() {
-    topic = "pollWithAcknowledgeTest";
+    useTopic("pollWithAcknowledgeTest");
     KafkaDocumentDestination<String> senderChannel = setupDestination();
 
-    KafkaDocumentSource<String> receiverChannel1 = setupSource("group");
+    KafkaDocumentSource<String> receiverChannel1 = setupSource("group", null, b -> b.setMaxPollRecords(2));
 
     senderChannel.getDocumentChannel().sendDocument("mydoc1");
     senderChannel.getDocumentChannel().sendDocument("mydoc2");
     senderChannel.getDocumentChannel().sendDocument("mydoc3");
 
-    DocumentBatch<String> batch = receiverChannel1.poll(10, TimeUnit.SECONDS);
+    DocumentBatch<String> batch = receiverChannel1.poll(Duration.ofSeconds(10));
     assertEquals(list("mydoc1", "mydoc2"), list(batch.getDocuments()));
     batch.acknowledge();
 
-    batch = receiverChannel1.poll(10, TimeUnit.SECONDS);
+    batch = receiverChannel1.poll(Duration.ofSeconds(10));
     assertEquals(list("mydoc3"), list(batch.getDocuments()));
     batch.acknowledge();
   }
 
   @Test
   public void writeWithCallback() {
-    topic = "writeWithCallbackTest";
+    useTopic("writeWithCallbackTest");
     KafkaDocumentDestination<String> senderChannel = setupDestination();
     KafkaDocumentSource<String> receiverChannel1 = setupSource("group");
 
@@ -97,36 +104,105 @@ public class KafkaDocumentChannelTest {
     senderChannel.getDocumentChannel().sendDocument("mydoc3", "doc3", callback);
     senderChannel.getDocumentChannel().flush();
 
-    DocumentBatch<String> batch = receiverChannel1.poll(10, TimeUnit.SECONDS);
+    receiverChannel1.poll(Duration.ofSeconds(10));
     verify(callback).documentAccepted("doc1");
     verify(callback).documentAccepted("doc2");
     verify(callback).documentAccepted("doc3");
   }
 
   @Test
-  public void pollWithoutAcknowledgeResends() {
-    topic = "pollWithoutAcknowledgeResendsTest";
+  public void rangeIterate() throws KafkaInvalidSeekException, InterruptedException {
+    useTopic("rangeIterateTest");
+    KafkaDocumentDestination<String> senderChannel = setupDestination();
+    KafkaDocumentSource<String> receiverChannel1 = setupSource("group", null, b -> b.setMaxPollRecords(10));
+
+    senderChannel.getDocumentChannel().sendDocument("mydoc1");
+    Thread.sleep(1); //sleep between messages to ensure they have different timestamps in kafka
+    senderChannel.getDocumentChannel().sendDocument("mydoc2");
+    Thread.sleep(1);
+    senderChannel.getDocumentChannel().sendDocument("mydoc3");
+    Thread.sleep(1);
+    senderChannel.getDocumentChannel().flush();
+
+    String cursor;
+    {
+      Collection<KafkaDocument<String>> result = receiverChannel1.pollDocuments(Duration.ofSeconds(10)).getDocuments();
+      assertEquals(3, result.size());
+      Iterator<KafkaDocument<String>> iterator = result.iterator();
+      KafkaDocument<String> doc1 = iterator.next();
+      KafkaDocument<String> doc2 = iterator.next();
+      KafkaDocument<String> doc3 = iterator.next();
+      assertEquals("mydoc1", doc1.getDocument());
+      assertEquals("mydoc2", doc2.getDocument());
+      assertEquals("mydoc3", doc3.getDocument());
+      assertNotNull(doc2.getCursor());
+      cursor = doc2.getCursor();
+    }
+
+    {
+      KafkaDocumentSource<String> rangeReceiver = setupSource("range");
+      rangeReceiver.seek(cursor);
+
+      Collection<KafkaDocument<String>> result2 = rangeReceiver.pollDocuments(Duration.ofSeconds(10)).getDocuments();
+      assertEquals(2, result2.size());
+      Iterator<KafkaDocument<String>> iterator2 = result2.iterator();
+      KafkaDocument<String> rdoc1 = iterator2.next();
+      KafkaDocument<String> rdoc2 = iterator2.next();
+      assertEquals("mydoc2", rdoc1.getDocument());
+      assertEquals("mydoc3", rdoc2.getDocument());
+    }
+  }
+
+  @Test
+  public void noneCommitTypeWithSubscriber() throws InterruptedException {
+    useTopic("noneCommitTypeWithSubscriberTest");
     KafkaDocumentDestination<String> senderChannel = setupDestination();
 
-    KafkaDocumentSource<String> receiverChannel1 = setupSource("group");
+    for (int i = 0; i < 100; i++) {
+      senderChannel.getDocumentChannel().sendDocument("mydoc" + i);
+      Thread.sleep(1);
+    }
+    senderChannel.getDocumentChannel().flush();
+
+    {
+      KafkaDocumentSource<String> receiverChannel1 = setupSource("group", s -> s.setCommitType(KafkaDocumentSource.CommitType.none), b -> b.setMaxPollRecords(500));
+      receiverChannel1.createDocumentSubscription(listener);
+      assertTrue(semaphore.tryAcquire(100, 10, TimeUnit.SECONDS));
+      receiverChannel1.close();
+    }
+
+    {
+      KafkaDocumentSource<String> receiverChannel2 = setupSource("group", s -> s.setCommitType(KafkaDocumentSource.CommitType.none), b -> b.setMaxPollRecords(500));
+      receiverChannel2.createDocumentSubscription(listener);
+      assertTrue(semaphore.tryAcquire(100, 10, TimeUnit.SECONDS));
+      receiverChannel2.close();
+    }
+  }
+
+  @Test
+  public void pollWithoutAcknowledgeResends() {
+    useTopic("pollWithoutAcknowledgeResendsTest");
+    KafkaDocumentDestination<String> senderChannel = setupDestination();
+
+    KafkaDocumentSource<String> receiverChannel1 = setupSource("group", null, b -> b.setMaxPollRecords(2));
 
     senderChannel.getDocumentChannel().sendDocument("mydoc1");
     senderChannel.getDocumentChannel().sendDocument("mydoc2");
     senderChannel.getDocumentChannel().sendDocument("mydoc3");
 
-    DocumentBatch<String> batch = receiverChannel1.poll(10, TimeUnit.SECONDS);
+    DocumentBatch<String> batch = receiverChannel1.poll(Duration.ofSeconds(10));
     assertEquals(list("mydoc1", "mydoc2"), list(batch.getDocuments()));
     receiverChannel1.close();
 
-    KafkaDocumentSource<String> receiverChannel2 = setupSource("group");
-    batch = receiverChannel2.poll(10, TimeUnit.SECONDS);
+    KafkaDocumentSource<String> receiverChannel2 = setupSource("group", null, b -> b.setMaxPollRecords(2));
+    batch = receiverChannel2.poll(Duration.ofSeconds(10));
     assertEquals(list("mydoc1", "mydoc2"), list(batch.getDocuments()));
 
   }
 
   @Test
   public void singleConsumerGroup() throws InterruptedException {
-    topic = "singleConsumerGroupTest";
+    useTopic("singleConsumerGroupTest");
     KafkaDocumentDestination<String> senderChannel = setupDestination();
     KafkaDocumentSource<String> receiverChannel1 = setupSource("group");
     KafkaDocumentSource<String> receiverChannel2 = setupSource("group");
@@ -144,7 +220,7 @@ public class KafkaDocumentChannelTest {
 
   @Test
   public void retryOnError() throws InterruptedException {
-    topic = "retryOnErrorTest";
+    useTopic("retryOnErrorTest");
     doAnswer(i -> {
       semaphore.release();
       return null;
@@ -175,7 +251,7 @@ public class KafkaDocumentChannelTest {
 
   @Test
   public void retryOnKafkaRebalanced() throws InterruptedException {
-    topic = "retryOnKafkaRebalancedTest";
+    useTopic("retryOnKafkaRebalancedTest");
     doAnswer(i -> {
       // Let first message succeed, so there is offset committed
       semaphore.release();
@@ -211,7 +287,7 @@ public class KafkaDocumentChannelTest {
 
   @Test
   public void retryWithMultipleConsumers() throws InterruptedException {
-    topic = "retryWithMultipleConsumersTest";
+    useTopic("retryWithMultipleConsumersTest");
 
     doAnswer(i -> {
       // Accepts initial message
@@ -242,11 +318,12 @@ public class KafkaDocumentChannelTest {
     assertTrue(semaphore.tryAcquire(1000, 20, TimeUnit.SECONDS));
     verify(listener, times(1001)).documentReceived("mydoc1");
     verify(errorListener).accept(isA(RuntimeException.class));
+    System.out.println("Test done");
   }
 
   @Test
   public void multipleConsumerGroup() throws InterruptedException {
-    topic = "multipleConsumerGroupTest";
+    useTopic("multipleConsumerGroupTest");
     KafkaDocumentDestination<String> senderChannel = setupDestination();
     KafkaDocumentSource<String> receiverChannel1 = setupSource("group1");
     KafkaDocumentSource<String> receiverChannel2 = setupSource("group2");
@@ -262,8 +339,6 @@ public class KafkaDocumentChannelTest {
     verify(listener, times(2)).documentReceived("mydoc3");
   }
 
-
-  //private
   private KafkaDocumentDestination<String> setupDestination() {
     KafkaDocumentDestination<String> channel = KafkaDocumentDestination.<String>builder()
             .setProducerProvider(createProducerProvider())
@@ -276,14 +351,19 @@ public class KafkaDocumentChannelTest {
   }
 
   private KafkaDocumentSource<String> setupSource(String group) {
+    return setupSource(group, null, null);
+  }
+
+  private KafkaDocumentSource<String> setupSource(String group, Consumer<KafkaDocumentSource.Builder<?>> sourceEdit, Consumer<KafkaConsumerProvider.Builder> providerEdit) {
     // noinspection unchecked
-    KafkaDocumentSource<String> channel = KafkaDocumentSource.<String>builder()
-            .setConsumerProvider(createConsumerProvider(group))
+    KafkaDocumentSource.Builder<String> builder = KafkaDocumentSource.<String>builder()
+            .setConsumerProvider(createConsumerProvider(group, providerEdit))
             .addErrorListener(errorListener)
             .setTopicName(topic)
             .setType(String.class)
-            .setCommitSync(true)
-            .build();
+            .setCommitType(KafkaDocumentSource.CommitType.sync);
+    ifNotNullDo(sourceEdit, s -> s.accept(builder));
+    KafkaDocumentSource<String> channel = builder.build();
     channels.add(channel);
     return channel;
   }
@@ -295,8 +375,8 @@ public class KafkaDocumentChannelTest {
             .build();
   }
 
-  private KafkaConsumerProvider createConsumerProvider(String group) {
-    return KafkaConsumerProvider.builder()
+  private KafkaConsumerProvider createConsumerProvider(String group, Consumer<KafkaConsumerProvider.Builder> edits) {
+    KafkaConsumerProvider.Builder builder = KafkaConsumerProvider.builder()
             .setMaxPollRecords(2)
             .setKafkaHosts(kafkaHost())
             .setKafkaPort(kafkaPort())
@@ -305,12 +385,13 @@ public class KafkaDocumentChannelTest {
             .setRequestTimeoutMs(11000)
             .setSessionTimeoutMs(10000)
             .setMaxPollIntervalMs(2000)
-            .setGroupID(group)
-            .build();
+            .setGroupID(group);
+    ifNotNullDo(edits, e -> e.accept(builder));
+    return builder.build();
   }
 
   private String kafkaHost() {
-    return ifNotNull(System.getenv("DOCKER_HOST"), this::extractHost, "localhost");
+    return DockerTestUtils.getDockerHost();
   }
 
   private int kafkaPort() {
@@ -320,11 +401,8 @@ public class KafkaDocumentChannelTest {
             .getExternalPort();
   }
 
-  private String extractHost(String dockerHost) {
-    Pattern p = Pattern.compile("tcp://(.+):(.+)");
-    Matcher m = p.matcher(dockerHost);
-    if (!m.matches()) throw new IllegalArgumentException("Illegal docker host: " + dockerHost);
-    return m.group(1);
+  private void useTopic(String topic) {
+    this.topic = topic;
   }
 
 }

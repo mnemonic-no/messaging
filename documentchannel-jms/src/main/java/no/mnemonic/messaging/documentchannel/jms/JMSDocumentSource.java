@@ -8,12 +8,17 @@ import no.mnemonic.messaging.documentchannel.DocumentChannelListener;
 import no.mnemonic.messaging.documentchannel.DocumentChannelSubscription;
 import no.mnemonic.messaging.documentchannel.DocumentSource;
 
-import javax.jms.*;
-import java.lang.IllegalStateException;
+import javax.jms.BytesMessage;
+import javax.jms.ExceptionListener;
+import javax.jms.JMSException;
+import javax.jms.Message;
+import javax.jms.MessageConsumer;
+import javax.jms.MessageListener;
+import javax.jms.TextMessage;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.List;
-import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.atomic.LongAdder;
@@ -68,14 +73,14 @@ public class JMSDocumentSource<T> implements DocumentSource<T> {
   }
 
   @Override
-  public DocumentBatch<T> poll(long duration, TimeUnit timeUnit) {
-    if (timeUnit == null) throw new IllegalArgumentException("timeUnit not set");
+  public DocumentBatch<T> poll(Duration duration) {
+    if (duration == null) throw new IllegalArgumentException("duration not set");
     if (subscriberAttached.get()) throw new IllegalStateException("This channel already has a subscriber");
     try {
       if (sessionStarted.compareAndSet(false, true)) {
         getSession().start();
       }
-      Message msg = getSession().getConsumer().receive(timeUnit.toMillis(duration));
+      Message msg = getSession().getConsumer().receive(duration.toMillis());
       return createBatch(msg);
     } catch (JMSException | JMSDocumentChannelException e) {
       throw new IllegalStateException("Unable to poll from session", e);

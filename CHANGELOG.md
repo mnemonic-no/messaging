@@ -3,6 +3,29 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [1.3.0] - 2021-03-09
+
+### Added
+ARGUS-22135
+- Implemented cursor support in `KafkaDocumentSource`, allowing a consumer to receive a cursor to resume previous position.
+    - New method `KafkaDocumentSource.seek()` to support seeking to a specified position 
+    - New transport class `KafkaDocument` to carry a document with metadata
+    - New method `KafkaDocumentSource.pollDocuments` returning `KafkaDocument` 
+    - New interface `KafkaDocumentChannelListener` extending `DocumentChannelListener`, receiving `KafkaDocument` 
+
+See [README.md](documentchannel-kafka/README.md) for details on how to use.
+
+### Changed
+ARGUS-22135
+- Upgrade mnemonic-commons from 0.4.2 to 0.4.3
+- Upgrade ActiveMQ from 5.16.0 to 5.16.1.
+- Upgrade Kafka Clients from 2.1.1 to 2.7.0.
+- Upgrade JUnit from 4.13.1 to 4.13.2.
+- Upgrade Mockito from 3.6.28 to 3.8.0.
+- Deprecated `DocumentSource.poll(long, TimeUnit)`, introducing `DocumentSource.poll(Duration)`
+- Refactored `KafkaDocumentSource`, extracting KafkaConsumerWorker to separate class
+- Added JUnit Jupiter framework, replacing legacy JUnit4 with Jupiter Vintage
+
 ## [1.2.28] - 2020-12-16
 ### Changed
 ARGUS-20893

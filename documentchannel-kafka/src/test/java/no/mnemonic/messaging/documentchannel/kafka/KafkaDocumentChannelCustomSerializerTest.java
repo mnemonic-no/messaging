@@ -133,7 +133,7 @@ public class KafkaDocumentChannelCustomSerializerTest {
             .addErrorListener(errorListener)
             .setTopicName(topic)
             .setType(MyObject.class)
-            .setCommitSync(true)
+            .setCommitType(KafkaDocumentSource.CommitType.sync)
             .build();
     channels.add(channel);
     return channel;

@@ -1,22 +1,29 @@
 package no.mnemonic.messaging.documentchannel.kafka;
 
-import no.mnemonic.commons.logging.Logger;
-import no.mnemonic.commons.logging.Logging;
 import no.mnemonic.commons.metrics.MetricAspect;
 import no.mnemonic.commons.metrics.MetricException;
 import no.mnemonic.commons.metrics.Metrics;
 import no.mnemonic.commons.metrics.MetricsData;
 import no.mnemonic.commons.utilities.collections.CollectionUtils;
 import no.mnemonic.commons.utilities.collections.ListUtils;
+import no.mnemonic.commons.utilities.collections.MapUtils;
+import no.mnemonic.commons.utilities.collections.SetUtils;
 import no.mnemonic.messaging.documentchannel.DocumentBatch;
 import no.mnemonic.messaging.documentchannel.DocumentChannelListener;
 import no.mnemonic.messaging.documentchannel.DocumentChannelSubscription;
 import no.mnemonic.messaging.documentchannel.DocumentSource;
-import org.apache.kafka.clients.consumer.*;
+import org.apache.kafka.clients.consumer.ConsumerRecord;
+import org.apache.kafka.clients.consumer.ConsumerRecords;
+import org.apache.kafka.clients.consumer.KafkaConsumer;
+import org.apache.kafka.clients.consumer.OffsetAndTimestamp;
+import org.apache.kafka.common.PartitionInfo;
 import org.apache.kafka.common.TopicPartition;
 
+import java.time.Duration;
 import java.util.Collection;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -27,9 +34,9 @@ import java.util.concurrent.atomic.LongAdder;
 import java.util.function.Consumer;
 
 import static no.mnemonic.commons.utilities.ObjectUtils.ifNotNullDo;
-import static no.mnemonic.commons.utilities.ObjectUtils.ifNull;
 import static no.mnemonic.commons.utilities.collections.ListUtils.addToList;
 import static no.mnemonic.commons.utilities.collections.ListUtils.list;
+import static no.mnemonic.commons.utilities.collections.MapUtils.map;
 import static no.mnemonic.commons.utilities.collections.SetUtils.addToSet;
 import static no.mnemonic.commons.utilities.collections.SetUtils.set;
 import static no.mnemonic.commons.utilities.lambda.LambdaUtils.tryTo;
@@ -45,13 +52,14 @@ import static no.mnemonic.commons.utilities.lambda.LambdaUtils.tryTo;
  */
 public class KafkaDocumentSource<T> implements DocumentSource<T>, MetricAspect {
 
-  private static final int CONSUMER_POLL_TIMEOUT_MILLIS = 1000;
-  private static final Logger LOGGER = Logging.getLogger(KafkaDocumentSource.class);
+  public enum CommitType {
+    sync, async, none;
+  }
 
   private final KafkaConsumerProvider provider;
   private final Class<T> type;
   private final List<String> topicName;
-  private final boolean commitSync;
+  private final CommitType commitType;
 
   private final AtomicBoolean subscriberAttached = new AtomicBoolean();
   private final AtomicReference<KafkaConsumer<String, T>> currentConsumer = new AtomicReference<>();
@@ -61,13 +69,16 @@ public class KafkaDocumentSource<T> implements DocumentSource<T>, MetricAspect {
   private final AtomicBoolean consumerRunning = new AtomicBoolean();
   private final LongAdder consumerRetryProcessError = new LongAdder();
   private final LongAdder consumerRetryKafkaError = new LongAdder();
+  private final KafkaCursor currentCursor = new KafkaCursor();
 
   private KafkaDocumentSource(
           KafkaConsumerProvider provider,
           Class<T> type,
           List<String> topicName,
-          boolean commitSync, Set<Consumer<Exception>> errorListeners) {
-    this.commitSync = commitSync;
+          CommitType commitType,
+          Set<Consumer<Exception>> errorListeners
+  ) {
+    this.commitType = commitType;
     this.errorListeners = errorListeners;
     if (provider == null) throw new IllegalArgumentException("provider not set");
     if (type == null) throw new IllegalArgumentException("type not set");
@@ -78,30 +89,88 @@ public class KafkaDocumentSource<T> implements DocumentSource<T>, MetricAspect {
     this.topicName = topicName;
   }
 
+  /**
+   * Seek to cursor
+   *
+   * @param cursor A string representation of a cursor as returned in a {@link KafkaDocument}. A null cursor will not change the offset of the consumer.
+   * @throws KafkaInvalidSeekException if the cursor is invalid, or points to a timestamp which is not reachable
+   */
+  public void seek(String cursor) throws KafkaInvalidSeekException {
+    if (cursor == null) {
+      return;
+    }
+    //parse cursor into current cursor
+    currentCursor.parse(cursor);
+    //for each active topic, seek each partition to the position specified by the cursor
+    for (String topic : topicName) {
+      seek(topic, currentCursor.getPointers().get(topic));
+    }
+  }
+
   @Override
   public Metrics getMetrics() throws MetricException {
     return new MetricsData()
-        .addData("kafka.consumer.alive", consumerRunning.get() ? 1 : 0)
-        .addData("kafka.consumer.processing.error.retry", consumerRetryProcessError.longValue())
-        .addData("kafka.consumer.kafka.error.retry", consumerRetryKafkaError.longValue());
+            .addData("kafka.consumer.alive", consumerRunning.get() ? 1 : 0)
+            .addData("kafka.consumer.processing.error.retry", consumerRetryProcessError.longValue())
+            .addData("kafka.consumer.kafka.error.retry", consumerRetryKafkaError.longValue());
+  }
+
+  public KafkaCursor getCursor() {
+    return currentCursor;
   }
 
   @Override
   public DocumentChannelSubscription createDocumentSubscription(DocumentChannelListener<T> listener) {
     if (listener == null) throw new IllegalArgumentException("listener not set");
-    if (currentConsumer.get() != null) throw new IllegalStateException("Subscriber already created");
-    KafkaConsumer<String, T> consumer = getConsumer();
-    executorService.submit(new ConsumerWorker(consumer, listener));
+    if (subscriberAttached.get()) throw new IllegalStateException("Subscriber already created");
+    executorService.submit(new KafkaConsumerWorker<>(getCurrentConsumerOrSubscribe(), listener, commitType, topicName, createCallbackInterface()));
+
     return this::close;
   }
 
+  private ConsumerCallbackInterface createCallbackInterface() {
+    return new ConsumerCallbackInterface() {
+      @Override
+      public void consumerRunning(boolean running) {
+        consumerRunning.set(running);
+      }
+
+      @Override
+      public void retryError(Exception e) {
+        consumerRetryKafkaError.increment();
+        errorListeners.forEach(l -> l.accept(e));
+      }
+
+      @Override
+      public void register(ConsumerRecord<?, ?> record) {
+        currentCursor.register(record);
+      }
+
+      @Override
+      public void processError(Exception e) {
+        consumerRetryProcessError.increment();
+        errorListeners.forEach(l -> l.accept(e));
+      }
+
+      @Override
+      public boolean isShutdown() {
+        return executorService.isShutdown();
+      }
+
+      @Override
+      public String cursor() {
+        return currentCursor.toString();
+      }
+    };
+  }
+
   @Override
-  public DocumentBatch<T> poll(long duration, TimeUnit timeUnit) {
-    if (timeUnit == null) throw new IllegalArgumentException("timeUnit not set");
-    if (subscriberAttached.get()) throw new IllegalStateException("This channel already has a subscriber");
-    KafkaConsumer<String, T> consumer = getConsumer();
-    ConsumerRecords<String, T> records = consumer.poll(timeUnit.toMillis(duration));
-    return createBatch(records);
+  public DocumentBatch<T> poll(Duration duration) {
+    return createBatch(pollConsumerRecords(duration));
+  }
+
+  public DocumentBatch<KafkaDocument<T>> pollDocuments(Duration duration) {
+    return createDocuments(pollConsumerRecords(duration));
   }
 
   @Override
@@ -114,119 +183,119 @@ public class KafkaDocumentSource<T> implements DocumentSource<T>, MetricAspect {
     });
   }
 
-
   //private methods
 
+  ConsumerRecords<String, T> pollConsumerRecords(Duration duration) {
+    if (duration == null) throw new IllegalArgumentException("duration not set");
+    if (subscriberAttached.get()) throw new IllegalStateException("This channel already has a subscriber");
+    //the semantics of the document source does not require an explicit "subscribe()"-operation
+    return getCurrentConsumerOrSubscribe().poll(duration);
+  }
+
+  private void seek(String topic, Map<Integer, KafkaCursor.OffsetAndTimestamp> cursorPointers) throws KafkaInvalidSeekException {
+    if (currentConsumer.get() != null) {
+      throw new IllegalStateException("Cannot seek for consumer which is already set");
+    }
+    currentConsumer.set(provider.createConsumer(type));
+
+    //determine active partitions for this topic
+    Map<Integer, PartitionInfo> partitionInfos = map(getConsumerOrFail().partitionsFor(topic), p -> MapUtils.pair(p.partition(), p));
+    //assign all partitions to this consumer
+    getConsumerOrFail().assign(SetUtils.set(partitionInfos.values(), p -> new TopicPartition(topic, p.partition())));
+    //find timestamp to seek to for each partition in the cursor (all other partitions will stay at initial offset set by OffsetResetStrategy)
+    Map<TopicPartition, Long> partitionsToSeek = new HashMap<>();
+    map(cursorPointers).forEach((partition, offsetAndTimestamp) -> partitionsToSeek.put(
+            new TopicPartition(topic, partition),
+            offsetAndTimestamp.getTimestamp()
+    ));
+
+    //lookup offsets by timestamp from Kafka
+    Map<TopicPartition, OffsetAndTimestamp> partitionOffsetMap = getConsumerOrFail().offsetsForTimes(partitionsToSeek);
+
+    //for each partition, seek to requested position, or fail
+    for (Map.Entry<TopicPartition, OffsetAndTimestamp> entries : partitionOffsetMap.entrySet()) {
+      if (entries.getValue() == null)
+        throw new KafkaInvalidSeekException("Unable to skip to requested position for partition " + entries.getKey().partition());
+      getConsumerOrFail().seek(entries.getKey(), entries.getValue().offset());
+    }
+
+  }
+
+  private DocumentBatch<KafkaDocument<T>> createDocuments(ConsumerRecords<String, T> records) {
+    List<KafkaDocument<T>> result = ListUtils.list();
+    if (records != null) {
+      for (ConsumerRecord<String, T> record : records) {
+        currentCursor.register(record);
+        result.add(new KafkaDocument<>(record.value(), currentCursor.toString()));
+      }
+    }
+    return new KafkaDocumentBatch<>(result, commitType, getConsumerOrFail());
+  }
 
   private DocumentBatch<T> createBatch(ConsumerRecords<String, T> records) {
     List<T> result = ListUtils.list();
     if (records != null) {
       for (ConsumerRecord<String, T> record : records) {
+        currentCursor.register(record);
         result.add(record.value());
       }
     }
-    return new DocumentBatch<T>() {
-      @Override
-      public Collection<T> getDocuments() {
-        return result;
-      }
-
-      @Override
-      public void acknowledge() {
-        if (commitSync) {
-          getConsumer().commitSync();
-        } else {
-          getConsumer().commitAsync();
-        }
-      }
-    };
+    return new KafkaDocumentBatch<>(result, commitType, getConsumerOrFail());
   }
 
-  private KafkaConsumer<String, T> getConsumer() {
-    return currentConsumer.updateAndGet(p -> ifNull(p, () -> {
-      KafkaConsumer<String, T> consumer = provider.createConsumer(type);
-      consumer.subscribe(topicName);
-      return consumer;
-    }));
-  }
+  private static class KafkaDocumentBatch<D> implements DocumentBatch<D> {
+    private final Collection<D> documents;
+    private final CommitType commitType;
+    private final KafkaConsumer<?, ?> consumer;
 
-  private class ConsumerWorker implements Runnable {
-    private final KafkaConsumer<String, T> consumer;
-    private final DocumentChannelListener<T> listener;
-
-    ConsumerWorker(KafkaConsumer<String, T> consumer, DocumentChannelListener<T> listener) {
+    private KafkaDocumentBatch(Collection<D> documents, CommitType commitType, KafkaConsumer<?, ?> consumer) {
+      this.documents = documents;
+      this.commitType = commitType;
       this.consumer = consumer;
-      this.listener = listener;
     }
 
     @Override
-    public void run() {
-      try {
-        consumerRunning.set(true);
-        while (!executorService.isShutdown()) {
-          consumeBatchWithResubscribeWhenFail();
-        }
-      } catch (Exception e) {
-        LOGGER.error(e, "Kafka ConsumerWorker failed unrecoverable, stopping ConsumerWorker thread");
-      } finally {
-        LOGGER.info("Close Kafka Consumer");
-        consumerRunning.set(false);
-        consumer.close();
-      }
+    public Collection<D> getDocuments() {
+      return documents;
     }
 
-    private void consumeBatchWithResubscribeWhenFail() {
-      try {
-        consumeBatch();
-      } catch (Exception e) {
-        // Error from Kafka clients polling or committing offsets
-        LOGGER.error(e, "Kafka ConsumerWorker fail, " +
-            "reset consumer offsets and resubscribing to the topics: " + String.join(",", topicName));
-        consumerRetryKafkaError.increment();
-        errorListeners.forEach(l -> l.accept(e));
-        resetOffsets();
-        consumer.unsubscribe();
-        consumer.subscribe(topicName);
+    @Override
+    public void acknowledge() {
+      if (commitType == CommitType.sync) {
+        consumer.commitSync();
+      } else if (commitType == CommitType.async) {
+        consumer.commitAsync();
       }
     }
+  }
 
-    private void consumeBatch() {
-      ConsumerRecords<String, T> records = consumer.poll(CONSUMER_POLL_TIMEOUT_MILLIS);
-      boolean consumed = false;
-      try {
-        for (ConsumerRecord<String, T> record : records) {
-          listener.documentReceived(record.value());
-          consumed = true;
-        }
-      } catch (Exception e) {
-        // Error when processing events
-        LOGGER.error(e, "Error when processing Kafka consumed records, reset consumer offsets");
-        consumerRetryProcessError.increment();
-        errorListeners.forEach(l -> l.accept(e));
-        resetOffsets();
-        return; // cause next poll with new offsets
-      }
-      //when all documents in batch is consumed, send commit to consumer
-      if (consumed) {
-        if (commitSync) {
-          consumer.commitSync();
-        } else {
-          consumer.commitAsync();
-        }
-      }
-    }
+  private KafkaConsumer<String, T> getConsumerOrFail() {
+    if (currentConsumer.get() == null) throw new IllegalStateException("Consumer not set");
+    return currentConsumer.get();
+  }
 
-    private void resetOffsets() {
-      LOGGER.info("Reset offsets for assigned Kafka partitions " + consumer.assignment());
-      for (TopicPartition partition : consumer.assignment()) {
-        OffsetAndMetadata offset = consumer.committed(partition);
-        if (offset == null) {
-          continue; // no offsets can be fetched from Kafka broker (e.g. no commits has been performed on the partition)
-        }
-        LOGGER.info("Reset Kafka partition '%s' with offsets %d", partition, offset.offset());
-        consumer.seek(partition, offset.offset());
-      }
+  private KafkaConsumer<String, T> getCurrentConsumerOrSubscribe() {
+    KafkaConsumer<String, T> consumer = currentConsumer.get();
+    if (consumer == null) {
+      consumer = provider.createConsumer(type);
+      consumer.subscribe(topicName);
+      currentConsumer.set(consumer);
     }
+    return consumer;
+  }
+
+  interface ConsumerCallbackInterface {
+    void consumerRunning(boolean running);
+
+    void retryError(Exception e);
+
+    void register(ConsumerRecord<?, ?> record);
+
+    void processError(Exception e);
+
+    boolean isShutdown();
+
+    String cursor();
   }
 
   public static <T> Builder<T> builder() {
@@ -239,11 +308,11 @@ public class KafkaDocumentSource<T> implements DocumentSource<T>, MetricAspect {
     private KafkaConsumerProvider kafkaConsumerProvider;
     private Class<T> type;
     private List<String> topicName;
-    private boolean commitSync;
+    private CommitType commitType = CommitType.async;
     private Set<Consumer<Exception>> errorListeners = set();
 
     public KafkaDocumentSource<T> build() {
-      return new KafkaDocumentSource<>(kafkaConsumerProvider, type, topicName, commitSync, errorListeners);
+      return new KafkaDocumentSource<>(kafkaConsumerProvider, type, topicName, commitType, errorListeners);
     }
 
     //setters
@@ -258,8 +327,12 @@ public class KafkaDocumentSource<T> implements DocumentSource<T>, MetricAspect {
       return this;
     }
 
-    public Builder<T> setCommitSync(boolean commitSync) {
-      this.commitSync = commitSync;
+    public Builder<T> setCommitSync(boolean sync) {
+      return setCommitType(sync ? CommitType.sync : CommitType.async);
+    }
+
+    public Builder<T> setCommitType(CommitType commitType) {
+      this.commitType = commitType;
       return this;
     }
 
@@ -288,6 +361,5 @@ public class KafkaDocumentSource<T> implements DocumentSource<T>, MetricAspect {
       return this;
     }
   }
-
 
 }

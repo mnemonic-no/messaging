@@ -150,7 +150,9 @@ public class XStreamMessageSerializer implements MessageSerializer {
   public <T extends Message> T deserialize(byte[] msgbytes, ClassLoader classLoader) throws IOException {
     deserializeCount.increment();
     deserializeMsgSize.add(msgbytes.length);
-    LOGGER.debug("XStream deserialize driver=%s size=%d", driver.getClass(), msgbytes.length);
+    if (LOGGER.isDebug()) {
+      LOGGER.debug("XStream deserialize driver=%s size=%d", driver.getClass(), msgbytes.length);
+    }
 
     try (
             TimerContext ignored = TimerContext.timerMillis(deserializeTime::add);
@@ -162,7 +164,7 @@ public class XStreamMessageSerializer implements MessageSerializer {
       deserializeForbiddenClassError.increment();
       LOGGER.error(e, "Forbidden class in deserialize");
       throw new IllegalDeserializationException(e.getMessage());
-    } catch (Exception e) {
+    } catch (Throwable e) {
       if (e.getCause() instanceof ForbiddenClassException) {
         deserializeForbiddenClassError.increment();
         LOGGER.error(e, "Forbidden class in deserialize");

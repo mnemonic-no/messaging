@@ -7,14 +7,27 @@ import no.mnemonic.messaging.requestsink.jms.AbstractJMSRequestBase;
 import no.mnemonic.messaging.requestsink.jms.ProtocolVersion;
 import no.mnemonic.messaging.requestsink.jms.serializer.MessageSerializer;
 
-import javax.jms.*;
+import javax.jms.BytesMessage;
+import javax.jms.JMSException;
+import javax.jms.Message;
+import javax.jms.MessageConsumer;
+import javax.jms.Session;
+import javax.jms.TemporaryQueue;
+import javax.jms.TextMessage;
 import javax.naming.NamingException;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
-import java.util.*;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Collection;
+import java.util.Comparator;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.Objects;
 
 import static no.mnemonic.commons.utilities.ObjectUtils.ifNotNull;
 import static no.mnemonic.commons.utilities.ObjectUtils.ifNotNullDo;
@@ -51,7 +64,7 @@ public class JMSUtils {
    * @param data data to create message from
    * @return a JMS message created from given object
    */
-  public static BytesMessage createByteMessage(Session session, byte[] data, ProtocolVersion protocolVersion, String serializerKey) throws JMSException, IOException {
+  public static BytesMessage createByteMessage(Session session, byte[] data, ProtocolVersion protocolVersion, String serializerKey) throws JMSException {
     assertNotNull(session, "Session not set");
     assertNotNull(data, "Data not set");
     assertNotNull(protocolVersion, "ProtocolVersion not set");
@@ -62,12 +75,14 @@ public class JMSUtils {
     return m;
   }
 
-  public static byte[] reassembleFragments(Collection<MessageFragment> fragments, int expectedFragments, String md5Checksum) throws IOException, JMSException {
+  public static byte[] reassembleFragments(Collection<MessageFragment> fragments, int expectedFragments, String md5Checksum) throws IOException, JMSException, ReassemblyMissingFragmentException {
     if (fragments == null) throw new IllegalArgumentException("message was null");
     if (md5Checksum == null) throw new IllegalArgumentException("md5Checksum was null");
 
     try (ByteArrayOutputStream baos = new ByteArrayOutputStream()) {
-      if (fragments.size() != expectedFragments) {
+      if (fragments.size() < expectedFragments) {
+        throw new ReassemblyMissingFragmentException(String.format("Expected %d fragments, received %d", expectedFragments, fragments.size()));
+      } else if (fragments.size() > expectedFragments) {
         throw new JMSException(String.format("Expected %d fragments, received %d", expectedFragments, fragments.size()));
       }
 
@@ -81,7 +96,7 @@ public class JMSUtils {
       for (MessageFragment m : fragmentList) {
         //verify that fragment makes sense
         if (fragmentIndex != m.getIdx()) {
-          throw new JMSException(String.format("Got fragment with index %d, expected index %d", m.getIdx(), fragmentIndex));
+          throw new ReassemblyMissingFragmentException(String.format("Got fragment with index %d, expected index %d", m.getIdx(), fragmentIndex));
         }
         //extract data and write to BAOS
         baos.write(m.getData());
@@ -219,7 +234,7 @@ public class JMSUtils {
     try {
       return MessageDigest.getInstance("MD5");
     } catch (NoSuchAlgorithmException e) {
-      throw new RuntimeException(e);
+      throw new IllegalStateException("Error creating MD5 digest", e);
     }
   }
 

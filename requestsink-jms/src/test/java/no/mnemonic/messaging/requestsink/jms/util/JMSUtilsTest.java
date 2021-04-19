@@ -69,7 +69,7 @@ public class JMSUtilsTest {
   }
 
   @Test
-  public void testReassembleFragments() throws IOException, JMSException {
+  public void testReassembleFragments() throws IOException, JMSException, ReassemblyMissingFragmentException {
     byte[] data = barray(1, 2, 3, 4, 5, 6, 7);
     byte[] digest = md5().digest(data);
     byte[] result = reassembleFragments(
@@ -83,7 +83,7 @@ public class JMSUtilsTest {
   }
 
   @Test
-  public void testReassembleFragmentsOutOfOrder() throws IOException, JMSException {
+  public void testReassembleFragmentsOutOfOrder() throws IOException, JMSException, ReassemblyMissingFragmentException {
     byte[] data = barray(1, 2, 3, 4, 5, 6, 7);
     byte[] result = reassembleFragments(
             ListUtils.list(
@@ -96,7 +96,7 @@ public class JMSUtilsTest {
   }
 
   @Test(expected = JMSException.class)
-  public void testReassembleFragmentsFailsOnInvalidDigest() throws IOException, JMSException {
+  public void testReassembleFragmentsFailsOnInvalidDigest() throws IOException, JMSException, ReassemblyMissingFragmentException {
     reassembleFragments(
             ListUtils.list(
                     prepareFragment(0, new byte[]{1, 2, 3}),
@@ -106,8 +106,8 @@ public class JMSUtilsTest {
             3, hex(new byte[]{1, 1, 2, 2, 3, 3, 4, 4}));
   }
 
-  @Test(expected = JMSException.class)
-  public void testReassembleFragmentsFailsOnMissingFragment() throws IOException, JMSException {
+  @Test(expected = ReassemblyMissingFragmentException.class)
+  public void testReassembleFragmentsFailsOnMissingFragment() throws IOException, JMSException, ReassemblyMissingFragmentException {
     byte[] data = barray(1, 2, 3, 4, 5, 6, 7);
     reassembleFragments(
             ListUtils.list(

@@ -9,6 +9,7 @@ import no.mnemonic.messaging.requestsink.jms.ExceptionMessage;
 import no.mnemonic.messaging.requestsink.jms.serializer.MessageSerializer;
 import no.mnemonic.messaging.requestsink.jms.util.ClientMetrics;
 import no.mnemonic.messaging.requestsink.jms.util.MessageFragment;
+import no.mnemonic.messaging.requestsink.jms.util.ReassemblyMissingFragmentException;
 
 import javax.jms.BytesMessage;
 import javax.jms.JMSException;
@@ -39,6 +40,15 @@ public class ClientRequestContext {
   private static final String RECEIVED_END_OF_FRAGMENTS_WITHOUT = "Received end-of-fragments without ";
   private static final long KEEPALIVE_ON_FRAGMENT = 10000;
 
+  private static class FragmentEOSState {
+    final int totalFragments;
+    final String checksum;
+    FragmentEOSState(int totalFragments, String checksum) {
+      this.totalFragments = totalFragments;
+      this.checksum = checksum;
+    }
+  }
+
   private static Clock clock = Clock.systemUTC();
 
   private final Session session;
@@ -50,6 +60,7 @@ public class ClientRequestContext {
   private final MessageSerializer serializer;
 
   private final Map<String, Collection<MessageFragment>> fragments = new ConcurrentHashMap<>();
+  private final Map<String, FragmentEOSState> fragmentedState = new ConcurrentHashMap<>();
 
   public ClientRequestContext(String callID, Session session, ClientMetrics metrics, ClassLoader classLoader,
                        RequestContext requestContext, Runnable closeListener, MessageSerializer serializer) {
@@ -83,6 +94,11 @@ public class ClientRequestContext {
     fragments
             .computeIfAbsent(messageFragment.getResponseID(), id -> new LinkedBlockingDeque<>())
             .add(messageFragment);
+    //if this fragmented response has already received EOS, try to reassemble again
+    FragmentEOSState state = fragmentedState.get(messageFragment.getResponseID());
+    if (state != null && reassemble(messageFragment.getResponseID(), state.totalFragments, state.checksum)) {
+      return true;
+    }
     //notify requestcontext for each fragment to avoid long fragment stream causing timeout
     requestContext.keepAlive(clock.millis() + KEEPALIVE_ON_FRAGMENT);
     return true;
@@ -90,15 +106,23 @@ public class ClientRequestContext {
 
   boolean reassemble(String responseID, int totalFragments, String checksum) {
     try {
-      Collection<MessageFragment> responseFragments = this.fragments.remove(responseID);
+      Collection<MessageFragment> responseFragments = this.fragments.get(responseID);
       if (isEmpty(responseFragments)) {
         LOGGER.warning("Received fragment end-message without preceding fragments");
         return false;
       }
-      byte[] reassembledData = reassembleFragments(responseFragments, totalFragments, checksum);
+      byte[] reassembledData;
+      try {
+        reassembledData = reassembleFragments(responseFragments, totalFragments, checksum);
+      } catch (ReassemblyMissingFragmentException e) {
+        LOGGER.warning(e, "Received unexpected fragment, trying to recover");
+        fragmentedState.put(responseID, new FragmentEOSState(totalFragments, checksum));
+        return true;
+      }
       if (LOGGER.isDebug()) {
         LOGGER.debug("# addReassembledResponse [responseID=%s]", responseID);
       }
+      this.fragments.remove(responseID);
       return requestContext.addResponse(serializer.deserialize(reassembledData, classLoader));
     } catch (JMSException | IOException e) {
       LOGGER.warning(e, "Error unpacking fragments");

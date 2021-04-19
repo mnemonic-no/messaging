@@ -7,8 +7,7 @@ import javax.jms.JMSException;
 import javax.jms.Message;
 
 import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.Mockito.doAnswer;
-import static org.mockito.Mockito.when;
+import static org.mockito.Mockito.lenient;
 
 public class MockMessageBuilder<T extends Message> {
 
@@ -23,8 +22,8 @@ public class MockMessageBuilder<T extends Message> {
   }
 
   public MockMessageBuilder<T> withData(byte[] data) throws JMSException {
-    when(((BytesMessage) msg).getBodyLength()).thenReturn((long) data.length);
-    doAnswer(i -> {
+    lenient().when(((BytesMessage) msg).getBodyLength()).thenReturn((long) data.length);
+    lenient().doAnswer(i -> {
       //noinspection SuspiciousSystemArraycopy
       System.arraycopy(data, 0, i.getArgument(0), 0, data.length);
       return null;
@@ -33,25 +32,25 @@ public class MockMessageBuilder<T extends Message> {
   }
 
   public MockMessageBuilder<T> withCorrelationID(String id) throws JMSException {
-    when(msg.getJMSCorrelationID()).thenReturn(id);
+    lenient().when(msg.getJMSCorrelationID()).thenReturn(id);
     return this;
   }
 
   public MockMessageBuilder<T> withProperty(String property, String value) throws JMSException {
-    when(msg.propertyExists(property)).thenReturn(true);
-    when(msg.getStringProperty(property)).thenReturn(value);
+    lenient().when(msg.propertyExists(property)).thenReturn(true);
+    lenient().when(msg.getStringProperty(property)).thenReturn(value);
     return this;
   }
 
   public MockMessageBuilder<T> withProperty(String property, int value) throws JMSException {
-    when(msg.propertyExists(property)).thenReturn(true);
-    when(msg.getIntProperty(property)).thenReturn(value);
+    lenient().when(msg.propertyExists(property)).thenReturn(true);
+    lenient().when(msg.getIntProperty(property)).thenReturn(value);
     return this;
   }
 
   public MockMessageBuilder<T> withProperty(String property, long value) throws JMSException {
-    when(msg.propertyExists(property)).thenReturn(true);
-    when(msg.getLongProperty(property)).thenReturn(value);
+    lenient().when(msg.propertyExists(property)).thenReturn(true);
+    lenient().when(msg.getLongProperty(property)).thenReturn(value);
     return this;
   }
 }

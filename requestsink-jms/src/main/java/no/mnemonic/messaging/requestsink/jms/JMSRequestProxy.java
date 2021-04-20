@@ -24,7 +24,6 @@ import java.io.IOException;
 import java.lang.IllegalStateException;
 import java.util.*;
 import java.util.concurrent.*;
-import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.atomic.LongAdder;
@@ -62,7 +61,6 @@ public class JMSRequestProxy extends AbstractJMSRequestBase implements MessageLi
   private final Map<String, ServerContext> calls = new ConcurrentHashMap<>();
   private final Semaphore semaphore;
   private final AtomicLong lastCleanupTimestamp = new AtomicLong();
-  private final AtomicBoolean reconnecting = new AtomicBoolean();
 
   private final ServerMetrics metrics = new ServerMetrics();
   private final LongAdder awaitPermitTime = new LongAdder();
@@ -119,7 +117,7 @@ public class JMSRequestProxy extends AbstractJMSRequestBase implements MessageLi
   @Override
   public void startComponent() {
     try {
-      reconnect();
+      connect();
     } catch (Exception e) {
       executor.shutdown();
       throw new IllegalStateException(e);
@@ -151,13 +149,8 @@ public class JMSRequestProxy extends AbstractJMSRequestBase implements MessageLi
     closeAllResources();
   }
 
-  private void reconnect() throws NamingException, JMSException {
-    if (!reconnecting.compareAndSet(false, true)) return;
-    try {
+  private void connect() throws NamingException, JMSException {
       synchronized (this) {
-        LOGGER.info("Reconnecting...");
-        closeAllResources();
-
         MessageProducer p = getSession().createProducer(null);
         p.setDeliveryMode(DeliveryMode.NON_PERSISTENT);
         replyProducer.set(p);
@@ -170,9 +163,6 @@ public class JMSRequestProxy extends AbstractJMSRequestBase implements MessageLi
         LOGGER.info("Connected");
         metrics.reconnected();
       }
-    } finally {
-      reconnecting.set(false);
-    }
   }
 
   private synchronized void closeAllResources() {
@@ -198,8 +188,6 @@ public class JMSRequestProxy extends AbstractJMSRequestBase implements MessageLi
   public void onException(JMSException e) {
     metrics.error();
     LOGGER.warning(e, "Exception received");
-    //close all resources
-    executor.submit(() -> tryTo(this::reconnect));
   }
 
   @SuppressWarnings("WeakerAccess")
@@ -269,7 +257,6 @@ public class JMSRequestProxy extends AbstractJMSRequestBase implements MessageLi
     } catch (Exception e) {
       metrics.error();
       LOGGER.error(e, "Error handling JMS call");
-      executor.submit(() -> tryTo(this::reconnect));
     } finally {
       semaphore.release();
       if (LOGGER.isDebug()) {

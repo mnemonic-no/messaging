@@ -200,15 +200,6 @@ public class JMSRequestProxyTest extends AbstractJMSRequestTest {
     assertEquals(JMSRequestProxy.MESSAGE_TYPE_SIGNAL_RESPONSE, responseMessage.getStringProperty(JMSRequestProxy.PROPERTY_MESSAGE_TYPE));
   }
 
-  @Test
-  public void testJMSExceptionTriggersReconnect() throws Exception {
-    setupEnvironment();
-    Future<Void> closed = listenForProxyConnection();
-    requestProxy.onException(new JMSException("connection closed"));
-    closed.get(10, TimeUnit.SECONDS);
-    doTestSignalResponse(1);
-  }
-
   //private methods
 
   private void doTestSignalResponse(int numberOfResponses) throws NamingException, JMSException, IOException, InterruptedException, ClassNotFoundException {

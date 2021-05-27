@@ -12,8 +12,12 @@ import no.mnemonic.messaging.requestsink.jms.serializer.MessageSerializer;
 import no.mnemonic.messaging.requestsink.jms.util.FragmentConsumer;
 import no.mnemonic.messaging.requestsink.jms.util.ServerMetrics;
 
-import javax.jms.*;
-import javax.naming.NamingException;
+import javax.jms.BytesMessage;
+import javax.jms.Destination;
+import javax.jms.InvalidDestinationException;
+import javax.jms.JMSException;
+import javax.jms.MessageProducer;
+import javax.jms.Session;
 import java.io.ByteArrayInputStream;
 import java.io.IOException;
 import java.io.InputStream;
@@ -50,7 +54,17 @@ public class ServerResponseContext implements RequestContext, ServerContext {
   private final ServerMetrics metrics;
   private final MessageSerializer serializer;
 
-  public ServerResponseContext(String callID, Session session, MessageProducer replyProducer, Destination replyTo, long timeout, ProtocolVersion protocolVersion, int maxMessageSize, ServerMetrics metrics, MessageSerializer serializer) throws NamingException, JMSException {
+  public ServerResponseContext(
+          String callID,
+          Session session,
+          MessageProducer replyProducer,
+          Destination replyTo,
+          long timeout,
+          ProtocolVersion protocolVersion,
+          int maxMessageSize,
+          ServerMetrics metrics,
+          MessageSerializer serializer
+  ) {
     this.callID = assertNotNull(callID, "CallID not set");
     this.session = assertNotNull(session, "session not set");
     this.replyProducer = assertNotNull(replyProducer, "replyProducer not set");
@@ -88,11 +102,14 @@ public class ServerResponseContext implements RequestContext, ServerContext {
       closeMessage.setJMSCorrelationID(callID);
       closeMessage.setStringProperty(PROPERTY_MESSAGE_TYPE, MESSAGE_TYPE_EXTEND_WAIT);
       closeMessage.setLongProperty(PROPERTY_REQ_TIMEOUT, until);
-      metrics.extendWait();
       replyProducer.send(replyTo, closeMessage);
+      metrics.extendWait();
       if (LOGGER.isDebug()) {
         LOGGER.debug(">> keepalive [callID=%s until=%s replyTo=%s]", callID, new Date(until), replyTo);
       }
+    } catch (InvalidDestinationException e) {
+      LOGGER.warning(e, "Cannot keep connection alive for %s, response channel invalid.", callID);
+      return false;
     } catch (Exception e) {
       LOGGER.warning(e, "Could not send Extend-Wait for " + callID);
     }
@@ -185,7 +202,7 @@ public class ServerResponseContext implements RequestContext, ServerContext {
   public boolean isClosed() {
     if (closed.get()) {
       return true;
-    } else if (System.currentTimeMillis() > timeout.get()) {
+    } else if (clock.millis() > timeout.get()) {
       // we claim to be closed if this sink has timed out
       //but make sure it actually is closed
       try {
@@ -249,5 +266,11 @@ public class ServerResponseContext implements RequestContext, ServerContext {
 
   public void removeListener(RequestListener listener) {
     //do nothing
+  }
+
+  //for testing only
+
+  static void setClock(Clock clock) {
+    ServerResponseContext.clock = clock;
   }
 }

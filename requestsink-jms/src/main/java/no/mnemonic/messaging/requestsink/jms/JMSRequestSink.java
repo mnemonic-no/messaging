@@ -298,6 +298,7 @@ public class JMSRequestSink extends AbstractJMSRequestBase implements RequestSin
   private void checkForFragmentationAndSignal(Message msg, RequestContext ctx, long maxWait) {
     try {
       byte[] messageBytes = serializer.serialize(msg);
+      int priority = resolveJMSPriority(msg);
       String messageType = JMSRequestProxy.MESSAGE_TYPE_SIGNAL;
       //check if we need to fragment this request message
       if (messageBytes.length > getMaxMessageSize()) {
@@ -332,12 +333,23 @@ public class JMSRequestSink extends AbstractJMSRequestBase implements RequestSin
         }
       });
       //send signal message
-      sendMessage(messageBytes, msg.getCallID(), messageType, maxWait, getCurrentResponseQueue());
+      sendMessage(messageBytes, msg.getCallID(), messageType, priority, maxWait, getCurrentResponseQueue());
       metrics.request();
     } catch (IOException | JMSException | NamingException e) {
       LOGGER.warning(e, "Error in checkForFragmentationAndSignal");
       throw new IllegalStateException(e);
     }
+  }
+
+  /**
+   * JMS priority is defined as an integer between 1 and 9, where 4 is the default.
+   * @param msg the Message to prioritize
+   * @return the JMS priority. Bulk will be mapped to 1, expedite to 9.
+   */
+  private int resolveJMSPriority(Message msg) {
+    if (msg.getPriority() == Message.Priority.bulk) return 1;
+    if (msg.getPriority() == Message.Priority.expedite) return 9;
+    return 4;
   }
 
   private Destination getCurrentResponseQueue() {
@@ -348,12 +360,13 @@ public class JMSRequestSink extends AbstractJMSRequestBase implements RequestSin
     return ifNull(currentResponseQueue.get(), this::replaceResponseQueue);
   }
 
-  private void sendMessage(byte[] messageBytes, String callID, String messageType, long lifeTime, Destination replyTo) {
+  private void sendMessage(byte[] messageBytes, String callID, String messageType, int priority, long lifeTime, Destination replyTo) {
     try {
       javax.jms.Message m = createByteMessage(getSession(), messageBytes, protocolVersion, serializer.serializerID());
       long timeout = System.currentTimeMillis() + lifeTime;
       m.setJMSReplyTo(replyTo);
       m.setJMSCorrelationID(callID);
+      m.setJMSPriority(priority);
       m.setStringProperty(PROPERTY_MESSAGE_TYPE, messageType);
       m.setLongProperty(JMSRequestProxy.PROPERTY_REQ_TIMEOUT, timeout);
       getOrCreateProducer().send(m, DeliveryMode.NON_PERSISTENT, getPriority(), lifeTime);

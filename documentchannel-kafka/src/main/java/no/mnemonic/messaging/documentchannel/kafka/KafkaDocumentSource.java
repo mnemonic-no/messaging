@@ -20,11 +20,7 @@ import org.apache.kafka.common.PartitionInfo;
 import org.apache.kafka.common.TopicPartition;
 
 import java.time.Duration;
-import java.util.Collection;
-import java.util.HashMap;
-import java.util.List;
-import java.util.Map;
-import java.util.Set;
+import java.util.*;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
@@ -110,9 +106,9 @@ public class KafkaDocumentSource<T> implements DocumentSource<T>, MetricAspect {
   @Override
   public Metrics getMetrics() throws MetricException {
     return new MetricsData()
-            .addData("kafka.consumer.alive", consumerRunning.get() ? 1 : 0)
-            .addData("kafka.consumer.processing.error.retry", consumerRetryProcessError.longValue())
-            .addData("kafka.consumer.kafka.error.retry", consumerRetryKafkaError.longValue());
+            .addData("alive", consumerRunning.get() ? 1 : 0)
+            .addData("processing.error.retry", consumerRetryProcessError.longValue())
+            .addData("kafka.error.retry", consumerRetryKafkaError.longValue());
   }
 
   public KafkaCursor getCursor() {

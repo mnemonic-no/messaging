@@ -3,7 +3,11 @@ package no.mnemonic.messaging.requestsink.jms.serializer;
 import no.mnemonic.messaging.requestsink.Message;
 import no.mnemonic.messaging.requestsink.jms.IllegalDeserializationException;
 import no.mnemonic.messaging.requestsink.jms.TestMessage;
-import no.mnemonic.messaging.requestsink.jms.serializer.packagea.*;
+import no.mnemonic.messaging.requestsink.jms.serializer.packagea.MyAbstractClass;
+import no.mnemonic.messaging.requestsink.jms.serializer.packagea.MyComplexMessage;
+import no.mnemonic.messaging.requestsink.jms.serializer.packagea.MyInnerClass;
+import no.mnemonic.messaging.requestsink.jms.serializer.packagea.MyOtherClass;
+import no.mnemonic.messaging.requestsink.jms.serializer.packagea.MyRefactoredClass;
 import org.junit.Test;
 
 import java.io.IOException;
@@ -11,8 +15,56 @@ import java.util.Objects;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 
 public class XStreamMessageSerializerTest {
+
+  @Test
+  public void testDeserializerIgnoresUnknownProperty() throws IOException {
+    XStreamMessageSerializer serializer = XStreamMessageSerializer.builder()
+            .addAllowedClass(TestMessage.class)
+            .build();
+    String xml = "<no.mnemonic.messaging.requestsink.jms.TestMessage>\n" +
+            "  <id>msg</id>\n" +
+            "  <newProperty>msg</newProperty>\n" +
+            "</no.mnemonic.messaging.requestsink.jms.TestMessage>\n";
+    TestMessage deserialized = serializer.deserialize(xml.getBytes(), getClass().getClassLoader());
+    assertEquals("msg", deserialized.getId());
+    assertNull(deserialized.getCallID());
+    assertEquals(0L, deserialized.getMessageTimestamp());
+  }
+
+  @Test
+  public void testDeserializerPermitsFieldReference() throws IOException {
+    XStreamMessageSerializer serializer = XStreamMessageSerializer.builder()
+            .addAllowedClass(TestMessage.class)
+            .build();
+    String xml = "<no.mnemonic.messaging.requestsink.jms.TestMessage>\n" +
+            "  <objectField1>\n" +
+            "    <field>value</field>\n" +
+            "  </objectField1>\n" +
+            "  <objectField2 reference=\"../objectField1\"/>\n" +
+            "</no.mnemonic.messaging.requestsink.jms.TestMessage>\n";
+    TestMessage deserialized = serializer.deserialize(xml.getBytes(), getClass().getClassLoader());
+    assertEquals("value", deserialized.objectField1.field);
+    assertEquals("value", deserialized.objectField2.field);
+  }
+
+  /**
+   * Test to check for known issue
+   * Followed up towards XStream in ticket https://github.com/x-stream/xstream/issues/269
+   */
+  @Test
+  public void testDeserializerFailsWithInvalidReference() {
+    XStreamMessageSerializer serializer = XStreamMessageSerializer.builder()
+            .addAllowedClass(TestMessage.class)
+            .build();
+    String xml = "<no.mnemonic.messaging.requestsink.jms.TestMessage>\n" +
+            "  <objectField2 reference=\"../objectField3\"/>\n" +
+            "</no.mnemonic.messaging.requestsink.jms.TestMessage>\n";
+    assertThrows(IOException.class, ()->serializer.deserialize(xml.getBytes(), getClass().getClassLoader()));
+  }
 
   @Test(expected = IllegalDeserializationException.class)
   public void testNonAllowedClassNotDeserialized() throws IOException {

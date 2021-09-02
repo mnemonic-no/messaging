@@ -12,6 +12,8 @@ public class TestMessage implements Message {
   private final String id;
   private String callID;
   private long timestamp = System.currentTimeMillis();
+  public SubClass objectField1;
+  public SubClass objectField2;
 
   public TestMessage(String id) {
     this.id = id;
@@ -43,5 +45,13 @@ public class TestMessage implements Message {
 
   public String getId() {
     return id;
+  }
+
+  public static class SubClass {
+    public final String field;
+
+    public SubClass(String field) {
+      this.field = field;
+    }
   }
 }

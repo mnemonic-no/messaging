@@ -54,13 +54,6 @@ public class XStreamMessageSerializer implements MessageSerializer {
   private final LongAdder deserializeTime = new LongAdder();
   private final LongAdder deserializeMsgSize = new LongAdder();
 
-  /**
-   * @param allowedClassesRegex list of allowed classes regex
-   * @param packageAliases      map of alias->package
-   * @param serializerID        ID of this serializer
-   * @param decodingXstreamCustomizer
-   * @param encodingXstreamCustomizer
-   */
   private XStreamMessageSerializer(HierarchicalStreamDriver driver,
                                    Collection<Class> allowedClasses,
                                    Collection<String> allowedClassesRegex,
@@ -70,11 +63,16 @@ public class XStreamMessageSerializer implements MessageSerializer {
                                    Map<String, String> decodingPackageAliases,
                                    String serializerID,
                                    Consumer<XStream> decodingXstreamCustomizer,
-                                   Consumer<XStream> encodingXstreamCustomizer) {
+                                   Consumer<XStream> encodingXstreamCustomizer,
+                                   boolean disableReferences) {
     this.driver = assertNotNull(driver, "driver not set");
     this.serializerID = assertNotNull(serializerID, "serializerID not set");
+
     decodingXstream = new XStream(driver);
     encodingXstream = new XStream(driver);
+
+    if (disableReferences) encodingXstream.setMode(XStream.NO_REFERENCES);
+
     decodingXstream.addPermission(NoTypePermission.NONE);
     decodingXstream.addPermission(PrimitiveTypePermission.PRIMITIVES);
     decodingXstream.addPermission(NullPermission.NULL);
@@ -193,6 +191,7 @@ public class XStreamMessageSerializer implements MessageSerializer {
     private Consumer<XStream> decodingXstreamCustomizer;
     private Consumer<XStream> encodingXstreamCustomizer;
     private String serializerID = DEFAULT_SERIALIZER_ID;
+    private boolean disableReferences = false;
 
     private Builder() {
     }
@@ -204,7 +203,8 @@ public class XStreamMessageSerializer implements MessageSerializer {
               allowedClasses, allowedClassesRegex,
               typeAliases, packageAliases,
               decodingTypeAliases, decodingPackageAliases,
-              serializerID, decodingXstreamCustomizer, encodingXstreamCustomizer);
+              serializerID, decodingXstreamCustomizer, encodingXstreamCustomizer,
+              disableReferences);
     }
 
     //setters
@@ -266,6 +266,21 @@ public class XStreamMessageSerializer implements MessageSerializer {
 
     public Builder addAllowedClass(Class allowedClass) {
       this.allowedClasses = addToSet(this.allowedClasses, allowedClass);
+      return this;
+    }
+
+    /**
+     * Disable use of references when encoding XStream.
+     * Each reference will instead be encoded as a separate object.
+     * This avoids some compatibility issues if the decoding instance has a different version of the code.
+     *
+     * XStream should also run faster and with less memory usage when disabling references,
+     * but this will generate a slightly more verbose XML.
+     *
+     * @param disableReferences if true, disable use of references. Default is false (will use references)
+     */
+    public Builder setDisableReferences(boolean disableReferences) {
+      this.disableReferences = disableReferences;
       return this;
     }
   }

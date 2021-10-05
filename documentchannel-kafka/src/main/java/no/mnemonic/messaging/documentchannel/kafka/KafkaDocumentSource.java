@@ -179,6 +179,10 @@ public class KafkaDocumentSource<T> implements DocumentSource<T>, MetricAspect {
     });
   }
 
+  public KafkaConsumer<String, T> getKafkaConsumer() {
+    return getCurrentConsumerOrSubscribe();
+  }
+
   //private methods
 
   ConsumerRecords<String, T> pollConsumerRecords(Duration duration) {

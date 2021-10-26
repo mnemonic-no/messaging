@@ -8,12 +8,17 @@ import java.util.UUID;
 public class TestMessage implements Message {
 
   private static final long serialVersionUID = -8911834432780676086L;
-  
+
+  public enum MyEnum {
+    literal1, literal2
+  }
+
   private final String id;
   private String callID;
   private long timestamp = System.currentTimeMillis();
   public SubClass objectField1;
   public SubClass objectField2;
+  public MyEnum enumField;
 
   public TestMessage(String id) {
     this.id = id;

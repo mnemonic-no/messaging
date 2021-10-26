@@ -14,11 +14,53 @@ import java.io.IOException;
 import java.util.Objects;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertSame;
 import static org.junit.Assert.assertTrue;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
 public class XStreamMessageSerializerTest {
+
+  @Test
+  public void testDeserializerHandlesKnownLiteral() throws IOException {
+    XStreamMessageSerializer serializer = XStreamMessageSerializer.builder()
+            .addAllowedClass(TestMessage.class)
+            .build();
+    String xml = "<no.mnemonic.messaging.requestsink.jms.TestMessage>\n" +
+            "  <id>msg</id>\n" +
+            "  <enumField>literal1</enumField>\n" +
+            "</no.mnemonic.messaging.requestsink.jms.TestMessage>\n";
+    TestMessage deserialized = serializer.deserialize(xml.getBytes(), getClass().getClassLoader());
+    assertEquals("msg", deserialized.getId());
+    assertSame(TestMessage.MyEnum.literal1, deserialized.enumField);
+  }
+
+  @Test
+  public void testDeserializerFailsOnUnknownEnumLiteral() throws IOException {
+    XStreamMessageSerializer serializer = XStreamMessageSerializer.builder()
+            .addAllowedClass(TestMessage.class)
+            .build();
+    String xml = "<no.mnemonic.messaging.requestsink.jms.TestMessage>\n" +
+            "  <id>msg</id>\n" +
+            "  <enumField>invalidLiteral</enumField>\n" +
+            "</no.mnemonic.messaging.requestsink.jms.TestMessage>\n";
+    assertThrows(IOException.class, ()->serializer.deserialize(xml.getBytes(), getClass().getClassLoader()));
+  }
+
+  @Test
+  public void testDeserializerIgnoresUnknownEnumLiteral() throws IOException {
+    XStreamMessageSerializer serializer = XStreamMessageSerializer.builder()
+            .addAllowedClass(TestMessage.class)
+            .setIgnoreUnknownEnumLiterals(true)
+            .build();
+    String xml = "<no.mnemonic.messaging.requestsink.jms.TestMessage>\n" +
+            "  <id>msg</id>\n" +
+            "  <enumField>invalidLiteral</enumField>\n" +
+            "</no.mnemonic.messaging.requestsink.jms.TestMessage>\n";
+    TestMessage deserialized = serializer.deserialize(xml.getBytes(), getClass().getClassLoader());
+    assertEquals("msg", deserialized.getId());
+    assertNull(deserialized.enumField);
+  }
 
   @Test
   public void testDeserializerIgnoresUnknownProperty() throws IOException {

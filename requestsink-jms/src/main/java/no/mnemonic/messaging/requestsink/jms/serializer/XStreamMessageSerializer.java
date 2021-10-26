@@ -1,7 +1,10 @@
 package no.mnemonic.messaging.requestsink.jms.serializer;
 
 import com.thoughtworks.xstream.XStream;
+import com.thoughtworks.xstream.converters.UnmarshallingContext;
+import com.thoughtworks.xstream.converters.enums.EnumConverter;
 import com.thoughtworks.xstream.io.HierarchicalStreamDriver;
+import com.thoughtworks.xstream.io.HierarchicalStreamReader;
 import com.thoughtworks.xstream.io.xml.Xpp3Driver;
 import com.thoughtworks.xstream.security.ForbiddenClassException;
 import com.thoughtworks.xstream.security.NoTypePermission;
@@ -51,6 +54,7 @@ public class XStreamMessageSerializer implements MessageSerializer {
   private final LongAdder deserializeCount = new LongAdder();
   private final LongAdder deserializeError = new LongAdder();
   private final LongAdder deserializeForbiddenClassError = new LongAdder();
+  private final LongAdder deserializeInvalidElement = new LongAdder();
   private final LongAdder deserializeTime = new LongAdder();
   private final LongAdder deserializeMsgSize = new LongAdder();
 
@@ -64,14 +68,21 @@ public class XStreamMessageSerializer implements MessageSerializer {
                                    String serializerID,
                                    Consumer<XStream> decodingXstreamCustomizer,
                                    Consumer<XStream> encodingXstreamCustomizer,
-                                   boolean disableReferences) {
+                                   boolean disableReferences,
+                                   boolean ignoreUnknownEnumLiterals
+  ) {
     this.driver = assertNotNull(driver, "driver not set");
     this.serializerID = assertNotNull(serializerID, "serializerID not set");
 
     decodingXstream = new XStream(driver);
     encodingXstream = new XStream(driver);
 
-    if (disableReferences) encodingXstream.setMode(XStream.NO_REFERENCES);
+    if (disableReferences) {
+      encodingXstream.setMode(XStream.NO_REFERENCES);
+    }
+    if (ignoreUnknownEnumLiterals) {
+      decodingXstream.registerConverter(new CompatibilityEnumConverter());
+    }
 
     decodingXstream.addPermission(NoTypePermission.NONE);
     decodingXstream.addPermission(PrimitiveTypePermission.PRIMITIVES);
@@ -121,6 +132,7 @@ public class XStreamMessageSerializer implements MessageSerializer {
             .addData("deserializeCount", deserializeCount)
             .addData("deserializeError", deserializeError)
             .addData("deserializeForbiddenClassError", deserializeForbiddenClassError)
+            .addData("deserializeInvalidElement", deserializeInvalidElement)
             .addData("deserializeTime", deserializeTime)
             .addData("deserializeMsgSize", deserializeMsgSize);
   }
@@ -175,6 +187,19 @@ public class XStreamMessageSerializer implements MessageSerializer {
     }
   }
 
+  private class CompatibilityEnumConverter extends EnumConverter {
+    @Override
+    public Object unmarshal(HierarchicalStreamReader reader, UnmarshallingContext context) {
+      try {
+        return super.unmarshal(reader, context);
+      } catch (IllegalArgumentException e) {
+        deserializeInvalidElement.increment();
+        LOGGER.warning(e, "Ignoring invalid enum literal, returning null!");
+        return null;
+      }
+    }
+  }
+
   public static Builder builder() {
     return new Builder();
   }
@@ -192,6 +217,7 @@ public class XStreamMessageSerializer implements MessageSerializer {
     private Consumer<XStream> encodingXstreamCustomizer;
     private String serializerID = DEFAULT_SERIALIZER_ID;
     private boolean disableReferences = false;
+    private boolean ignoreUnknownEnumLiterals = false;
 
     private Builder() {
     }
@@ -199,12 +225,19 @@ public class XStreamMessageSerializer implements MessageSerializer {
     //fields
 
     public XStreamMessageSerializer build() {
-      return new XStreamMessageSerializer(driver,
-              allowedClasses, allowedClassesRegex,
-              typeAliases, packageAliases,
-              decodingTypeAliases, decodingPackageAliases,
-              serializerID, decodingXstreamCustomizer, encodingXstreamCustomizer,
-              disableReferences);
+      return new XStreamMessageSerializer(
+              driver,
+              allowedClasses,
+              allowedClassesRegex,
+              typeAliases,
+              packageAliases,
+              decodingTypeAliases,
+              decodingPackageAliases,
+              serializerID,
+              decodingXstreamCustomizer,
+              encodingXstreamCustomizer,
+              disableReferences,
+              ignoreUnknownEnumLiterals);
     }
 
     //setters
@@ -281,6 +314,19 @@ public class XStreamMessageSerializer implements MessageSerializer {
      */
     public Builder setDisableReferences(boolean disableReferences) {
       this.disableReferences = disableReferences;
+      return this;
+    }
+
+    /**
+     * This option will change deserialization of Enum literals, such that unknown enum literals are ignored.
+     * This is useful if e.g. the serializing sender has introduced a new Enum literal, which then cannot be decoded by the client.
+     *
+     * <b>Note!</b> Using this option means that any unknown literals will be decoded as <code>null</code>, so client code must be null safe!
+     *
+     * @param ignoreUnknownEnumLiterals if true, ignore any unknown enum literals and return null instead. Default is false (will throw exception on unknown enum literals)
+     */
+    public Builder setIgnoreUnknownEnumLiterals(boolean ignoreUnknownEnumLiterals) {
+      this.ignoreUnknownEnumLiterals = ignoreUnknownEnumLiterals;
       return this;
     }
   }

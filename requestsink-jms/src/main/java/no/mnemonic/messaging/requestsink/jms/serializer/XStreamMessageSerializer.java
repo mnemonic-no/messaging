@@ -5,7 +5,7 @@ import com.thoughtworks.xstream.converters.UnmarshallingContext;
 import com.thoughtworks.xstream.converters.enums.EnumConverter;
 import com.thoughtworks.xstream.io.HierarchicalStreamDriver;
 import com.thoughtworks.xstream.io.HierarchicalStreamReader;
-import com.thoughtworks.xstream.io.xml.Xpp3Driver;
+import com.thoughtworks.xstream.io.xml.MXParserDriver;
 import com.thoughtworks.xstream.security.ForbiddenClassException;
 import com.thoughtworks.xstream.security.NoTypePermission;
 import com.thoughtworks.xstream.security.NullPermission;
@@ -206,7 +206,7 @@ public class XStreamMessageSerializer implements MessageSerializer {
 
   public static class Builder {
 
-    private HierarchicalStreamDriver driver = new Xpp3Driver();
+    private HierarchicalStreamDriver driver = new MXParserDriver();
     private Set<String> allowedClassesRegex = set();
     private Set<Class> allowedClasses = set();
     private Map<String, String> packageAliases = map();

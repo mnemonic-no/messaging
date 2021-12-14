@@ -57,7 +57,7 @@ public class KafkaRangeIteratorTest {
     documentChannel.flush();
 
     KafkaDocumentSource<String> source = setupSource("group", s->s.setCommitType(KafkaDocumentSource.CommitType.none), null);
-    DocumentBatch<KafkaDocument<String>> batch = source.pollDocuments(Duration.ofSeconds(1));
+    DocumentBatch<KafkaDocument<String>> batch = source.pollDocuments(Duration.ofSeconds(2));
 
     List<KafkaDocument<String>> documents = list(batch.getDocuments());
     KafkaDocument<String> firstDocument = documents.get(0);
@@ -117,7 +117,7 @@ public class KafkaRangeIteratorTest {
     senderChannel.getDocumentChannel().flush();
 
     //read all documents to find last cursor
-    KafkaDocumentSource<String> receiverChannel1 = setupSource("group", null, b->b.setMaxPollRecords(500));
+    KafkaDocumentSource<String> receiverChannel1 = setupSource("group", s->s.setCommitType(KafkaDocumentSource.CommitType.none), b->b.setMaxPollRecords(500));
     List<KafkaDocument<String>> batch1 = ListUtils.list(receiverChannel1.pollDocuments(Duration.ofSeconds(10)).getDocuments());
     assertEquals(100, batch1.size());
     String endCursor = batch1.get(99).getCursor();
@@ -125,7 +125,7 @@ public class KafkaRangeIteratorTest {
 
     //use range iterator to iterate all documents
     {
-      KafkaDocumentSource<String> receiverChannel2 = setupSource("group");
+      KafkaDocumentSource<String> receiverChannel2 = setupSource("group2", s->s.setCommitType(KafkaDocumentSource.CommitType.none), null);
       Iterator<KafkaDocument<String>> iter2 = new KafkaRangeIterator<>(receiverChannel2, null, endCursor);
       KafkaDocument<String> last = iter2.next();
       assertEquals("mydoc0", last.getDocument());

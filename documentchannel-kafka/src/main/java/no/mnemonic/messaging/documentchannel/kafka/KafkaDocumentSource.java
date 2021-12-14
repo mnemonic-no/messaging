@@ -1,5 +1,7 @@
 package no.mnemonic.messaging.documentchannel.kafka;
 
+import no.mnemonic.commons.logging.Logger;
+import no.mnemonic.commons.logging.Logging;
 import no.mnemonic.commons.metrics.MetricAspect;
 import no.mnemonic.commons.metrics.MetricException;
 import no.mnemonic.commons.metrics.Metrics;
@@ -12,6 +14,7 @@ import no.mnemonic.messaging.documentchannel.DocumentBatch;
 import no.mnemonic.messaging.documentchannel.DocumentChannelListener;
 import no.mnemonic.messaging.documentchannel.DocumentChannelSubscription;
 import no.mnemonic.messaging.documentchannel.DocumentSource;
+import org.apache.kafka.clients.consumer.ConsumerRebalanceListener;
 import org.apache.kafka.clients.consumer.ConsumerRecord;
 import org.apache.kafka.clients.consumer.ConsumerRecords;
 import org.apache.kafka.clients.consumer.KafkaConsumer;
@@ -20,7 +23,12 @@ import org.apache.kafka.common.PartitionInfo;
 import org.apache.kafka.common.TopicPartition;
 
 import java.time.Duration;
-import java.util.*;
+import java.util.Collection;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
@@ -28,6 +36,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.atomic.LongAdder;
 import java.util.function.Consumer;
+import java.util.stream.Collectors;
 
 import static no.mnemonic.commons.utilities.ObjectUtils.ifNotNullDo;
 import static no.mnemonic.commons.utilities.collections.ListUtils.addToList;
@@ -48,6 +57,9 @@ import static no.mnemonic.commons.utilities.lambda.LambdaUtils.tryTo;
  */
 public class KafkaDocumentSource<T> implements DocumentSource<T>, MetricAspect {
 
+  private static final Logger LOGGER = Logging.getLogger(KafkaDocumentSource.class);
+  private static final long DEFAULT_MAX_ASSIGNMENT_WAIT_MS = TimeUnit.SECONDS.toMillis(10);
+
   public enum CommitType {
     sync, async, none;
   }
@@ -66,6 +78,10 @@ public class KafkaDocumentSource<T> implements DocumentSource<T>, MetricAspect {
   private final LongAdder consumerRetryProcessError = new LongAdder();
   private final LongAdder consumerRetryKafkaError = new LongAdder();
   private final KafkaCursor currentCursor = new KafkaCursor();
+
+  private final CountDownLatch assignmentLatch = new CountDownLatch(1);
+
+  private long maxAssignmentWait = DEFAULT_MAX_ASSIGNMENT_WAIT_MS;
 
   private KafkaDocumentSource(
           KafkaConsumerProvider provider,
@@ -92,14 +108,23 @@ public class KafkaDocumentSource<T> implements DocumentSource<T>, MetricAspect {
    * @throws KafkaInvalidSeekException if the cursor is invalid, or points to a timestamp which is not reachable
    */
   public void seek(String cursor) throws KafkaInvalidSeekException {
-    if (cursor == null) {
-      return;
-    }
-    //parse cursor into current cursor
-    currentCursor.parse(cursor);
     //for each active topic, seek each partition to the position specified by the cursor
-    for (String topic : topicName) {
-      seek(topic, currentCursor.getPointers().get(topic));
+    if (currentConsumer.get() != null) {
+      throw new IllegalStateException("Cannot seek for consumer which is already set");
+    }
+
+    currentConsumer.set(provider.createConsumer(type));
+
+    if (cursor != null) {
+      //parse cursor into current cursor
+      currentCursor.parse(cursor);
+      for (String topic : topicName) {
+        seek(topic, currentCursor.getPointers().get(topic));
+      }
+    } else {
+      for (String topic : topicName) {
+        assign(topic);
+      }
     }
   }
 
@@ -111,7 +136,40 @@ public class KafkaDocumentSource<T> implements DocumentSource<T>, MetricAspect {
             .addData("kafka.error.retry", consumerRetryKafkaError.longValue());
   }
 
-  public KafkaCursor getCursor() {
+  /**
+   * Let client wait for partition assignment to complete. Method is reentrant,
+   * so calling this AFTER assignment is already done will immediately return true.
+   *
+   * @param maxWait max duration to wait before returning false
+   * @return true if partitions are assigned, or false if no partitions were assigned before the timeout
+   */
+  public boolean waitForAssignment(Duration maxWait) {
+    try {
+      return assignmentLatch.await(maxWait.toMillis(), TimeUnit.MILLISECONDS);
+    } catch (InterruptedException e) {
+      Thread.currentThread().interrupt();
+      throw new IllegalStateException("Interrupted waiting for partition assignment");
+    }
+  }
+
+  /**
+   * Fetch the current cursor of this source.
+   * The method will block up to <code>maxAssignmentWait</code> milliseconds waiting for partitions assignment.
+   * <p>
+   * Note; this cursor is not thread safe; if there is a separate consumer thread polling, you should rather
+   * use the cursor of the KafkaDocument.
+   *
+   * @return the String cursor for the current position of this source
+   * @see KafkaDocument
+   */
+  public String getCursor() {
+    return getKafkaCursor().toString();
+  }
+
+  KafkaCursor getKafkaCursor() {
+    if (!waitForAssignment(Duration.ofMillis(maxAssignmentWait))) {
+      throw new IllegalStateException(String.format("No assignment in %d ms", maxAssignmentWait));
+    }
     return currentCursor;
   }
 
@@ -192,33 +250,45 @@ public class KafkaDocumentSource<T> implements DocumentSource<T>, MetricAspect {
     return getCurrentConsumerOrSubscribe().poll(duration);
   }
 
-  private void seek(String topic, Map<Integer, KafkaCursor.OffsetAndTimestamp> cursorPointers) throws KafkaInvalidSeekException {
-    if (currentConsumer.get() != null) {
-      throw new IllegalStateException("Cannot seek for consumer which is already set");
-    }
-    currentConsumer.set(provider.createConsumer(type));
+  private void assign(String topic) {
+    //determine active partitions for this topic
+    Set<TopicPartition> partitionInfos = SetUtils.set(getConsumerOrFail().partitionsFor(topic), p -> new TopicPartition(topic, p.partition()));
+    //assign all partitions to this consumer
+    getConsumerOrFail().assign(partitionInfos);
+    //free latch
+    assignmentLatch.countDown();
+  }
 
+  private void seek(String topic, Map<Integer, KafkaCursor.OffsetAndTimestamp> cursorPointers) throws KafkaInvalidSeekException {
     //determine active partitions for this topic
     Map<Integer, PartitionInfo> partitionInfos = map(getConsumerOrFail().partitionsFor(topic), p -> MapUtils.pair(p.partition(), p));
     //assign all partitions to this consumer
     getConsumerOrFail().assign(SetUtils.set(partitionInfos.values(), p -> new TopicPartition(topic, p.partition())));
-    //find timestamp to seek to for each partition in the cursor (all other partitions will stay at initial offset set by OffsetResetStrategy)
-    Map<TopicPartition, Long> partitionsToSeek = new HashMap<>();
-    map(cursorPointers).forEach((partition, offsetAndTimestamp) -> partitionsToSeek.put(
-            new TopicPartition(topic, partition),
-            offsetAndTimestamp.getTimestamp()
-    ));
 
+    //If the cursor contains timestamp: find timestamp to seek to for each partition in the cursor (all other partitions will stay at initial offset set by OffsetResetStrategy)
+    Map<TopicPartition, Long> partitionsToSeek = new HashMap<>();
+    map(cursorPointers).entrySet().stream().filter(cp -> cp.getValue().getTimestamp() > 0).forEach(entry -> partitionsToSeek.put(
+            new TopicPartition(topic, entry.getKey()),
+            entry.getValue().getTimestamp()
+    ));
     //lookup offsets by timestamp from Kafka
     Map<TopicPartition, OffsetAndTimestamp> partitionOffsetMap = getConsumerOrFail().offsetsForTimes(partitionsToSeek);
-
-    //for each partition, seek to requested position, or fail
+    //for each partition we have timestamp for, seek to requested position, or fail
     for (Map.Entry<TopicPartition, OffsetAndTimestamp> entries : partitionOffsetMap.entrySet()) {
       if (entries.getValue() == null)
         throw new KafkaInvalidSeekException("Unable to skip to requested position for partition " + entries.getKey().partition());
       getConsumerOrFail().seek(entries.getKey(), entries.getValue().offset());
     }
 
+    //for each partition we have offset (but no timestamp) for, seek to requested position, or fail
+    List<Map.Entry<Integer, KafkaCursor.OffsetAndTimestamp>> partitionOffsetsToSeekTo = cursorPointers.entrySet().stream()
+            .filter(cp -> cp.getValue().getTimestamp() == 0)
+            .collect(Collectors.toList());
+    for (Map.Entry<Integer, KafkaCursor.OffsetAndTimestamp> partition : partitionOffsetsToSeekTo) {
+      getConsumerOrFail().seek(new TopicPartition(topic, partition.getKey()), partition.getValue().getOffset());
+    }
+    //now we are assigned, so free the latch
+    assignmentLatch.countDown();
   }
 
   private DocumentBatch<KafkaDocument<T>> createDocuments(ConsumerRecords<String, T> records) {
@@ -241,6 +311,16 @@ public class KafkaDocumentSource<T> implements DocumentSource<T>, MetricAspect {
       }
     }
     return new KafkaDocumentBatch<>(result, commitType, getConsumerOrFail());
+  }
+
+  /**
+   * This parameter only applies to getCursor(), and should probably never need to be changed.
+   *
+   * @param maxAssignmentWait max millis to wait for assignments.
+   */
+  public KafkaDocumentSource<T> setMaxAssignmentWait(long maxAssignmentWait) {
+    this.maxAssignmentWait = maxAssignmentWait;
+    return this;
   }
 
   private static class KafkaDocumentBatch<D> implements DocumentBatch<D> {
@@ -275,13 +355,27 @@ public class KafkaDocumentSource<T> implements DocumentSource<T>, MetricAspect {
   }
 
   private KafkaConsumer<String, T> getCurrentConsumerOrSubscribe() {
-    KafkaConsumer<String, T> consumer = currentConsumer.get();
-    if (consumer == null) {
-      consumer = provider.createConsumer(type);
-      consumer.subscribe(topicName);
+    currentConsumer.get();
+    if (currentConsumer.get() == null) {
+      KafkaConsumer<String, T> consumer = provider.createConsumer(type);
+      consumer.subscribe(topicName, new ConsumerRebalanceListener() {
+        @Override
+        public void onPartitionsRevoked(Collection<TopicPartition> partitions) {
+          LOGGER.info("Partitions were revoked: " + partitions);
+        }
+
+        @Override
+        public void onPartitionsAssigned(Collection<TopicPartition> partitions) {
+          LOGGER.info("Partitions were assigned: " + partitions);
+          //set the position of the cursor to the current position of the consumer
+          currentCursor.set(consumer);
+          //release the latch
+          assignmentLatch.countDown();
+        }
+      });
       currentConsumer.set(consumer);
     }
-    return consumer;
+    return currentConsumer.get();
   }
 
   interface ConsumerCallbackInterface {

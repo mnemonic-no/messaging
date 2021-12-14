@@ -10,6 +10,7 @@ import com.fasterxml.jackson.databind.json.JsonMapper;
 import no.mnemonic.commons.utilities.StringUtils;
 import no.mnemonic.commons.utilities.collections.MapUtils;
 import org.apache.kafka.clients.consumer.ConsumerRecord;
+import org.apache.kafka.clients.consumer.KafkaConsumer;
 
 import java.io.IOException;
 import java.util.Base64;
@@ -70,12 +71,28 @@ class KafkaCursor {
     }
   }
 
+  /**
+   * Update this pointer to reflect the position of this record
+   * @param record the received record to update the pointer to
+   */
   void register(ConsumerRecord<?, ?> record) {
     if (record == null) throw new IllegalArgumentException("record was null");
     pointers.computeIfAbsent(record.topic(), t -> new ConcurrentHashMap<>()).put(
             record.partition(),
             new OffsetAndTimestamp(record.offset(), record.timestamp())
     );
+  }
+
+  /**
+   * Set the state of this pointer to match the current position of the current consumer (only for assigned partitions)
+   * @param consumer the consumer to set pointer to. The consumer must be assigned.
+   */
+  void set(KafkaConsumer<?, ?> consumer) {
+    if (consumer == null) throw new IllegalArgumentException("consumer was null");
+    pointers.clear();
+    consumer.endOffsets(consumer.assignment()).forEach((tp, pos) -> {
+      pointers.computeIfAbsent(tp.topic(), t->new ConcurrentHashMap<>()).put(tp.partition(), new OffsetAndTimestamp(pos, 0));
+    });
   }
 
   void parse(String cursor) {

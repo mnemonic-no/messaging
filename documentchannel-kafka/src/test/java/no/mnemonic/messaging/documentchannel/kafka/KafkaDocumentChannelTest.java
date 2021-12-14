@@ -40,7 +40,7 @@ import static org.mockito.Mockito.verify;
 @RunWith(MockitoJUnitRunner.class)
 public class KafkaDocumentChannelTest {
 
-  private Semaphore semaphore = new Semaphore(0);
+  private final Semaphore semaphore = new Semaphore(0);
 
   @Mock
   private DocumentChannelListener<String> listener;
@@ -71,6 +71,31 @@ public class KafkaDocumentChannelTest {
       semaphore.release();
       return null;
     }).when(listener).documentReceived(any());
+  }
+
+  @Test
+  public void initialCursor() throws KafkaInvalidSeekException, InterruptedException {
+    useTopic("initialCursor");
+    KafkaDocumentDestination<String> sender = setupDestination();
+    DocumentChannel<String> senderChannel = sender.getDocumentChannel();
+    KafkaDocumentSource<String> receiverChannel1 = setupSource("group1", null, b -> b.setMaxPollRecords(10));
+
+    senderChannel.sendDocument("mydoc1");
+    senderChannel.flush();
+    Thread.sleep(1); //sleep between messages to ensure they have different timestamps in kafka
+    receiverChannel1.createDocumentSubscription(listener);
+    KafkaCursor cursor = receiverChannel1.getKafkaCursor();
+
+    senderChannel.sendDocument("mydoc2");
+    senderChannel.sendDocument("mydoc3");
+    senderChannel.sendDocument("mydoc4");
+    senderChannel.flush();
+
+    KafkaDocumentSource<String> receiverChannel2 = setupSource("group2", null, b -> b.setMaxPollRecords(10));
+    //make sure the initial pointer points back to BEFORE the first record
+    receiverChannel2.seek(cursor.toString());
+    DocumentBatch<String> batch = receiverChannel2.poll(Duration.ofSeconds(1));
+    assertEquals(list("mydoc2", "mydoc3", "mydoc4"), list(batch.getDocuments()));
   }
 
   @Test

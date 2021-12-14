@@ -27,10 +27,14 @@ public class KafkaRangeIterator<T> implements Iterator<KafkaDocument<T>>, Iterab
 
   /**
    * @param source The kafka document source to read from. The source should be seeked to the proper start position.
-   * @param toCursor a {@link KafkaCursor} string representing the end of the target range, as returned from a {@link KafkaDocument#getCursor()}.
+   * @param fromCursor a {@link KafkaCursor} string representing the start position to iterate from, as returned from a {@link KafkaDocument#getCursor()}. FromCursor MAY be null (will then iterate from the default starting point)
+   * @param toCursor a {@link KafkaCursor} string representing the end of the target range, as returned from a {@link KafkaDocument#getCursor()}. ToCursor MUST be set, or will throw IllegalArgumentException.
    */
   public KafkaRangeIterator(KafkaDocumentSource<T> source, String fromCursor, String toCursor) throws KafkaInvalidSeekException {
     this.source = source;
+    if (source == null) throw new IllegalArgumentException("source not set!");
+    if (toCursor == null) throw new IllegalArgumentException("toCursor not set!");
+
     source.seek(fromCursor);
     KafkaCursor parsedCursor = KafkaCursor.valueOf(toCursor);
 
@@ -42,7 +46,7 @@ public class KafkaRangeIterator<T> implements Iterator<KafkaDocument<T>>, Iterab
     }
 
     //create a local cursor pointing to the current state of the source
-    cursor = new KafkaCursor(source.getCursor());
+    cursor = new KafkaCursor(source.getKafkaCursor());
   }
 
   @Override

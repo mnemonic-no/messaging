@@ -3,6 +3,12 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [1.3.14] - 2021-12-06
+### Changed
+ARGUS-26277
+- Add new method `KafkaDocumentSource.waitForAssignment(Duration)` to let clients wait for assignments to complete
+- Improve `getCursor()` handling to make sure the cursor value is set to the current position of the source before returning 
+
 ## [1.3.0] - 2021-03-09
 
 ### Added

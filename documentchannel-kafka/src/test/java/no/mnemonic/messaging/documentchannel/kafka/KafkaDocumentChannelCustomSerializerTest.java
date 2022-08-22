@@ -31,7 +31,9 @@ import static no.mnemonic.commons.utilities.ObjectUtils.ifNull;
 import static no.mnemonic.commons.utilities.lambda.LambdaUtils.tryTo;
 import static org.junit.Assert.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.Mockito.*;
+import static org.mockito.Mockito.argThat;
+import static org.mockito.Mockito.doAnswer;
+import static org.mockito.Mockito.verify;
 
 @RunWith(MockitoJUnitRunner.class)
 public class KafkaDocumentChannelCustomSerializerTest {
@@ -120,6 +122,7 @@ public class KafkaDocumentChannelCustomSerializerTest {
             .setProducerProvider(createProducerProvider())
             .setFlushAfterWrite(false)
             .setTopicName(topic)
+            .setKeySerializer(MyObject::getType)
             .setType(MyObject.class)
             .build();
     channels.add(channel);

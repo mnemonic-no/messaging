@@ -3,6 +3,13 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [1.3.15] - 2022-08-22
+### Added
+ARGUS-30416
+- Add support for custom key serializer in `KafkaDocumentDestination`.
+- Clients may pass a lambda `Function<T, String>` to select the correct String value to partition the document by.
+- Clients may use this to ensure that documents are partitioned consistently by some custom value.  
+
 ## [1.3.14] - 2021-12-06
 ### Changed
 ARGUS-26277

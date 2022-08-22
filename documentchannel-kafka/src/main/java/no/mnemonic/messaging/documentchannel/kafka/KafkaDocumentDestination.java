@@ -7,7 +7,9 @@ import org.apache.kafka.clients.producer.KafkaProducer;
 import org.apache.kafka.clients.producer.ProducerRecord;
 
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Function;
 
+import static no.mnemonic.commons.utilities.ObjectUtils.ifNotNull;
 import static no.mnemonic.commons.utilities.ObjectUtils.ifNotNullDo;
 import static no.mnemonic.commons.utilities.ObjectUtils.ifNull;
 
@@ -25,17 +27,22 @@ public class KafkaDocumentDestination<T> implements DocumentDestination<T> {
   private final boolean flushAfterWrite;
   private final boolean disabled;
 
+  private final Function<T, String> keySerializer;
+
   private final AtomicReference<KafkaProducer<String, T>> currentProducer = new AtomicReference<>();
 
   private KafkaDocumentDestination(
           KafkaProducerProvider provider,
           Class<T> type,
+          Function<T, String> keySerializer,
           String topicName,
-          boolean flushAfterWrite, boolean disabled) {
+          boolean flushAfterWrite,
+          boolean disabled) {
     if (provider == null) throw new IllegalArgumentException("provider not set");
     if (type == null) throw new IllegalArgumentException("type not set");
     if (topicName == null) throw new IllegalArgumentException("topicName not set");
     if (!provider.hasType(type)) throw new IllegalArgumentException("Provider does not support type, maybe add a serializer for " + type);
+    this.keySerializer = keySerializer;
     this.disabled = disabled;
     this.provider = provider;
     this.type = type;
@@ -76,12 +83,12 @@ public class KafkaDocumentDestination<T> implements DocumentDestination<T> {
   //private methods
 
   private void writeDocument(T doc) {
-    getProducer().send(new ProducerRecord<>(topicName, doc));
+    getProducer().send(new ProducerRecord<>(topicName, ifNotNull(keySerializer, k->k.apply(doc)), doc));
     if (flushAfterWrite) getProducer().flush();
   }
 
   private <K> void writeDocument(T doc, K documentKey, DocumentChannel.DocumentCallback<K> callback) {
-    getProducer().send(new ProducerRecord<>(topicName, doc), (metadata, exception) -> {
+    getProducer().send(new ProducerRecord<>(topicName, ifNotNull(keySerializer, k->k.apply(doc)), doc), (metadata, exception) -> {
       if (metadata != null) callback.documentAccepted(documentKey);
       else if (exception != null) callback.channelError(documentKey, exception);
     });
@@ -105,13 +112,18 @@ public class KafkaDocumentDestination<T> implements DocumentDestination<T> {
     private String topicName;
     private boolean flushAfterWrite;
     private boolean disabled;
+    private Function<T, String> keySerializer;
 
     public KafkaDocumentDestination<T> build() {
-      return new KafkaDocumentDestination<>(kafkaProducerProvider, type, topicName, flushAfterWrite, disabled);
+      return new KafkaDocumentDestination<>(kafkaProducerProvider, type, keySerializer, topicName, flushAfterWrite, disabled);
     }
 
     //setters
 
+    public Builder<T> setKeySerializer(Function<T, String> keySerializer) {
+      this.keySerializer = keySerializer;
+      return this;
+    }
 
     public Builder<T> setFlushAfterWrite(boolean flushAfterWrite) {
       this.flushAfterWrite = flushAfterWrite;

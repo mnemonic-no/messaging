@@ -15,11 +15,13 @@ import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.mockito.Mock;
 import org.mockito.junit.MockitoJUnitRunner;
+import org.mockito.stubbing.Answer;
 
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Iterator;
+import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.Semaphore;
 import java.util.concurrent.TimeUnit;
@@ -27,11 +29,14 @@ import java.util.function.Consumer;
 
 import static no.mnemonic.commons.utilities.ObjectUtils.ifNotNullDo;
 import static no.mnemonic.commons.utilities.collections.ListUtils.list;
+import static no.mnemonic.commons.utilities.collections.SetUtils.set;
 import static no.mnemonic.commons.utilities.lambda.LambdaUtils.tryTo;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertTrue;
+import static org.junit.jupiter.api.Assertions.fail;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.argThat;
 import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.isA;
 import static org.mockito.Mockito.times;
@@ -67,10 +72,7 @@ public class KafkaDocumentChannelTest {
 
   @Before
   public void setUp() {
-    doAnswer(i -> {
-      semaphore.release();
-      return null;
-    }).when(listener).documentReceived(any());
+    doAnswer(asVoid(str->semaphore.release())).when(listener).documentReceived(any());
   }
 
   @Test
@@ -151,7 +153,7 @@ public class KafkaDocumentChannelTest {
 
     String cursor;
     {
-      Collection<KafkaDocument<String>> result = receiverChannel1.pollDocuments(Duration.ofSeconds(10)).getDocuments();
+      Collection<KafkaDocument<String>> result = receiverChannel1.poll(Duration.ofSeconds(10)).getKafkaDocuments();
       assertEquals(3, result.size());
       Iterator<KafkaDocument<String>> iterator = result.iterator();
       KafkaDocument<String> doc1 = iterator.next();
@@ -168,7 +170,7 @@ public class KafkaDocumentChannelTest {
       KafkaDocumentSource<String> rangeReceiver = setupSource("range");
       rangeReceiver.seek(cursor);
 
-      Collection<KafkaDocument<String>> result2 = rangeReceiver.pollDocuments(Duration.ofSeconds(10)).getDocuments();
+      Collection<KafkaDocument<String>> result2 = rangeReceiver.poll(Duration.ofSeconds(10)).getKafkaDocuments();
       assertEquals(2, result2.size());
       Iterator<KafkaDocument<String>> iterator2 = result2.iterator();
       KafkaDocument<String> rdoc1 = iterator2.next();
@@ -246,15 +248,9 @@ public class KafkaDocumentChannelTest {
   @Test
   public void retryOnError() throws InterruptedException {
     useTopic("retryOnErrorTest");
-    doAnswer(i -> {
-      semaphore.release();
-      return null;
-    })
-            .doThrow(new RuntimeException())  // Failed on second message
-            .doAnswer(i -> {
-              semaphore.release();
-              return null;
-            })
+    doAnswer(asVoid(str->semaphore.release()))
+            .doThrow(new RuntimeException()) //ONE error when first listener is invoked
+            .doAnswer(asVoid(str->semaphore.release()))
             .when(listener).documentReceived(any());
 
     KafkaDocumentDestination<String> senderChannel = setupDestination();
@@ -277,21 +273,12 @@ public class KafkaDocumentChannelTest {
   @Test
   public void retryOnKafkaRebalanced() throws InterruptedException {
     useTopic("retryOnKafkaRebalancedTest");
-    doAnswer(i -> {
-      // Let first message succeed, so there is offset committed
-      semaphore.release();
-      return null;
-    })
-            .doAnswer(i -> {
-              // Demonstrate processing took longer than max.poll.interval.ms that would trigger rebalance of kafka consumer
-              TimeUnit.SECONDS.sleep(3L);
-              return null;
-            })
-            .doAnswer(i -> {
-              semaphore.release();
-              return null;
-            })
+    doAnswer(asVoid(str->semaphore.release()))
+            // Demonstrate processing took longer than max.poll.interval.ms that would trigger rebalance of kafka consumer
+            .doAnswer(asVoid(str->tryTo(()->TimeUnit.SECONDS.sleep(3L))))
+            .doAnswer(asVoid(str->semaphore.release()))
             .when(listener).documentReceived(any());
+
 
     KafkaDocumentDestination<String> senderChannel = setupDestination();
     KafkaDocumentSource<String> receiverChannel = setupSource("group");
@@ -313,22 +300,16 @@ public class KafkaDocumentChannelTest {
   @Test
   public void retryWithMultipleConsumers() throws InterruptedException {
     useTopic("retryWithMultipleConsumersTest");
+    Set<String> documents = set();
 
-    doAnswer(i -> {
-      // Accepts initial message
-      semaphore.release();
-      return null;
-    })
-            .doThrow(new RuntimeException())
-            .doAnswer(i -> {
-              semaphore.release();
-              return null;
-            })
+    doAnswer(asVoid(str->{documents.add(str); semaphore.release(); }))
+            .doThrow(new RuntimeException()) //ONE error when first listener is invoked
+            .doAnswer(asVoid(str->{documents.add(str); semaphore.release();}))
             .when(listener).documentReceived(any());
 
     KafkaDocumentDestination<String> senderChannel = setupDestination();
-    KafkaDocumentSource<String> receiverChannel1 = setupSource("group");
-    KafkaDocumentSource<String> receiverChannel2 = setupSource("group");
+    KafkaDocumentSource<String> receiverChannel1 = setupSource("retryWithMultipleConsumersGroup");
+    KafkaDocumentSource<String> receiverChannel2 = setupSource("retryWithMultipleConsumersGroup");
     receiverChannel1.createDocumentSubscription(listener);
     receiverChannel2.createDocumentSubscription(listener);
 
@@ -337,13 +318,23 @@ public class KafkaDocumentChannelTest {
     assertTrue(semaphore.tryAcquire(1, 20, TimeUnit.SECONDS));
 
     for (int i = 0; i < 1000; i++) {
-      senderChannel.getDocumentChannel().sendDocument("mydoc1");
+      senderChannel.getDocumentChannel().sendDocument("mydoc" + i);
     }
     senderChannel.getDocumentChannel().flush();
-    assertTrue(semaphore.tryAcquire(1000, 20, TimeUnit.SECONDS));
-    verify(listener, times(1001)).documentReceived("mydoc1");
+
+    //wait for all 1000 documents to come through
+    if (!semaphore.tryAcquire(1000, 20, TimeUnit.SECONDS)) {
+      fail("Tried to aquire 1000 documents, but got only " + semaphore.availablePermits());
+    }
+
+    for (int i = 0; i < 1000; i++) {
+      assertTrue("Missing document mydoc" + i, documents.contains("mydoc" + i));
+    }
+
+    //in total, we should have received 1001 documents (1000 OK, and 1 which was rejected)
+    verify(listener, times(1001)).documentReceived(argThat(i->i.startsWith("mydoc")));
+    //we should have received ONE error
     verify(errorListener).accept(isA(RuntimeException.class));
-    System.out.println("Test done");
   }
 
   @Test
@@ -358,6 +349,7 @@ public class KafkaDocumentChannelTest {
     senderChannel.getDocumentChannel().sendDocument("mydoc1");
     senderChannel.getDocumentChannel().sendDocument("mydoc2");
     senderChannel.getDocumentChannel().sendDocument("mydoc3");
+
     assertTrue(semaphore.tryAcquire(6, 10, TimeUnit.SECONDS));
     verify(listener, times(2)).documentReceived("mydoc1");
     verify(listener, times(2)).documentReceived("mydoc2");
@@ -373,6 +365,14 @@ public class KafkaDocumentChannelTest {
             .build();
     channels.add(channel);
     return channel;
+  }
+
+  //convenience method to reduce verbosity of doAnswer
+  private static Answer asVoid(Consumer<String> task) {
+    return i->{
+      task.accept(i.getArgument(0));
+      return null;
+    };
   }
 
   private KafkaDocumentSource<String> setupSource(String group) {

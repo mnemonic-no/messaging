@@ -5,7 +5,6 @@ import com.palantir.docker.compose.configuration.ProjectName;
 import com.palantir.docker.compose.connection.waiting.HealthChecks;
 import no.mnemonic.commons.junit.docker.DockerTestUtils;
 import no.mnemonic.commons.utilities.collections.ListUtils;
-import no.mnemonic.messaging.documentchannel.DocumentBatch;
 import no.mnemonic.messaging.documentchannel.DocumentChannel;
 import no.mnemonic.messaging.documentchannel.DocumentDestination;
 import org.junit.After;
@@ -57,9 +56,9 @@ public class KafkaRangeIteratorTest {
     documentChannel.flush();
 
     KafkaDocumentSource<String> source = setupSource("group", s->s.setCommitType(KafkaDocumentSource.CommitType.none), null);
-    DocumentBatch<KafkaDocument<String>> batch = source.pollDocuments(Duration.ofSeconds(2));
+    KafkaDocumentBatch<String> batch = source.poll(Duration.ofSeconds(2));
 
-    List<KafkaDocument<String>> documents = list(batch.getDocuments());
+    List<KafkaDocument<String>> documents = list(batch.getKafkaDocuments());
     KafkaDocument<String> firstDocument = documents.get(0);
     KafkaDocument<String> lastDocument = documents.get(documents.size()-1);
     assertEquals("doc0", firstDocument.getDocument());
@@ -85,13 +84,13 @@ public class KafkaRangeIteratorTest {
     senderChannel.getDocumentChannel().flush();
 
     KafkaDocumentSource<String> receiverChannel1 = setupSource("group", null, b->b.setMaxPollRecords(50));
-    List<KafkaDocument<String>> batch1 = ListUtils.list(receiverChannel1.pollDocuments(Duration.ofSeconds(10)).getDocuments());
+    List<KafkaDocument<String>> batch1 = ListUtils.list(receiverChannel1.poll(Duration.ofSeconds(10)).getKafkaDocuments());
     assertEquals("mydoc49", batch1.get(49).getDocument());
 
-    List<KafkaDocument<String>> batch2 = ListUtils.list(receiverChannel1.pollDocuments(Duration.ofSeconds(10)).getDocuments());
+    List<KafkaDocument<String>> batch2 = ListUtils.list(receiverChannel1.poll(Duration.ofSeconds(10)).getKafkaDocuments());
     assertEquals("mydoc99", batch2.get(49).getDocument());
 
-    List<KafkaDocument<String>> batch3 = ListUtils.list(receiverChannel1.pollDocuments(Duration.ofSeconds(10)).getDocuments());
+    List<KafkaDocument<String>> batch3 = ListUtils.list(receiverChannel1.poll(Duration.ofSeconds(10)).getKafkaDocuments());
     assertEquals("mydoc149", batch3.get(49).getDocument());
 
     KafkaDocumentSource<String> receiverChannel2 = setupSource("group", null, b->b.setMaxPollRecords(50));
@@ -118,7 +117,7 @@ public class KafkaRangeIteratorTest {
 
     //read all documents to find last cursor
     KafkaDocumentSource<String> receiverChannel1 = setupSource("group", s->s.setCommitType(KafkaDocumentSource.CommitType.none), b->b.setMaxPollRecords(500));
-    List<KafkaDocument<String>> batch1 = ListUtils.list(receiverChannel1.pollDocuments(Duration.ofSeconds(10)).getDocuments());
+    List<KafkaDocument<String>> batch1 = ListUtils.list(receiverChannel1.poll(Duration.ofSeconds(10)).getKafkaDocuments());
     assertEquals(100, batch1.size());
     String endCursor = batch1.get(99).getCursor();
     receiverChannel1.close();

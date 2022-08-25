@@ -3,6 +3,18 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [1.3.16] - 2022-08-26
+### Changed
+ARGUS-30461
+- Added method `reject()` to the DocumentChannel `DocumentBatch` interface, allowing client to explicitly reject (rollback) the batch.
+- Simplified Kafka implementation of Document Subscription.
+
+### Upgrade notes
+- Implementations of `KafkaDocumentChannelListener` are now *required* to implement 
+  `void documentReceived(KafkaDocument<T> document)`. The default implementation of `void documentReceived(T document)` 
+  is to throw `UnsupportedOperationException`. This may be overridden if the implementation
+  can work without receiving a `KafkaDocument`
+
 ## [1.3.15] - 2022-08-22
 ### Added
 ARGUS-30416

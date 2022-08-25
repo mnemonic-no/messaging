@@ -36,6 +36,11 @@ public class NullDocumentSource<T> implements DocumentSource<T> {
       public void acknowledge() {
         //do nothing
       }
+
+      @Override
+      public void reject() {
+        //do nothing
+      }
     };
   }
 

@@ -10,7 +10,6 @@ import no.mnemonic.commons.utilities.collections.CollectionUtils;
 import no.mnemonic.commons.utilities.collections.ListUtils;
 import no.mnemonic.commons.utilities.collections.MapUtils;
 import no.mnemonic.commons.utilities.collections.SetUtils;
-import no.mnemonic.messaging.documentchannel.DocumentBatch;
 import no.mnemonic.messaging.documentchannel.DocumentChannelListener;
 import no.mnemonic.messaging.documentchannel.DocumentChannelSubscription;
 import no.mnemonic.messaging.documentchannel.DocumentSource;
@@ -177,7 +176,7 @@ public class KafkaDocumentSource<T> implements DocumentSource<T>, MetricAspect {
   public DocumentChannelSubscription createDocumentSubscription(DocumentChannelListener<T> listener) {
     if (listener == null) throw new IllegalArgumentException("listener not set");
     if (subscriberAttached.get()) throw new IllegalStateException("Subscriber already created");
-    executorService.submit(new KafkaConsumerWorker<>(getCurrentConsumerOrSubscribe(), listener, commitType, topicName, createCallbackInterface()));
+    executorService.submit(new KafkaConsumerWorker<>(this, listener, createCallbackInterface()));
 
     return this::close;
   }
@@ -219,12 +218,8 @@ public class KafkaDocumentSource<T> implements DocumentSource<T>, MetricAspect {
   }
 
   @Override
-  public DocumentBatch<T> poll(Duration duration) {
+  public KafkaDocumentBatch<T> poll(Duration duration) {
     return createBatch(pollConsumerRecords(duration));
-  }
-
-  public DocumentBatch<KafkaDocument<T>> pollDocuments(Duration duration) {
-    return createDocuments(pollConsumerRecords(duration));
   }
 
   @Override
@@ -291,23 +286,12 @@ public class KafkaDocumentSource<T> implements DocumentSource<T>, MetricAspect {
     assignmentLatch.countDown();
   }
 
-  private DocumentBatch<KafkaDocument<T>> createDocuments(ConsumerRecords<String, T> records) {
+  private KafkaDocumentBatch<T> createBatch(ConsumerRecords<String, T> records) {
     List<KafkaDocument<T>> result = ListUtils.list();
     if (records != null) {
-      for (ConsumerRecord<String, T> record : records) {
-        currentCursor.register(record);
-        result.add(new KafkaDocument<>(record.value(), currentCursor.toString()));
-      }
-    }
-    return new KafkaDocumentBatch<>(result, commitType, getConsumerOrFail());
-  }
-
-  private DocumentBatch<T> createBatch(ConsumerRecords<String, T> records) {
-    List<T> result = ListUtils.list();
-    if (records != null) {
-      for (ConsumerRecord<String, T> record : records) {
-        currentCursor.register(record);
-        result.add(record.value());
+      for (ConsumerRecord<String, T> rec : records) {
+        currentCursor.register(rec);
+        result.add(new KafkaDocument<>(rec, currentCursor.toString()));
       }
     }
     return new KafkaDocumentBatch<>(result, commitType, getConsumerOrFail());
@@ -321,32 +305,6 @@ public class KafkaDocumentSource<T> implements DocumentSource<T>, MetricAspect {
   public KafkaDocumentSource<T> setMaxAssignmentWait(long maxAssignmentWait) {
     this.maxAssignmentWait = maxAssignmentWait;
     return this;
-  }
-
-  private static class KafkaDocumentBatch<D> implements DocumentBatch<D> {
-    private final Collection<D> documents;
-    private final CommitType commitType;
-    private final KafkaConsumer<?, ?> consumer;
-
-    private KafkaDocumentBatch(Collection<D> documents, CommitType commitType, KafkaConsumer<?, ?> consumer) {
-      this.documents = documents;
-      this.commitType = commitType;
-      this.consumer = consumer;
-    }
-
-    @Override
-    public Collection<D> getDocuments() {
-      return documents;
-    }
-
-    @Override
-    public void acknowledge() {
-      if (commitType == CommitType.sync) {
-        consumer.commitSync();
-      } else if (commitType == CommitType.async) {
-        consumer.commitAsync();
-      }
-    }
   }
 
   private KafkaConsumer<String, T> getConsumerOrFail() {
@@ -378,7 +336,7 @@ public class KafkaDocumentSource<T> implements DocumentSource<T>, MetricAspect {
     return currentConsumer.get();
   }
 
-  interface ConsumerCallbackInterface {
+  public interface ConsumerCallbackInterface {
     void consumerRunning(boolean running);
 
     void retryError(Exception e);

@@ -19,6 +19,6 @@ public interface KafkaDocumentChannelListener<T> extends DocumentChannelListener
 
   @Override
   default void documentReceived(T document) {
-    this.documentReceived(new KafkaDocument<>(document, null));
+    throw new UnsupportedOperationException("Not implemented, use documentReceived(KafkaDocument) instead");
   }
 }

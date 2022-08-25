@@ -16,9 +16,17 @@ public interface DocumentBatch<T> extends Iterable<T> {
   Collection<T> getDocuments();
 
   /**
-   * acknowledge that this batch is handled
+   * Acknowledge that this batch is handled.
+   * The underlying DocumentSource should commit this batch if the source has transactional properties.
    */
   void acknowledge();
+
+  /**
+   * Reject document batch
+   * The underlying DocumentSource should roll back this batch if the source has transactional properties.
+   * This means that the entire batch should be redelivered later (depending on implementation).
+   */
+  void reject();
 
   @Override
   default Iterator<T> iterator() {

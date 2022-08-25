@@ -86,7 +86,7 @@ public class KafkaRangeIterator<T> implements Iterator<KafkaDocument<T>>, Iterab
       //update cursor
       cursor.register(rec);
       //add to output queue
-      queue.add(new KafkaDocument<>(rec.value(), cursor.toString()));
+      queue.add(new KafkaDocument<>(rec, cursor.toString()));
     }
   }
 

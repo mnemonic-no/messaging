@@ -113,6 +113,11 @@ public class JMSDocumentSource<T> implements DocumentSource<T> {
           throw new IllegalStateException("Error acknowledging document", e);
         }
       }
+
+      @Override
+      public void reject() {
+        closeSession();
+      }
     };
   }
 

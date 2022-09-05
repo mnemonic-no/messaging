@@ -3,6 +3,11 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [1.3.17] - 2022-09-05
+### Fixed
+ARGUS-30461
+- Made KafkaDocumentBatch into public class
+
 ## [1.3.16] - 2022-08-26
 ### Changed
 ARGUS-30461

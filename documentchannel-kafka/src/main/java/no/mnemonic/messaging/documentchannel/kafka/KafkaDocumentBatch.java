@@ -10,7 +10,7 @@ import org.apache.kafka.common.TopicPartition;
 import java.util.Collection;
 import java.util.Set;
 
-class KafkaDocumentBatch<D> implements DocumentBatch<D> {
+public class KafkaDocumentBatch<D> implements DocumentBatch<D> {
 
   private static final Logger LOGGER = Logging.getLogger(KafkaDocumentBatch.class);
 

@@ -129,10 +129,14 @@ public class KafkaDocumentSource<T> implements DocumentSource<T>, MetricAspect {
 
   @Override
   public Metrics getMetrics() throws MetricException {
-    return new MetricsData()
-            .addData("alive", consumerRunning.get() ? 1 : 0)
+    MetricsData metrics = new MetricsData()
             .addData("processing.error.retry", consumerRetryProcessError.longValue())
             .addData("kafka.error.retry", consumerRetryKafkaError.longValue());
+
+    if (subscriberAttached.get()) {
+      metrics.addData("alive", consumerRunning.get() ? 1 : 0);
+    }
+    return metrics;
   }
 
   /**
@@ -175,8 +179,8 @@ public class KafkaDocumentSource<T> implements DocumentSource<T>, MetricAspect {
   @Override
   public DocumentChannelSubscription createDocumentSubscription(DocumentChannelListener<T> listener) {
     if (listener == null) throw new IllegalArgumentException("listener not set");
-    if (subscriberAttached.get()) throw new IllegalStateException("Subscriber already created");
     executorService.submit(new KafkaConsumerWorker<>(this, listener, createCallbackInterface()));
+    subscriberAttached.set(true);
 
     return this::close;
   }
@@ -230,6 +234,7 @@ public class KafkaDocumentSource<T> implements DocumentSource<T>, MetricAspect {
       ifNotNullDo(c, KafkaConsumer::close);
       return null;
     });
+    subscriberAttached.set(false);
   }
 
   public KafkaConsumer<String, T> getKafkaConsumer() {
@@ -240,7 +245,6 @@ public class KafkaDocumentSource<T> implements DocumentSource<T>, MetricAspect {
 
   ConsumerRecords<String, T> pollConsumerRecords(Duration duration) {
     if (duration == null) throw new IllegalArgumentException("duration not set");
-    if (subscriberAttached.get()) throw new IllegalStateException("This channel already has a subscriber");
     //the semantics of the document source does not require an explicit "subscribe()"-operation
     return getCurrentConsumerOrSubscribe().poll(duration);
   }

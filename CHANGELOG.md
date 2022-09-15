@@ -3,6 +3,15 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [1.3.18] - 2022-09-15
+### Fixed
+INCIDENT-156015
+- The `alive` metric in `KafkaDocumentSource` is no longer registered if no subscriber is attached
+
+### Upgrade notes
+- Nagios alarms will start triggering because this metric is no longer reporting any data. If this is true for your service, this is expected behavior.
+  The way to solve this is to delete the metric from Graphite.
+
 ## [1.3.17] - 2022-09-05
 ### Fixed
 ARGUS-30461

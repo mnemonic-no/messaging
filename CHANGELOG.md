@@ -3,6 +3,11 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [1.3.19] - 2022-10-14
+### Changed
+ARGUS-31386
+- Reduced the default value for max poll records in KafkaConsumerProvider.
+
 ## [1.3.18] - 2022-09-15
 ### Fixed
 INCIDENT-156015

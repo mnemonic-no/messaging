@@ -20,7 +20,7 @@ public class KafkaConsumerProvider {
   private static final int DEFAULT_REQUEST_TIMEOUT_MILLIS = 30000;
   private static final int DEFAULT_SESSION_TIMEOUT_MILLIS = 15000; // Need > consumer poll timeout, to avoid exception of time between subsequent calls to poll() was longer than the configured session.timeout.ms
   private static final int DEFAULT_HEARTBEAT_INTERVAL_MILLIS = 3000;
-  private static final int DEFAULT_MAX_POLL_RECORDS = 500;
+  private static final int DEFAULT_MAX_POLL_RECORDS = 100;
   private static final int DEFAULT_MAX_POLL_INTERVAL_MILLIS = (int) TimeUnit.MINUTES.toMillis(5L);
 
   public enum OffsetResetStrategy {

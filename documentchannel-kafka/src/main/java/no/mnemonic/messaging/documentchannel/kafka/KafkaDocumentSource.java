@@ -13,20 +13,12 @@ import no.mnemonic.commons.utilities.collections.SetUtils;
 import no.mnemonic.messaging.documentchannel.DocumentChannelListener;
 import no.mnemonic.messaging.documentchannel.DocumentChannelSubscription;
 import no.mnemonic.messaging.documentchannel.DocumentSource;
-import org.apache.kafka.clients.consumer.ConsumerRebalanceListener;
-import org.apache.kafka.clients.consumer.ConsumerRecord;
-import org.apache.kafka.clients.consumer.ConsumerRecords;
-import org.apache.kafka.clients.consumer.KafkaConsumer;
-import org.apache.kafka.clients.consumer.OffsetAndTimestamp;
+import org.apache.kafka.clients.consumer.*;
 import org.apache.kafka.common.PartitionInfo;
 import org.apache.kafka.common.TopicPartition;
 
 import java.time.Duration;
-import java.util.Collection;
-import java.util.HashMap;
-import java.util.List;
-import java.util.Map;
-import java.util.Set;
+import java.util.*;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -94,7 +86,8 @@ public class KafkaDocumentSource<T> implements DocumentSource<T>, MetricAspect {
     if (provider == null) throw new IllegalArgumentException("provider not set");
     if (type == null) throw new IllegalArgumentException("type not set");
     if (CollectionUtils.isEmpty(topicName)) throw new IllegalArgumentException("topicName not set");
-    if (!provider.hasType(type)) throw new IllegalArgumentException("Provider does not support type, maybe add a deserializer for " + type);
+    if (!provider.hasType(type))
+      throw new IllegalArgumentException("Provider does not support type, maybe add a deserializer for " + type);
     this.provider = provider;
     this.type = type;
     this.topicName = topicName;
@@ -146,13 +139,8 @@ public class KafkaDocumentSource<T> implements DocumentSource<T>, MetricAspect {
    * @param maxWait max duration to wait before returning false
    * @return true if partitions are assigned, or false if no partitions were assigned before the timeout
    */
-  public boolean waitForAssignment(Duration maxWait) {
-    try {
-      return assignmentLatch.await(maxWait.toMillis(), TimeUnit.MILLISECONDS);
-    } catch (InterruptedException e) {
-      Thread.currentThread().interrupt();
-      throw new IllegalStateException("Interrupted waiting for partition assignment");
-    }
+  public boolean waitForAssignment(Duration maxWait) throws InterruptedException {
+    return assignmentLatch.await(maxWait.toMillis(), TimeUnit.MILLISECONDS);
   }
 
   /**
@@ -162,14 +150,15 @@ public class KafkaDocumentSource<T> implements DocumentSource<T>, MetricAspect {
    * Note; this cursor is not thread safe; if there is a separate consumer thread polling, you should rather
    * use the cursor of the KafkaDocument.
    *
+   * @throws InterruptedException if interrupted while waiting for Kafka to assign partitions
    * @return the String cursor for the current position of this source
    * @see KafkaDocument
    */
-  public String getCursor() {
+  public String getCursor() throws InterruptedException {
     return getKafkaCursor().toString();
   }
 
-  KafkaCursor getKafkaCursor() {
+  KafkaCursor getKafkaCursor() throws InterruptedException {
     if (!waitForAssignment(Duration.ofMillis(maxAssignmentWait))) {
       throw new IllegalStateException(String.format("No assignment in %d ms", maxAssignmentWait));
     }

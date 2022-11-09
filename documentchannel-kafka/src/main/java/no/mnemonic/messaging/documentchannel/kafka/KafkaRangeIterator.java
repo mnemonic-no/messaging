@@ -6,11 +6,7 @@ import org.apache.kafka.clients.consumer.ConsumerRecords;
 import org.apache.kafka.common.TopicPartition;
 
 import java.time.Duration;
-import java.util.ArrayDeque;
-import java.util.Iterator;
-import java.util.Map;
-import java.util.NoSuchElementException;
-import java.util.Queue;
+import java.util.*;
 
 /**
  * This iterator implementation will return a range of documents
@@ -30,7 +26,7 @@ public class KafkaRangeIterator<T> implements Iterator<KafkaDocument<T>>, Iterab
    * @param fromCursor a {@link KafkaCursor} string representing the start position to iterate from, as returned from a {@link KafkaDocument#getCursor()}. FromCursor MAY be null (will then iterate from the default starting point)
    * @param toCursor a {@link KafkaCursor} string representing the end of the target range, as returned from a {@link KafkaDocument#getCursor()}. ToCursor MUST be set, or will throw IllegalArgumentException.
    */
-  public KafkaRangeIterator(KafkaDocumentSource<T> source, String fromCursor, String toCursor) throws KafkaInvalidSeekException {
+  public KafkaRangeIterator(KafkaDocumentSource<T> source, String fromCursor, String toCursor) throws KafkaInvalidSeekException, InterruptedException {
     this.source = source;
     if (source == null) throw new IllegalArgumentException("source not set!");
     if (toCursor == null) throw new IllegalArgumentException("toCursor not set!");

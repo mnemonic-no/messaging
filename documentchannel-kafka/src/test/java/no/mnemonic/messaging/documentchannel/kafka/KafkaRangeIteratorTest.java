@@ -13,11 +13,7 @@ import org.junit.Test;
 import org.mockito.Mock;
 
 import java.time.Duration;
-import java.util.ArrayList;
-import java.util.Collection;
-import java.util.Iterator;
-import java.util.List;
-import java.util.UUID;
+import java.util.*;
 import java.util.function.Consumer;
 
 import static no.mnemonic.commons.utilities.ObjectUtils.ifNotNullDo;
@@ -46,7 +42,7 @@ public class KafkaRangeIteratorTest {
   }
 
   @Test
-  public void iterateRange() throws KafkaInvalidSeekException {
+  public void iterateRange() throws KafkaInvalidSeekException, InterruptedException {
     DocumentDestination<String> destination = setupDestination();
     DocumentChannel<String> documentChannel = destination.getDocumentChannel();
 

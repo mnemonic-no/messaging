@@ -3,6 +3,12 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [1.3.20] - 2022-11-02
+### Changed
+ARGUS-31801
+- Removed use of `Thread.interrupt()` when `RequestHandler` is interrupted.
+- If interrupted, the `RequestHandler` will throw unchecked `MessagingInterruptedException` instead of `IllegalStateException`.
+
 ## [1.3.19] - 2022-10-14
 ### Changed
 ARGUS-31386

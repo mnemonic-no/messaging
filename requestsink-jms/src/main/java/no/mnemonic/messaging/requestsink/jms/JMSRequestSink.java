@@ -81,6 +81,9 @@ import static no.mnemonic.messaging.requestsink.jms.util.JMSUtils.*;
 public class JMSRequestSink extends AbstractJMSRequestBase implements RequestSink, MessageListener, MetricAspect {
 
   private static final Logger LOGGER = Logging.getLogger(JMSRequestSink.class);
+  private static final byte[] CHANNEL_CLOSED_REQUEST_MSG = "channel close request".getBytes();
+  private static final byte[] CHANNEL_UPLOAD_REQUEST_MSG = "channel upload request".getBytes();
+  private static final int ABORT_MSG_LIFETIME_MS = 1000;
 
   private final ProtocolVersion protocolVersion;
 
@@ -175,6 +178,11 @@ public class JMSRequestSink extends AbstractJMSRequestBase implements RequestSin
     //schedule clean state on every request
     scheduleStateCleanup();
     return signalContext;
+  }
+
+  @Override
+  public void abort(String callID) {
+    sendMessage(CHANNEL_CLOSED_REQUEST_MSG, callID, JMSRequestProxy.MESSAGE_TYPE_STREAM_CLOSED, getPriority(), ABORT_MSG_LIFETIME_MS, getCurrentResponseQueue());
   }
 
   @Override
@@ -304,7 +312,7 @@ public class JMSRequestSink extends AbstractJMSRequestBase implements RequestSin
       if (messageBytes.length > getMaxMessageSize()) {
         //if needing to fragment, replace signal context with a wrapper client upload context and send a channel request
         ctx = new ChannelUploadMessageContext(ctx, new ByteArrayInputStream(messageBytes), msg.getCallID(), getMaxMessageSize(), protocolVersion, metrics);
-        messageBytes = "channel upload request".getBytes();
+        messageBytes = CHANNEL_UPLOAD_REQUEST_MSG;
         messageType = JMSRequestProxy.MESSAGE_TYPE_CHANNEL_REQUEST;
         metrics.fragmentedUploadRequested();
       }

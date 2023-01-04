@@ -18,4 +18,9 @@ public interface RequestSink {
    */
   <T extends RequestContext> T signal(Message msg, T signalContext, long maxWait);
 
+  /**
+   * Signal the abortion of a call. The sink delivers no guarantees that the call can be aborted.
+   * @param callID the callID of the call to abort
+   */
+  void abort(String callID);
 }

@@ -101,6 +101,18 @@ public abstract class AbstractJMSRequestSinkTest extends AbstractJMSRequestTest 
   }
 
   @Test
+  public void testAbortSubmitsSignal() throws Exception {
+    setupSinkAndContainer();
+    //send testmessage
+    requestSink.abort("abortedCallID");
+    //wait for message to come through and validate
+    Message receivedMessage = expectMessage(JMSRequestProxy.MESSAGE_TYPE_STREAM_CLOSED);
+    Assert.assertEquals(ProtocolVersion.V3.getVersionString(), receivedMessage.getStringProperty(AbstractJMSRequestBase.PROTOCOL_VERSION_KEY));
+    assertEquals("abortedCallID", receivedMessage.getJMSCorrelationID());
+    assertTrue(receivedMessage instanceof BytesMessage);
+  }
+
+  @Test
   public void testTimeoutNotificationTriggersResponseQueueChange() throws Exception {
     setupSinkAndContainer();
 

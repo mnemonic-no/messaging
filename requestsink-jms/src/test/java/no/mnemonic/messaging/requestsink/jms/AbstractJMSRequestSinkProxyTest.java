@@ -47,6 +47,28 @@ public abstract class AbstractJMSRequestSinkProxyTest extends AbstractJMSRequest
   }
 
   @Test
+  public void testAbortSignal() throws Exception {
+    serverContainer.initialize();
+    clientContainer.initialize();
+    Semaphore semaphore = new Semaphore(0);
+    when(endpoint.signal(any(), any(), anyLong())).thenAnswer(i->{
+      semaphore.release();
+      return i.getArgument(1);
+    });
+    doAnswer(i->{
+      semaphore.release();
+      return null;
+    }).when(endpoint).abort(any());
+
+    TestMessage request = new TestMessage("request");
+    requestSink.signal(request, requestContext, 10000);
+    assertTrue(semaphore.tryAcquire(1, 1, TimeUnit.SECONDS));
+
+    requestSink.abort(request.getCallID());
+    assertTrue(semaphore.tryAcquire(1, 1, TimeUnit.SECONDS));
+  }
+
+  @Test
   public void testNiceShutdown() throws Exception {
     serverContainer.initialize();
     clientContainer.initialize();

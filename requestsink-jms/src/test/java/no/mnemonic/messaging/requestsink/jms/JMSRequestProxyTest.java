@@ -124,6 +124,28 @@ public class JMSRequestProxyTest extends AbstractJMSRequestTest {
   }
 
   @Test
+  public void testAbort() throws Exception {
+    setupEnvironment();
+    Semaphore semaphore = new Semaphore(0);
+    when(endpoint.signal(any(), any(), anyLong())).thenAnswer(i->{
+      semaphore.release();
+      return i.getArgument(1);
+    });
+    doAnswer(i->{
+      semaphore.release();
+      return null;
+    }).when(endpoint).abort(any());
+
+    TestMessage sentMessage = new TestMessage("test1");
+    signal(sentMessage, 1000, ProtocolVersion.V2);
+    assertTrue(semaphore.tryAcquire(1, 1, TimeUnit.SECONDS));
+
+    abort(sentMessage.getCallID());
+    assertTrue(semaphore.tryAcquire(1, 1, TimeUnit.SECONDS));
+    verify(endpoint).abort(sentMessage.getCallID());
+  }
+
+  @Test
   public void testChannelUpload() throws Exception {
     setupEnvironment();
     TestMessage sentMessage = new TestMessage("a bit longer message which is fragmented");
@@ -302,6 +324,14 @@ public class JMSRequestProxyTest extends AbstractJMSRequestTest {
     producer.send(message);
     producer.close();
     return responseQueue;
+  }
+
+  private void abort(String callID) throws Exception {
+    Message message = textMsg("channel close request", JMSRequestProxy.MESSAGE_TYPE_STREAM_CLOSED, callID);
+    message.setLongProperty(JMSRequestProxy.PROPERTY_REQ_TIMEOUT, System.currentTimeMillis() + 1000);
+    MessageProducer producer = session.createProducer(queue);
+    producer.send(message);
+    producer.close();
   }
 
   private void createContainer() {

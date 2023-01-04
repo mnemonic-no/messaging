@@ -1,5 +1,19 @@
 package no.mnemonic.messaging.requestsink.jms.context;
 
+/**
+ * A ServerContext represents the server side of a client/server call.
+ */
 public interface ServerContext {
+
+  /**
+   *
+   * @return true if this context has been closed
+   */
   boolean isClosed();
+
+  /**
+   * Request that this context is closed. No more responses should be allowed
+   * Ongoing execution should be aborted.
+   */
+  void close();
 }

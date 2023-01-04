@@ -56,6 +56,11 @@ public class RequestHandler implements RequestContext {
 
   //interface methods
 
+
+  public String getCallID() {
+    return callID;
+  }
+
   public void addListener(RequestListener listener) {
     requestListeners.add(listener);
   }

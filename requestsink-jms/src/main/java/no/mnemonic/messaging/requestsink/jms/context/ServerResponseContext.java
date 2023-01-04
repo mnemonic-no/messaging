@@ -12,12 +12,7 @@ import no.mnemonic.messaging.requestsink.jms.serializer.MessageSerializer;
 import no.mnemonic.messaging.requestsink.jms.util.FragmentConsumer;
 import no.mnemonic.messaging.requestsink.jms.util.ServerMetrics;
 
-import javax.jms.BytesMessage;
-import javax.jms.Destination;
-import javax.jms.InvalidDestinationException;
-import javax.jms.JMSException;
-import javax.jms.MessageProducer;
-import javax.jms.Session;
+import javax.jms.*;
 import java.io.ByteArrayInputStream;
 import java.io.IOException;
 import java.io.InputStream;
@@ -53,6 +48,7 @@ public class ServerResponseContext implements RequestContext, ServerContext {
   private final int maxMessageSize;
   private final ServerMetrics metrics;
   private final MessageSerializer serializer;
+  private final RequestSink requestSink;
 
   public ServerResponseContext(
           String callID,
@@ -63,8 +59,8 @@ public class ServerResponseContext implements RequestContext, ServerContext {
           ProtocolVersion protocolVersion,
           int maxMessageSize,
           ServerMetrics metrics,
-          MessageSerializer serializer
-  ) {
+          MessageSerializer serializer,
+          RequestSink requestSink) {
     this.callID = assertNotNull(callID, "CallID not set");
     this.session = assertNotNull(session, "session not set");
     this.replyProducer = assertNotNull(replyProducer, "replyProducer not set");
@@ -72,17 +68,17 @@ public class ServerResponseContext implements RequestContext, ServerContext {
     this.protocolVersion = assertNotNull(protocolVersion, "ProtocolVersion not set");
     this.metrics = assertNotNull(metrics, "metrics not set");
     this.serializer = assertNotNull(serializer, "serializer not set");
+    this.requestSink = assertNotNull(requestSink, "requestSink not set");
     if (maxMessageSize <= 1) throw new IllegalArgumentException("MaxMessageSize must be a positive integer");
-    this.maxMessageSize = maxMessageSize;
     if (timeout <= 0) throw new IllegalArgumentException("Timeout must be a positive integer");
+    this.maxMessageSize = maxMessageSize;
     this.timeout.set(timeout);
   }
 
   /**
    * Method to implement {@link ServerChannelUploadContext.UploadHandler}
    */
-  public void handle(RequestSink requestSink, Message request) throws JMSException {
-    assertNotNull(requestSink, "RequestSink not set");
+  public void handle(Message request) {
     assertNotNull(request, "Message not set");
     if (LOGGER.isDebug()) {
       LOGGER.debug("<< signal [callID=%s replyTo=%s]", callID, replyTo);
@@ -140,9 +136,14 @@ public class ServerResponseContext implements RequestContext, ServerContext {
     }
   }
 
+  public void close() {
+    closed.set(true);
+    requestSink.abort(callID);
+  }
+
   //private methods
 
-  private void sendSingleResponse(byte[] messageBytes) throws JMSException, IOException {
+  private void sendSingleResponse(byte[] messageBytes) throws JMSException {
     // construct single response message
     javax.jms.Message returnMessage = createByteMessage(session, messageBytes, protocolVersion, serializer.serializerID());
     returnMessage.setJMSCorrelationID(callID);
@@ -160,7 +161,7 @@ public class ServerResponseContext implements RequestContext, ServerContext {
 
       fragment(messageDataStream, maxMessageSize, new FragmentConsumer() {
         @Override
-        public void fragment(byte[] data, int idx) throws JMSException, IOException {
+        public void fragment(byte[] data, int idx) throws JMSException {
           BytesMessage fragment = createByteMessage(session, data, protocolVersion, serializer.serializerID());
           fragment.setJMSCorrelationID(callID);
           fragment.setStringProperty(PROPERTY_MESSAGE_TYPE, MESSAGE_TYPE_SIGNAL_FRAGMENT);
@@ -193,10 +194,6 @@ public class ServerResponseContext implements RequestContext, ServerContext {
         }
       });
     }
-  }
-
-  private void close() {
-    closed.set(true);
   }
 
   public boolean isClosed() {

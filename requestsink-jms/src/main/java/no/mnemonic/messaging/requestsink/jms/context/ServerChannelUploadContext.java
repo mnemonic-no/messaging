@@ -174,6 +174,7 @@ public class ServerChannelUploadContext implements ServerContext {
     }
   }
 
+  @Override
   public boolean isClosed() {
     if (closed.get()) return true;
     if (System.currentTimeMillis() > timeout.get()) {
@@ -183,7 +184,8 @@ public class ServerChannelUploadContext implements ServerContext {
     return false;
   }
 
-  private void close() {
+  @Override
+  public void close() {
     closed.set(true);
     removeMessageListenerAndClose(channelConsumer);
     deleteTemporaryQueue(channelQueue);

@@ -3,6 +3,12 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [1.3.21] - 2023-01-04
+### Changed
+ARGUS-32838
+- Added method `RequestSink.abort(String)` to allow client to abort ongoing call.
+- Add support for aborting ongoing client request in requestsink protocol.
+
 ## [1.3.20] - 2022-11-02
 ### Changed
 ARGUS-31801

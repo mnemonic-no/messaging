@@ -21,7 +21,6 @@ import no.mnemonic.messaging.requestsink.jms.util.ThreadFactoryBuilder;
 import javax.jms.*;
 import javax.naming.NamingException;
 import java.io.IOException;
-import java.lang.IllegalStateException;
 import java.util.*;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicLong;
@@ -32,6 +31,8 @@ import static no.mnemonic.commons.utilities.ObjectUtils.ifNotNull;
 import static no.mnemonic.commons.utilities.collections.SetUtils.set;
 import static no.mnemonic.commons.utilities.lambda.LambdaUtils.tryTo;
 import static no.mnemonic.messaging.requestsink.jms.util.JMSUtils.*;
+
+import java.lang.IllegalStateException;
 
 /**
  * A JMSRequestProxy is the listener component handling messages sent from a
@@ -250,6 +251,8 @@ public class JMSRequestProxy extends AbstractJMSRequestBase implements MessageLi
         handleSignalMessage(message, timeout);
       } else if (MESSAGE_TYPE_CHANNEL_REQUEST.equals(messageType)) {
         handleChannelRequest(message, timeout);
+      } else if (MESSAGE_TYPE_STREAM_CLOSED.equals(messageType)) {
+        handleClientClosedStream(message);
       } else {
         metrics.incompatibleMessage();
         LOGGER.warning("Ignoring unrecognized request type: " + messageType);
@@ -281,7 +284,7 @@ public class JMSRequestProxy extends AbstractJMSRequestBase implements MessageLi
     // create a response context to handle response messages
     ServerResponseContext ctx = setupServerContext(callID, responseDestination, timeout, getProtocolVersion(message), serializer);
     try {
-      ctx.handle(requestSink, serializer.deserialize(extractMessageBytes(message), Thread.currentThread().getContextClassLoader()));
+      ctx.handle(serializer.deserialize(extractMessageBytes(message), Thread.currentThread().getContextClassLoader()));
     } catch (IOException e) {
       LOGGER.error(e, "Illegal deserialization reading message from client");
       ctx.notifyError(e);
@@ -305,9 +308,31 @@ public class JMSRequestProxy extends AbstractJMSRequestBase implements MessageLi
     setupChannel(callID, responseDestination, timeout, getProtocolVersion(message), serializer);
   }
 
+  private void handleClientClosedStream(javax.jms.Message message) throws JMSException {
+    String callID = message.getJMSCorrelationID();
+    if (callID == null) {
+      LOGGER.info("Request without callID ignored: " + message);
+      metrics.incompatibleMessage();
+      return;
+    }
+    if (LOGGER.isDebug()) {
+      LOGGER.debug("<< clientClosedStream [callID=%s]", message.getJMSCorrelationID());
+    }
+    closeChannel(callID);
+  }
+
+  private void closeChannel(String callID) {
+    ServerContext serverContext = calls.get(callID);
+    if (serverContext == null) {
+      LOGGER.info("Request to closeChannel to unknown callID : " + callID);
+      return;
+    }
+    serverContext.close();
+  }
+
   private void handleChannelUploadCompleted(String callID, byte[] data, Destination replyTo, long timeout, ProtocolVersion protocolVersion, MessageSerializer serializer) throws IOException, JMSException, NamingException {
     // create a response context to handle response messages
-    ServerResponseContext r = new ServerResponseContext(callID, getSession(), replyProducer.get(), replyTo, timeout, protocolVersion, getMaxMessageSize(), metrics, serializer);
+    ServerResponseContext r = new ServerResponseContext(callID, getSession(), replyProducer.get(), replyTo, timeout, protocolVersion, getMaxMessageSize(), metrics, serializer, requestSink);
     // overwrite channel upload context with a server response context
     calls.put(callID, r);
     //send uploaded signal to requestSink
@@ -316,7 +341,7 @@ public class JMSRequestProxy extends AbstractJMSRequestBase implements MessageLi
       //use the classloader for the receiving sink when extracting object
       Message request = serializer.deserialize(data, classLoaderCtx.getContextClassLoader());
       metrics.fragmentedUploadCompleted();
-      r.handle(requestSink, request);
+      r.handle(request);
     } catch (IllegalDeserializationException e) {
       LOGGER.error(e, "Illegal deserialization reading fragmented client message");
       r.notifyError(e);
@@ -351,7 +376,7 @@ public class JMSRequestProxy extends AbstractJMSRequestBase implements MessageLi
     ServerContext ctx = calls.get(callID);
     if (ctx != null) return (ServerResponseContext) ctx;
     //create new response context
-    ServerResponseContext context = new ServerResponseContext(callID, getSession(), replyProducer.get(), replyTo, timeout, protocolVersion, getMaxMessageSize(), metrics, serializer);
+    ServerResponseContext context = new ServerResponseContext(callID, getSession(), replyProducer.get(), replyTo, timeout, protocolVersion, getMaxMessageSize(), metrics, serializer, requestSink);
     // register this responsesink
     calls.put(callID, context);
     // and return it

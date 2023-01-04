@@ -1,6 +1,7 @@
 package no.mnemonic.messaging.requestsink.jms.context;
 
 import no.mnemonic.commons.utilities.lambda.LambdaUtils;
+import no.mnemonic.messaging.requestsink.RequestSink;
 import no.mnemonic.messaging.requestsink.jms.ProtocolVersion;
 import no.mnemonic.messaging.requestsink.jms.serializer.MessageSerializer;
 import no.mnemonic.messaging.requestsink.jms.util.ServerMetrics;
@@ -50,6 +51,8 @@ public class ServerResponseContextTest {
   @Mock
   private ServerMetrics metrics;
   @Mock
+  private RequestSink requestSink;
+  @Mock
   private Clock clock;
 
   private ServerResponseContext context;
@@ -59,7 +62,7 @@ public class ServerResponseContextTest {
   public void prepare() throws JMSException {
     context = new ServerResponseContext(
             CALL_ID, session, messageProducer, replyTo, TIMEOUT, ProtocolVersion.V3,
-            MAX_MESSAGE_SIZE, metrics, serializer);
+            MAX_MESSAGE_SIZE, metrics, serializer, requestSink);
     when(session.createTextMessage(any())).thenReturn(new ActiveMQTextMessage());
     when(clock.millis()).thenReturn(NOW);
     ServerResponseContext.setClock(clock);
@@ -81,9 +84,17 @@ public class ServerResponseContextTest {
     doThrow(RuntimeException.class).when(messageProducer).send(same(replyTo), any());
     assertTrue(context.keepAlive(NOW+1000));
   }
+
   @Test
   void testKeepAliveFailsOnDestinationError() throws JMSException {
     doThrow(InvalidDestinationException.class).when(messageProducer).send(same(replyTo), any());
     assertFalse(context.keepAlive(NOW+1000));
+  }
+
+  @Test
+  void testClose() {
+    context.close();
+    assertTrue(context.isClosed());
+    verify(requestSink).abort(CALL_ID);
   }
 }

@@ -28,8 +28,8 @@ import java.util.function.Consumer;
 import static no.mnemonic.messaging.requestsink.jms.ProtocolVersion.V1;
 import static no.mnemonic.messaging.requestsink.jms.ProtocolVersion.V3;
 import static no.mnemonic.messaging.requestsink.jms.util.JMSUtils.*;
-import static org.junit.Assert.*;
 import static org.junit.Assert.assertNotNull;
+import static org.junit.Assert.*;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.*;
@@ -84,6 +84,18 @@ public abstract class AbstractJMSRequestSinkTest extends AbstractJMSRequestTest 
     when(requestContext.isClosed()).thenReturn(true);
     requestSink.signal(new TestMessage("test1"), requestContext, 10000);
     verify(requestContext).notifyClose();
+  }
+
+  @Test
+  public void testAbortNotifiesProxy() throws Exception {
+    setupSinkAndContainer();
+    requestSink.setCleanupInSeparateThread(false);
+    TestMessage msg = new TestMessage("test1");
+    requestSink.signal(msg, requestContext, 10000);
+    requestSink.abort(msg.getCallID());
+    Message firstMessage = expectSignal();
+    Message secondMessage = expectMessage(JMSRequestProxy.MESSAGE_TYPE_STREAM_CLOSED);
+    assertEquals(firstMessage.getJMSCorrelationID(), secondMessage.getJMSCorrelationID());
   }
 
   @Test

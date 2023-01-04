@@ -1,27 +1,27 @@
 package no.mnemonic.messaging.requestsink;
 
 import no.mnemonic.commons.utilities.collections.SetUtils;
-import org.junit.AfterClass;
-import org.junit.Before;
-import org.junit.Test;
-import org.mockito.MockitoAnnotations;
+import org.junit.jupiter.api.AfterAll;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
+import org.mockito.Mock;
+import org.mockito.junit.jupiter.MockitoExtension;
 
 import java.lang.reflect.InvocationTargetException;
 import java.util.Collection;
 import java.util.concurrent.*;
 
-import static org.junit.Assert.*;
+import static org.junit.jupiter.api.Assertions.*;
+import static org.mockito.Mockito.verify;
 
+@ExtendWith(MockitoExtension.class)
 public class RequestHandlerTest {
 
-  private static ExecutorService executor = Executors.newSingleThreadExecutor();
+  private static final ExecutorService executor = Executors.newSingleThreadExecutor();
+  @Mock
+  private RequestListener listener;
 
-  @Before
-  public void setup() {
-    MockitoAnnotations.initMocks(this);
-  }
-
-  @AfterClass
+  @AfterAll
   public static void afterAll() {
     executor.shutdown();
   }
@@ -29,9 +29,11 @@ public class RequestHandlerTest {
   @Test
   public void testCloseHandler() {
     RequestHandler handler = new RequestHandler(false, "callid", 10000);
+    handler.addListener(listener);
     assertFalse(handler.isClosed());
     handler.close();
     assertTrue(handler.isClosed());
+    verify(listener).close("callid");
   }
 
   @Test
@@ -68,12 +70,12 @@ public class RequestHandlerTest {
     assertEquals(SetUtils.set("msg3"), SetUtils.set(handler.getResponsesNoWait(), m -> ((TestMessage) m).getMsgID()));
   }
 
-  @Test(expected = InvocationTargetException.class)
-  public void testGetResponsesNoWaitWithError() throws InvocationTargetException {
+  @Test
+  public void testGetResponsesNoWaitWithError() {
     RequestHandler handler = new RequestHandler(false, "callid", 10000);
     assertTrue(handler.addResponse(new TestMessage("msg")));
     handler.notifyError(new IllegalArgumentException("invalid"));
-    handler.getResponsesNoWait();
+    assertThrows(InvocationTargetException.class, ()->handler.getResponsesNoWait());
   }
 
   @Test
@@ -113,7 +115,7 @@ public class RequestHandlerTest {
     assertEquals("msg1", msg.get(500, TimeUnit.MILLISECONDS).getMsgID());
   }
 
-  @Test(expected = InvocationTargetException.class)
+  @Test
   public void testGetResponsesReturnError() throws Throwable {
     RequestHandler handler = new RequestHandler(false, "callid", 10000);
     Future<Collection<TestMessage>> msg = executor.submit(() -> handler.getResponses(200, 3));
@@ -121,11 +123,8 @@ public class RequestHandlerTest {
     handler.addResponse(new TestMessage("msg1"));
     Thread.sleep(100);
     handler.notifyError(new IllegalArgumentException("invalid"));
-    try {
-      msg.get(1000, TimeUnit.MILLISECONDS);
-    } catch (ExecutionException e) {
-      throw e.getCause();
-    }
+    ExecutionException ex = assertThrows(ExecutionException.class, () -> msg.get(1000, TimeUnit.MILLISECONDS));
+    assertTrue(ex.getCause() instanceof InvocationTargetException);
   }
 
   @Test
@@ -160,21 +159,18 @@ public class RequestHandlerTest {
     assertEquals(3, msg.get(100, TimeUnit.MILLISECONDS).size());
   }
 
-  @Test(expected = InvocationTargetException.class)
-  public void testGetNextResponseWhenError() throws Throwable {
+  @Test
+  public void testGetNextResponseWhenError() {
     RequestHandler handler = new RequestHandler(false, "callid", 10000);
     Future<TestMessage> msg = executor.submit(() -> handler.getNextResponse(1000));
     assertFalse(msg.isDone());
     handler.notifyError(new IllegalArgumentException("invalid"));
-    try {
-      msg.get(1000, TimeUnit.MILLISECONDS);
-    } catch (ExecutionException e) {
-      throw e.getCause();
-    }
+    ExecutionException ex = assertThrows(ExecutionException.class, () -> msg.get(1000, TimeUnit.MILLISECONDS));
+    assertTrue(ex.getCause() instanceof InvocationTargetException);
   }
 
   @Test
-  public void testGetNextResponseReturnsWhenEOS() throws InvocationTargetException, InterruptedException, ExecutionException, TimeoutException {
+  public void testGetNextResponseReturnsWhenEOS() throws InterruptedException, ExecutionException, TimeoutException {
     RequestHandler handler = new RequestHandler(false, "callid", 10000);
     Future<TestMessage> msg = executor.submit(() -> handler.getNextResponse(1000));
     assertFalse(msg.isDone());

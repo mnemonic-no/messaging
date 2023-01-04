@@ -3,6 +3,11 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [1.3.22] - 2023-01-04
+### Changed
+ARGUS-32838
+- Ensure that `JMSRequestSink.RequestListener` sends `abort()` when listener receives `close()`
+
 ## [1.3.21] - 2023-01-04
 ### Changed
 ARGUS-32838

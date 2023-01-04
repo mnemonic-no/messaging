@@ -332,6 +332,7 @@ public class JMSRequestSink extends AbstractJMSRequestBase implements RequestSin
       ctx.addListener(new RequestListener() {
         @Override
         public void close(String callID) {
+          JMSRequestSink.this.abort(callID);
           cleanupRequest(handler);
         }
 

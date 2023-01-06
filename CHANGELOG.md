@@ -3,6 +3,11 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [1.3.23] - 2023-01-05
+### Fixed
+ARGUS-32838
+- Fix instability in RequestSink protocol due to abort being executed on regular close.
+
 ## [1.3.22] - 2023-01-04
 ### Changed
 ARGUS-32838

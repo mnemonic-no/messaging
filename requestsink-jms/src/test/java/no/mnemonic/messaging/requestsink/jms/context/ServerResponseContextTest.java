@@ -12,25 +12,14 @@ import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 
-import javax.jms.Destination;
-import javax.jms.InvalidDestinationException;
-import javax.jms.JMSException;
-import javax.jms.MessageProducer;
-import javax.jms.Session;
-
+import javax.jms.*;
 import java.time.Clock;
 
-import static no.mnemonic.messaging.requestsink.jms.AbstractJMSRequestBase.MESSAGE_TYPE_EXTEND_WAIT;
-import static no.mnemonic.messaging.requestsink.jms.AbstractJMSRequestBase.PROPERTY_MESSAGE_TYPE;
-import static no.mnemonic.messaging.requestsink.jms.AbstractJMSRequestBase.PROPERTY_REQ_TIMEOUT;
+import static no.mnemonic.messaging.requestsink.jms.AbstractJMSRequestBase.*;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
-import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.ArgumentMatchers.argThat;
-import static org.mockito.ArgumentMatchers.same;
-import static org.mockito.Mockito.doThrow;
-import static org.mockito.Mockito.verify;
-import static org.mockito.Mockito.when;
+import static org.mockito.ArgumentMatchers.*;
+import static org.mockito.Mockito.*;
 
 @ExtendWith(MockitoExtension.class)
 public class ServerResponseContextTest {
@@ -92,8 +81,8 @@ public class ServerResponseContextTest {
   }
 
   @Test
-  void testClose() {
-    context.close();
+  void testAbort() {
+    context.abort();
     assertTrue(context.isClosed());
     verify(requestSink).abort(CALL_ID);
   }

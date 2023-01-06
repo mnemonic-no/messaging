@@ -185,7 +185,12 @@ public class ServerChannelUploadContext implements ServerContext {
   }
 
   @Override
-  public void close() {
+  public void abort() {
+    //when aborting an upload context, just close the context, as there is no ongoing invocation yet
+    close();
+  }
+
+  private  void close() {
     closed.set(true);
     removeMessageListenerAndClose(channelConsumer);
     deleteTemporaryQueue(channelQueue);

@@ -21,6 +21,7 @@ import no.mnemonic.messaging.requestsink.jms.util.ThreadFactoryBuilder;
 import javax.jms.*;
 import javax.naming.NamingException;
 import java.io.IOException;
+import java.lang.IllegalStateException;
 import java.util.*;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicLong;
@@ -31,8 +32,6 @@ import static no.mnemonic.commons.utilities.ObjectUtils.ifNotNull;
 import static no.mnemonic.commons.utilities.collections.SetUtils.set;
 import static no.mnemonic.commons.utilities.lambda.LambdaUtils.tryTo;
 import static no.mnemonic.messaging.requestsink.jms.util.JMSUtils.*;
-
-import java.lang.IllegalStateException;
 
 /**
  * A JMSRequestProxy is the listener component handling messages sent from a
@@ -318,16 +317,12 @@ public class JMSRequestProxy extends AbstractJMSRequestBase implements MessageLi
     if (LOGGER.isDebug()) {
       LOGGER.debug("<< clientClosedStream [callID=%s]", message.getJMSCorrelationID());
     }
-    closeChannel(callID);
-  }
-
-  private void closeChannel(String callID) {
     ServerContext serverContext = calls.get(callID);
     if (serverContext == null) {
-      LOGGER.info("Request to closeChannel to unknown callID : " + callID);
+      LOGGER.info("Request to abort unknown callID : " + callID);
       return;
     }
-    serverContext.close();
+    serverContext.abort();
   }
 
   private void handleChannelUploadCompleted(String callID, byte[] data, Destination replyTo, long timeout, ProtocolVersion protocolVersion, MessageSerializer serializer) throws IOException, JMSException, NamingException {

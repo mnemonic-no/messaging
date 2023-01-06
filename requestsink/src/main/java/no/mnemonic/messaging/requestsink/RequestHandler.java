@@ -36,12 +36,27 @@ public class RequestHandler implements RequestContext {
   private final String callID;
   private final AtomicLong timeout = new AtomicLong();
 
+  /**
+   * Initialize a RequestHandler
+   * @param allowKeepAlive if allowKeepalive, received keepalive messages and responses will cause call timeout to be extended
+   * @param callID         the ID of the call this handler represents
+   * @param maxWait        the maximum time in milliseconds before this call times out (unless keepAlive is received)
+   */
   public RequestHandler(boolean allowKeepAlive, String callID, long maxWait) {
     this.allowKeepAlive = allowKeepAlive;
     this.callID = callID;
     this.timeout.set(clock.millis() + maxWait);
   }
 
+  /**
+   * Convenience method to create a RequestHandler and submit a signal bound to this handler as a RequestContext
+   *
+   * @param sink           the sink to send to
+   * @param msg            the message to send
+   * @param allowKeepAlive if keepalive should be allowed
+   * @param maxWait        max initial milliseconds before request times out (if no keepalive)
+   * @return the RequestHandler which is used as RequestContext
+   */
   public static RequestHandler signal(RequestSink sink, Message msg, boolean allowKeepAlive, long maxWait) {
     if (sink == null) throw new IllegalArgumentException("RequestSink cannot be null");
     if (msg == null) throw new IllegalArgumentException("Message cannot be null");
@@ -55,11 +70,6 @@ public class RequestHandler implements RequestContext {
   }
 
   //interface methods
-
-
-  public String getCallID() {
-    return callID;
-  }
 
   public void addListener(RequestListener listener) {
     requestListeners.add(listener);
@@ -111,6 +121,7 @@ public class RequestHandler implements RequestContext {
     ));
   }
 
+  @Override
   public boolean addResponse(Message msg) {
     if (isClosed()) {
       if (LOGGER.isDebug()) {
@@ -130,12 +141,22 @@ public class RequestHandler implements RequestContext {
     return true;
   }
 
+  @Override
   public boolean isClosed() {
     //close and return true if handler timeout is exceeded
     if (clock.millis() > this.timeout.get()) {
       close();
     }
     return closed.get();
+  }
+
+  //public methods
+
+  /**
+   * @return the callID this handler is bound to
+   */
+  public String getCallID() {
+    return callID;
   }
 
   /**
@@ -194,6 +215,19 @@ public class RequestHandler implements RequestContext {
               e -> LOGGER.warning(e, "Error invoking RequestListener")
       ));
     }
+  }
+
+  /**
+   * Abort this handler, notifying all listening resources.
+   * This will also close the handler,so further signals are ignored.
+   */
+  public void abort() {
+    if (isClosed()) return;
+    list(requestListeners).forEach(l -> LambdaUtils.tryTo(
+            () -> l.abort(callID),
+            e -> LOGGER.warning(e, "Error invoking RequestListener")
+    ));
+    close();
   }
 
   /**
@@ -289,6 +323,8 @@ public class RequestHandler implements RequestContext {
     //if timeout has passed, return responses received so far
     return getResponsesNoWait();
   }
+
+  //private methods
 
   private void checkIfReceivedError() throws InvocationTargetException {
     if (hasReceivedError()) {

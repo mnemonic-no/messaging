@@ -13,6 +13,13 @@ public interface RequestListener {
   void close(String callID);
 
   /**
+   * Client-side notification that the request should be aborted
+   *
+   * @param callID the ID of the aborted request
+   */
+  void abort(String callID);
+
+  /**
    * Client side notification that an unexpected timeout occurred.
    * The listener may act to avoid future errors (such as invalid return path or connection error)
    */

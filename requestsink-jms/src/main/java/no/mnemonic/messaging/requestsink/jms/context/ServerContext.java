@@ -12,8 +12,8 @@ public interface ServerContext {
   boolean isClosed();
 
   /**
-   * Request that this context is closed. No more responses should be allowed
-   * Ongoing execution should be aborted.
+   * Request that this context is aborted. No more responses should be allowed
+   * Ongoing execution should be interrupted.
    */
-  void close();
+  void abort();
 }

@@ -136,12 +136,16 @@ public class ServerResponseContext implements RequestContext, ServerContext {
     }
   }
 
-  public void close() {
-    closed.set(true);
+  @Override
+  public void abort() {
     requestSink.abort(callID);
+    close();
   }
 
   //private methods
+  private void close() {
+    closed.set(true);
+  }
 
   private void sendSingleResponse(byte[] messageBytes) throws JMSException {
     // construct single response message

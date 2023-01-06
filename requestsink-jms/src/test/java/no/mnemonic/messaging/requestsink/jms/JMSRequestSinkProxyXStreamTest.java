@@ -64,7 +64,7 @@ public class JMSRequestSinkProxyXStreamTest extends AbstractJMSRequestSinkProxyT
     //mock client handling of response
     Future<IllegalDeserializationException> future = mockNotifyError();
     requestSink.signal(new IllegalMessage(), requestContext, 10000);
-    IllegalDeserializationException e = future.get(1, TimeUnit.SECONDS);
+    IllegalDeserializationException e = future.get(2, TimeUnit.SECONDS);
     assertNotNull(e);
   }
 

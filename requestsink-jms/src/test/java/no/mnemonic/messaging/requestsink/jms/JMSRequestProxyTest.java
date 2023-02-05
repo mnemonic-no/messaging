@@ -31,10 +31,11 @@ public class JMSRequestProxyTest extends AbstractJMSRequestTest {
   private JMSRequestProxy requestProxy;
   private ComponentContainer container;
 
-  private Destination queue;
+  private Queue queue;
+  private Topic topic;
 
   @Before
-  public void setUp() throws Exception {
+  public void setUp() {
     MockitoAnnotations.initMocks(this);
   }
 
@@ -329,7 +330,7 @@ public class JMSRequestProxyTest extends AbstractJMSRequestTest {
   private void abort(String callID) throws Exception {
     Message message = textMsg("channel close request", JMSRequestProxy.MESSAGE_TYPE_STREAM_CLOSED, callID);
     message.setLongProperty(JMSRequestProxy.PROPERTY_REQ_TIMEOUT, System.currentTimeMillis() + 1000);
-    MessageProducer producer = session.createProducer(queue);
+    MessageProducer producer = session.createProducer(topic);
     producer.send(message);
     producer.close();
   }
@@ -339,12 +340,13 @@ public class JMSRequestProxyTest extends AbstractJMSRequestTest {
     container.initialize();
   }
 
-  private void setupProxy(String queueName) {
+  private void setupProxy(String queueName, String topicName) {
     //set up request sink pointing at a vm-local topic
     requestProxy = addConnection(JMSRequestProxy.builder())
             .setShutdownTimeout(500)
             .addSerializer(new DefaultJavaMessageSerializer())
-            .setDestinationName(queueName)
+            .setQueueName(queueName)
+            .setTopicName(topicName)
             .setRequestSink(endpoint)
             .setMaxMessageSize(1000)
             .build();
@@ -353,13 +355,15 @@ public class JMSRequestProxyTest extends AbstractJMSRequestTest {
   private void setupEnvironment() throws NamingException, JMSException, InterruptedException, ExecutionException, TimeoutException {
     //set up a real JMS connection to a vm-local activemq
     String queueName = "dynamicQueues/" + generateCookie(10);
+    String topicName = "dynamicTopics/" + generateCookie(10);
 
-    setupProxy(queueName);
+    setupProxy(queueName, topicName);
     Future<Void> proxyConnected = listenForProxyConnection();
     createContainer();
 
     session = createSession();
-    queue = lookupDestination(queueName);
+    queue = (Queue) lookupDestination(queueName);
+    topic = (Topic) lookupDestination(topicName);
     //wait for proxy to connect
     proxyConnected.get(1000, TimeUnit.MILLISECONDS);
   }

@@ -45,7 +45,7 @@ import static no.mnemonic.messaging.requestsink.jms.util.JMSUtils.*;
  * not be consumed by the JMS Request Sink until a thread is available.
  * This allows multiple JMSRequestProxies to share the load from a queue, and acts as a resource limitation.
  */
-public class JMSRequestProxy extends AbstractJMSRequestBase implements MessageListener, ExceptionListener, MetricAspect {
+public class JMSRequestProxy extends AbstractJMSRequestBase implements MetricAspect {
 
   private static final Logger LOGGER = Logging.getLogger(JMSRequestProxy.class);
 
@@ -71,16 +71,19 @@ public class JMSRequestProxy extends AbstractJMSRequestBase implements MessageLi
   private final Set<JMSRequestProxyConnectionListener> connectionListeners = new HashSet<>();
   private final Map<String, MessageSerializer> serializers;
   private final AtomicReference<MessageProducer> replyProducer = new AtomicReference<>();
-  private final AtomicReference<MessageConsumer> consumer = new AtomicReference<>();
+  private final AtomicReference<MessageConsumer> queueConsumer = new AtomicReference<>();
+  private final AtomicReference<MessageConsumer> topicConsumer = new AtomicReference<>();
 
 
   private JMSRequestProxy(String contextFactoryName, String contextURL, String connectionFactoryName,
                           String username, String password, Map<String, String> connectionProperties,
-                          String destinationName, int priority, int maxConcurrentCalls,
-                          int maxMessageSize, RequestSink requestSink, long shutdownTimeout, Collection<MessageSerializer> serializers) {
+                          String queueName, String topicName, int priority, int maxConcurrentCalls,
+                          int maxMessageSize, RequestSink requestSink, long shutdownTimeout,
+                          Collection<MessageSerializer> serializers) {
     super(contextFactoryName, contextURL, connectionFactoryName,
-            username, password, connectionProperties, destinationName,
-            priority, maxMessageSize);
+        username, password, connectionProperties,
+        queueName, topicName,
+        priority, maxMessageSize);
 
     if (maxConcurrentCalls < 1)
       throw new IllegalArgumentException("maxConcurrentCalls cannot be lower than 1");
@@ -89,8 +92,8 @@ public class JMSRequestProxy extends AbstractJMSRequestBase implements MessageLi
     this.serializers = configureSerializersWithDefault(serializers);
     this.requestSink = assertNotNull(requestSink, "requestSink not set");
     this.executor = Executors.newFixedThreadPool(
-            maxConcurrentCalls,
-            new ThreadFactoryBuilder().setNamePrefix("JMSRequestProxy").build()
+        maxConcurrentCalls,
+        new ThreadFactoryBuilder().setNamePrefix("JMSRequestProxy").build()
     );
     this.semaphore = new Semaphore(maxConcurrentCalls);
   }
@@ -101,10 +104,10 @@ public class JMSRequestProxy extends AbstractJMSRequestBase implements MessageLi
     // Add all server metrics.
     m.addSubMetrics("server", metrics.metrics());
     m.addSubMetrics("requests", new MetricsData()
-            .addData("runningRequests", calls.size()) // Approximation as finished contexts are counted until they are cleaned up.
-            .addData("pendingRequests", semaphore.getQueueLength())
-            .addData("availablePermits", semaphore.availablePermits())
-            .addData("awaitPermitTime", awaitPermitTime)
+        .addData("runningRequests", calls.size()) // Approximation as finished contexts are counted until they are cleaned up.
+        .addData("pendingRequests", semaphore.getQueueLength())
+        .addData("availablePermits", semaphore.availablePermits())
+        .addData("awaitPermitTime", awaitPermitTime)
     );
     // Add metrics for all serializers.
     for (MessageSerializer serializer : serializers.values()) {
@@ -130,8 +133,8 @@ public class JMSRequestProxy extends AbstractJMSRequestBase implements MessageLi
     try {
       //stop accepting messages
       ifNotNull(
-              consumer.get(),
-              c -> tryTo(() -> c.setMessageListener(null), e -> LOGGER.warning(e, "Error removing message listener"))
+          queueConsumer.get(),
+          c -> tryTo(() -> c.setMessageListener(null), e -> LOGGER.warning(e, "Error removing message listener"))
       );
       //stop accepting requests
       closed.set(true);
@@ -139,8 +142,8 @@ public class JMSRequestProxy extends AbstractJMSRequestBase implements MessageLi
       executor.shutdown();
       //wait for ongoing requests to finish
       tryTo(
-              () -> executor.awaitTermination(shutdownTimeout, TimeUnit.MILLISECONDS),
-              e -> LOGGER.warning("Error waiting for executor termination")
+          () -> executor.awaitTermination(shutdownTimeout, TimeUnit.MILLISECONDS),
+          e -> LOGGER.warning("Error waiting for executor termination")
       );
     } catch (Exception e) {
       LOGGER.warning(e, "Error stopping request proxy");
@@ -150,26 +153,33 @@ public class JMSRequestProxy extends AbstractJMSRequestBase implements MessageLi
   }
 
   private void connect() throws NamingException, JMSException {
-      synchronized (this) {
-        MessageProducer p = getSession().createProducer(null);
-        p.setDeliveryMode(DeliveryMode.NON_PERSISTENT);
-        replyProducer.set(p);
+    synchronized (this) {
+      MessageProducer p = getSession().createProducer(null);
+      p.setDeliveryMode(DeliveryMode.NON_PERSISTENT);
+      replyProducer.set(p);
 
-        MessageConsumer c = getSession().createConsumer(getDestination());
-        c.setMessageListener(this);
-        consumer.set(c);
+      MessageConsumer qc = getSession().createConsumer(getQueue());
+      qc.setMessageListener(this::processQueueMessage);
+      queueConsumer.set(qc);
 
-        set(connectionListeners).forEach(l -> l.connected(this));
-        LOGGER.info("Connected");
-        metrics.reconnected();
+      Optional<Topic> optionalTopic = getTopic();
+      if (optionalTopic.isPresent()) {
+        MessageConsumer tc = getSession().createConsumer(optionalTopic.get());
+        tc.setMessageListener(this::processTopicMessage);
       }
+
+      set(connectionListeners).forEach(l -> l.connected(this));
+      LOGGER.info("Connected");
+      metrics.reconnected();
+    }
   }
 
   private synchronized void closeAllResources() {
     try {
       // try to nicely shut down all resources
       executeAndReset(replyProducer, MessageProducer::close, "Error closing reply producer");
-      executeAndReset(consumer, MessageConsumer::close, "Error closing consumer");
+      executeAndReset(queueConsumer, MessageConsumer::close, "Error closing queue consumer");
+      executeAndReset(topicConsumer, MessageConsumer::close, "Error closing topic consumer");
       executeAndReset(session, Session::close, "Error closing session");
       executeAndReset(connection, Connection::close, "Error closing connection");
     } finally {
@@ -179,9 +189,11 @@ public class JMSRequestProxy extends AbstractJMSRequestBase implements MessageLi
 
   private synchronized void resetState() {
     replyProducer.set(null);
-    consumer.set(null);
+    queueConsumer.set(null);
+    topicConsumer.set(null);
     session.set(null);
-    destination.set(null);
+    queue.set(null);
+    topic.set(null);
   }
 
   @Override
@@ -195,11 +207,6 @@ public class JMSRequestProxy extends AbstractJMSRequestBase implements MessageLi
     this.connectionListeners.add(listener);
   }
 
-  public void onMessage(javax.jms.Message message) {
-    checkCleanRequests();
-    process(message);
-  }
-
   //private and protected methods
 
   /**
@@ -207,11 +214,12 @@ public class JMSRequestProxy extends AbstractJMSRequestBase implements MessageLi
    *
    * @param message message to process
    */
-  private void process(javax.jms.Message message) {
+  private void processQueueMessage(javax.jms.Message message) {
     metrics.request();
+    checkCleanRequests();
     try {
       if (!isCompatible(message)) {
-        LOGGER.warning("Ignoring request of incompatible version: " + message);
+        LOGGER.warning("Ignoring queue request of incompatible version: " + message);
         metrics.incompatibleMessage();
         return;
       }
@@ -219,14 +227,14 @@ public class JMSRequestProxy extends AbstractJMSRequestBase implements MessageLi
       long timeout = message.getLongProperty(PROPERTY_REQ_TIMEOUT);
       long maxWait = timeout - System.currentTimeMillis();
       if (maxWait <= 0) {
-        LOGGER.warning("Ignoring request: timed out");
+        LOGGER.warning("Ignoring queue request: timed out");
         metrics.requestTimeout();
         return;
       }
 
       String messageType = message.getStringProperty(PROPERTY_MESSAGE_TYPE);
       if (LOGGER.isDebug()) {
-        LOGGER.debug("<< process [callID=%s type=%s]", message.getJMSCorrelationID(), messageType);
+        LOGGER.debug("<< process queueMessage [callID=%s type=%s]", message.getJMSCorrelationID(), messageType);
       }
 
       try (TimerContext ignored = TimerContext.timerMillis(awaitPermitTime::add)) {
@@ -236,31 +244,72 @@ public class JMSRequestProxy extends AbstractJMSRequestBase implements MessageLi
       }
 
       //schedule message for processing
-      executor.submit(() -> doProcessMessage(message, messageType, timeout));
+      executor.submit(() -> doProcessQueueMessage(message, messageType, timeout));
     } catch (Exception e) {
       metrics.error();
       LOGGER.warning(e, "Error handling message");
     }
   }
 
-  private void doProcessMessage(javax.jms.Message message, String messageType, long timeout) {
+  private void doProcessQueueMessage(javax.jms.Message message, String messageType, long timeout) {
     try {
       // get reply address and call lifetime
       if (MESSAGE_TYPE_SIGNAL.equals(messageType)) {
         handleSignalMessage(message, timeout);
       } else if (MESSAGE_TYPE_CHANNEL_REQUEST.equals(messageType)) {
         handleChannelRequest(message, timeout);
-      } else if (MESSAGE_TYPE_STREAM_CLOSED.equals(messageType)) {
-        handleClientClosedStream(message);
       } else {
         metrics.incompatibleMessage();
-        LOGGER.warning("Ignoring unrecognized request type: " + messageType);
+        LOGGER.warning("Ignoring unrecognized queue request type: " + messageType);
       }
     } catch (Exception e) {
       metrics.error();
       LOGGER.error(e, "Error handling JMS call");
     } finally {
       semaphore.release();
+      if (LOGGER.isDebug()) {
+        LOGGER.debug("# end process [type=%s]", messageType);
+      }
+    }
+  }
+
+  private void processTopicMessage(javax.jms.Message message) {
+    metrics.request();
+    try {
+      if (!isCompatible(message)) {
+        LOGGER.warning("Ignoring topic request of incompatible version: " + message);
+        metrics.incompatibleMessage();
+        return;
+      }
+
+      String messageType = message.getStringProperty(PROPERTY_MESSAGE_TYPE);
+      if (LOGGER.isDebug()) {
+        LOGGER.debug("<< process topicMessage [callID=%s type=%s]", message.getJMSCorrelationID(), messageType);
+      }
+
+      //schedule topic message for direct processing
+      //
+      //not waiting for a semaphore for topic messages means that these will be processed even if
+      //queue messages are throttled by semaphore.
+      executor.submit(() -> doProcessTopicMessage(message, messageType));
+    } catch (Exception e) {
+      metrics.error();
+      LOGGER.warning(e, "Error handling message");
+    }
+  }
+
+  private void doProcessTopicMessage(javax.jms.Message message, String messageType) {
+    try {
+      if (MESSAGE_TYPE_STREAM_CLOSED.equals(messageType)) {
+        handleClientClosedStream(message);
+      } else {
+        metrics.incompatibleMessage();
+        LOGGER.warning("Ignoring unrecognized topic request type: " + messageType);
+      }
+    } catch (Exception e) {
+      metrics.error();
+      LOGGER.error(e, "Error handling JMS call");
+    } finally {
       if (LOGGER.isDebug()) {
         LOGGER.debug("# end process [type=%s]", messageType);
       }
@@ -403,10 +452,10 @@ public class JMSRequestProxy extends AbstractJMSRequestBase implements MessageLi
 
   private MessageSerializer pickLegacySerializer() {
     return this.serializers.values()
-            .stream()
-            .filter(ser -> ser instanceof DefaultJavaMessageSerializer)
-            .findFirst()
-            .orElseThrow(() -> new IllegalStateException("Default serializer not configured"));
+        .stream()
+        .filter(ser -> ser instanceof DefaultJavaMessageSerializer)
+        .findFirst()
+        .orElseThrow(() -> new IllegalStateException("Default serializer not configured"));
   }
 
   //builder
@@ -430,8 +479,10 @@ public class JMSRequestProxy extends AbstractJMSRequestBase implements MessageLi
     //fields
 
     public JMSRequestProxy build() {
-      return new JMSRequestProxy(contextFactoryName, contextURL, connectionFactoryName, username, password,
-              connectionProperties, destinationName, priority, maxConcurrentCalls, maxMessageSize, requestSink, shutdownTimeout, serializers);
+      return new JMSRequestProxy(
+          contextFactoryName, contextURL, connectionFactoryName, username, password,
+          connectionProperties, queueName, topicName, priority,
+          maxConcurrentCalls, maxMessageSize, requestSink, shutdownTimeout, serializers);
     }
 
     //setters

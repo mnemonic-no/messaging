@@ -25,6 +25,7 @@ public abstract class AbstractJMSRequestSinkProxyTest extends AbstractJMSRequest
   protected RequestSink endpoint;
   protected RequestContext requestContext;
   protected String queueName;
+  protected String topicName;
 
   protected ExecutorService executor = Executors.newCachedThreadPool();
 
@@ -111,7 +112,7 @@ public abstract class AbstractJMSRequestSinkProxyTest extends AbstractJMSRequest
 
     //set up request sink pointing at a vm-local topic
     requestSink = addConnection(JMSRequestSink.builder())
-            .setDestinationName(queueName)
+            .setQueueName(queueName)
             //set protocol V16 to enable channel upload
             .setProtocolVersion(ProtocolVersion.V1)
             //set max message size to 100 bytes, to force channel upload with message fragments

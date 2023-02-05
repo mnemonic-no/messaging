@@ -21,7 +21,7 @@ public class JMSRequestSinkProxyXStreamTest extends AbstractJMSRequestSinkProxyT
 
 
   @Before
-  public void setUp() throws Exception {
+  public void setUp() {
 
     //create mock client (requestor to requestSink) and endpoint (target for requestProxy)
     endpoint = mock(RequestSink.class);
@@ -29,12 +29,14 @@ public class JMSRequestSinkProxyXStreamTest extends AbstractJMSRequestSinkProxyT
 
     //set up a real JMS connection to a vm-local activemq
     queueName = "dynamicQueues/" + generateCookie(10);
+    topicName = "dynamicTopics/" + generateCookie(10);
 
     //set up request sink pointing at a vm-local topic
     requestSink = addConnection(JMSRequestSink.builder())
             .setProtocolVersion(ProtocolVersion.V3)
             .setSerializer(createXstream())
-            .setDestinationName(queueName)
+            .setQueueName(queueName)
+            .setTopicName(topicName)
             .build();
 
     //set up request proxy listening to the vm-local topic, and pointing to mock endpoint
@@ -42,7 +44,8 @@ public class JMSRequestSinkProxyXStreamTest extends AbstractJMSRequestSinkProxyT
             .addSerializer(new DefaultJavaMessageSerializer())
             .addSerializer(createXstream())
             .setMaxMessageSize(1000)
-            .setDestinationName(queueName)
+            .setQueueName(queueName)
+            .setTopicName(topicName)
             .setRequestSink(endpoint)
             .build();
 
@@ -51,7 +54,7 @@ public class JMSRequestSinkProxyXStreamTest extends AbstractJMSRequestSinkProxyT
   }
 
   @After
-  public void tearDown() throws Exception {
+  public void tearDown() {
     clientContainer.destroy();
     serverContainer.destroy();
     executor.shutdown();

@@ -3,6 +3,18 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [1.3.24] - 2023-01-30
+### Changed
+ARGUS-33796
+- Renamed `JMSRequestSink/JMSRequestProxy` parameter "destinationName" to "queueName"
+- Added optional `JMSRequestSink/JMSRequestProxy` parameter "topicName" to support broadcast topics
+- Moved handling of abort signal to broadcast topic, to ensure that abort messages are processed on all nodes
+
+### Upgrade notes
+- Clients using `JMSRequestSink/JMSRequestProxy` should use `setQueueName()` instead of `setDestinationName()`, 
+  and use `setTopicName()` to configure a broadcast topic.
+- Until "topicName" is set, the `abort()` feature will not work 
+
 ## [1.3.23] - 2023-01-05
 ### Fixed
 ARGUS-32838

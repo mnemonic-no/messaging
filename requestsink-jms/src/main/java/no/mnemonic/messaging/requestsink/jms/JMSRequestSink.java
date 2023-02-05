@@ -8,7 +8,10 @@ import no.mnemonic.commons.metrics.Metrics;
 import no.mnemonic.commons.metrics.MetricsGroup;
 import no.mnemonic.commons.utilities.lambda.LambdaUtils;
 import no.mnemonic.messaging.requestsink.Message;
-import no.mnemonic.messaging.requestsink.*;
+import no.mnemonic.messaging.requestsink.MessagingException;
+import no.mnemonic.messaging.requestsink.RequestContext;
+import no.mnemonic.messaging.requestsink.RequestListener;
+import no.mnemonic.messaging.requestsink.RequestSink;
 import no.mnemonic.messaging.requestsink.jms.context.ChannelUploadMessageContext;
 import no.mnemonic.messaging.requestsink.jms.context.ClientRequestContext;
 import no.mnemonic.messaging.requestsink.jms.serializer.DefaultJavaMessageSerializer;
@@ -24,6 +27,7 @@ import java.lang.IllegalStateException;
 import java.util.Collections;
 import java.util.Date;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
@@ -92,7 +96,8 @@ public class JMSRequestSink extends AbstractJMSRequestBase implements RequestSin
   private final ConcurrentHashMap<String, ClientRequestContext> requestHandlers = new ConcurrentHashMap<>();
   private final ExecutorService executor;
 
-  private final AtomicReference<MessageProducer> producer = new AtomicReference<>();
+  private final AtomicReference<MessageProducer> queueProducer = new AtomicReference<>();
+  private final AtomicReference<MessageProducer> topicProducer = new AtomicReference<>();
   private final AtomicReference<ResponseQueueState> currentResponseQueue = new AtomicReference<>();
   private final Set<ResponseQueueState> invalidatedResponseQueues = Collections.newSetFromMap(new ConcurrentHashMap<>());
   private final AtomicBoolean cleanupRunning = new AtomicBoolean();
@@ -104,10 +109,10 @@ public class JMSRequestSink extends AbstractJMSRequestBase implements RequestSin
 
   private JMSRequestSink(String contextFactoryName, String contextURL, String connectionFactoryName,
                          String username, String password, Map<String, String> connectionProperties,
-                         String destinationName,
+                         String queueName, String topicName,
                          int priority, int maxMessageSize, ProtocolVersion protocolVersion, MessageSerializer serializer) {
-    super(contextFactoryName, contextURL, connectionFactoryName, username, password, connectionProperties, destinationName,
-            priority, maxMessageSize);
+    super(contextFactoryName, contextURL, connectionFactoryName, username, password, connectionProperties,
+        queueName, topicName, priority, maxMessageSize);
     //do not use custom serializer unless version V3 is enabled
     this.executor = Executors.newSingleThreadExecutor(new ThreadFactoryBuilder().setNamePrefix("JMSRequestSink").build());
     this.protocolVersion = assertNotNull(protocolVersion, "protocolVersion not set");
@@ -147,14 +152,14 @@ public class JMSRequestSink extends AbstractJMSRequestBase implements RequestSin
         //do not notify/count close message as missing handler, as single-value replies often lead to client-initiated stream close
         if (MESSAGE_TYPE_STREAM_CLOSED.equals(message.getStringProperty(PROPERTY_MESSAGE_TYPE))) {
           LOGGER.debug("No request handler for callID: %s (type=%s)",
-                  message.getJMSCorrelationID(),
-                  MESSAGE_TYPE_STREAM_CLOSED);
+              message.getJMSCorrelationID(),
+              MESSAGE_TYPE_STREAM_CLOSED);
           return;
         }
         metrics.unknownCallIDMessage();
         LOGGER.warning("No request handler for callID: %s (type=%s)",
-                message.getJMSCorrelationID(),
-                message.getStringProperty(PROPERTY_MESSAGE_TYPE));
+            message.getJMSCorrelationID(),
+            message.getStringProperty(PROPERTY_MESSAGE_TYPE));
         return;
       }
       handler.handleResponse(message);
@@ -182,7 +187,13 @@ public class JMSRequestSink extends AbstractJMSRequestBase implements RequestSin
 
   @Override
   public void abort(String callID) {
-    sendMessage(CHANNEL_CLOSED_REQUEST_MSG, callID, JMSRequestProxy.MESSAGE_TYPE_STREAM_CLOSED, getPriority(), ABORT_MSG_LIFETIME_MS, getCurrentResponseQueue());
+    MessageProducer topic = getOrCreateTopicProducer();
+    if (topic == null) {
+      LOGGER.warning("abort() is not supported until a broadcast topic has been configured.");
+      return;
+    }
+    sendMessage(topic, null, CHANNEL_CLOSED_REQUEST_MSG, callID,
+        MESSAGE_TYPE_STREAM_CLOSED, getPriority(), ABORT_MSG_LIFETIME_MS);
   }
 
   @Override
@@ -195,7 +206,7 @@ public class JMSRequestSink extends AbstractJMSRequestBase implements RequestSin
   public void startComponent() {
     try {
       //prepare producer
-      getOrCreateProducer();
+      getOrCreateQueueProducer();
       //initialize response queue
       replaceResponseQueue();
     } catch (Exception e) {
@@ -211,8 +222,8 @@ public class JMSRequestSink extends AbstractJMSRequestBase implements RequestSin
     //shutdown executor and wait for it to finish current requests
     executor.shutdown();
     LambdaUtils.tryTo(
-            () -> executor.awaitTermination(10, TimeUnit.SECONDS),
-            e -> LOGGER.warning(e, "Error waiting for executor termination")
+        () -> executor.awaitTermination(10, TimeUnit.SECONDS),
+        e -> LOGGER.warning(e, "Error waiting for executor termination")
     );
     //close all resources
     closeAllResources();
@@ -220,15 +231,31 @@ public class JMSRequestSink extends AbstractJMSRequestBase implements RequestSin
 
   // ****************** private methods ************************
 
-  private MessageProducer getOrCreateProducer() {
-    return producer.updateAndGet(prod -> {
+  private MessageProducer getOrCreateQueueProducer() {
+    return queueProducer.updateAndGet(prod -> {
       if (prod != null) return prod;
       try {
-        prod = getSession().createProducer(getDestination());
+        prod = getSession().createProducer(getQueue());
         prod.setDeliveryMode(DeliveryMode.NON_PERSISTENT);
         return prod;
       } catch (JMSException | NamingException e) {
-        throw new IllegalStateException("Error setting up producer", e);
+        throw new IllegalStateException("Error setting up queue producer", e);
+      }
+    });
+  }
+
+  private MessageProducer getOrCreateTopicProducer() {
+    return topicProducer.updateAndGet(p -> {
+      if (p != null) return p;
+      try {
+        //if topic is not supported, return null
+        Optional<Topic> optionalTopic = getTopic();
+        if (!optionalTopic.isPresent()) return null;
+        MessageProducer producer = getSession().createProducer(optionalTopic.get());
+        producer.setDeliveryMode(DeliveryMode.NON_PERSISTENT);
+        return producer;
+      } catch (JMSException | NamingException e) {
+        throw new IllegalStateException("Error setting up topic producer", e);
       }
     });
   }
@@ -320,9 +347,9 @@ public class JMSRequestSink extends AbstractJMSRequestBase implements RequestSin
       ResponseQueueState currentResponseQueue = getCurrentResponseQueueState();
       //setup handler for this request
       ClientRequestContext handler = new ClientRequestContext(
-              msg.getCallID(), getSession(), metrics,
-              Thread.currentThread().getContextClassLoader(), ctx,
-              () -> currentResponseQueue.endCall(msg.getCallID()), serializer);
+          msg.getCallID(), getSession(), metrics,
+          Thread.currentThread().getContextClassLoader(), ctx,
+          () -> currentResponseQueue.endCall(msg.getCallID()), serializer);
 
       //register handler
       requestHandlers.put(msg.getCallID(), handler);
@@ -347,7 +374,7 @@ public class JMSRequestSink extends AbstractJMSRequestBase implements RequestSin
         }
       });
       //send signal message
-      sendMessage(messageBytes, msg.getCallID(), messageType, priority, maxWait, getCurrentResponseQueue());
+      sendMessage(getOrCreateQueueProducer(), getCurrentResponseQueue(), messageBytes, msg.getCallID(), messageType, priority, maxWait);
       metrics.request();
     } catch (IOException | JMSException | NamingException e) {
       LOGGER.warning(e, "Error in checkForFragmentationAndSignal");
@@ -357,6 +384,7 @@ public class JMSRequestSink extends AbstractJMSRequestBase implements RequestSin
 
   /**
    * JMS priority is defined as an integer between 1 and 9, where 4 is the default.
+   *
    * @param msg the Message to prioritize
    * @return the JMS priority. Bulk will be mapped to 1, expedite to 9.
    */
@@ -374,7 +402,10 @@ public class JMSRequestSink extends AbstractJMSRequestBase implements RequestSin
     return ifNull(currentResponseQueue.get(), this::replaceResponseQueue);
   }
 
-  private void sendMessage(byte[] messageBytes, String callID, String messageType, int priority, long lifeTime, Destination replyTo) {
+  private void sendMessage(MessageProducer producer, Destination replyTo, byte[] messageBytes, String callID, String messageType, int priority, long lifeTime) {
+    if (producer == null) {
+      throw new IllegalArgumentException("Producer not set");
+    }
     try {
       javax.jms.Message m = createByteMessage(getSession(), messageBytes, protocolVersion, serializer.serializerID());
       long timeout = System.currentTimeMillis() + lifeTime;
@@ -383,9 +414,9 @@ public class JMSRequestSink extends AbstractJMSRequestBase implements RequestSin
       m.setJMSPriority(priority);
       m.setStringProperty(PROPERTY_MESSAGE_TYPE, messageType);
       m.setLongProperty(JMSRequestProxy.PROPERTY_REQ_TIMEOUT, timeout);
-      getOrCreateProducer().send(m, DeliveryMode.NON_PERSISTENT, getPriority(), lifeTime);
+      producer.send(m, DeliveryMode.NON_PERSISTENT, getPriority(), lifeTime);
       if (LOGGER.isDebug()) {
-        LOGGER.debug(">> sendMessage [destination=%s callID=%s messageType=%s replyTo=%s timeout=%s]", getDestination(), callID, messageType, replyTo, new Date(timeout));
+        LOGGER.debug(">> sendMessage [callID=%s messageType=%s replyTo=%s timeout=%s]", callID, messageType, replyTo, new Date(timeout));
       }
     } catch (Exception e) {
       LOGGER.warning(e, "Error in sendMessage");
@@ -401,7 +432,8 @@ public class JMSRequestSink extends AbstractJMSRequestBase implements RequestSin
     try {
       // try to nicely shut down all resources
       executeAndReset(currentResponseQueue, ResponseQueueState::close, "Error closing response queue");
-      executeAndReset(producer, MessageProducer::close, "Error closing producer");
+      executeAndReset(queueProducer, MessageProducer::close, "Error closing queue producer");
+      executeAndReset(topicProducer, MessageProducer::close, "Error closing topic producer");
       executeAndReset(session, Session::close, "Error closing session");
       executeAndReset(connection, Connection::close, "Error closing connection");
       invalidatedResponseQueues.forEach(ResponseQueueState::close);
@@ -412,9 +444,11 @@ public class JMSRequestSink extends AbstractJMSRequestBase implements RequestSin
 
   private synchronized void resetState() {
     currentResponseQueue.set(null);
-    producer.set(null);
+    queueProducer.set(null);
+    topicProducer.set(null);
     session.set(null);
-    destination.set(null);
+    queue.set(null);
+    topic.set(null);
   }
 
   private static class ResponseQueueState {
@@ -503,9 +537,11 @@ public class JMSRequestSink extends AbstractJMSRequestBase implements RequestSin
     }
 
     public JMSRequestSink build() {
-      return new JMSRequestSink(contextFactoryName, contextURL, connectionFactoryName,
-              username, password, connectionProperties, destinationName,
-              priority, maxMessageSize, protocolVersion, serializer);
+      return new JMSRequestSink(
+          contextFactoryName, contextURL, connectionFactoryName,
+          username, password, connectionProperties,
+          queueName, topicName,
+          priority, maxMessageSize, protocolVersion, serializer);
     }
 
     //setters

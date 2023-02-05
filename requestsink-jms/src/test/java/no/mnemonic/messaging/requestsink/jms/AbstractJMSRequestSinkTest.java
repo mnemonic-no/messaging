@@ -44,7 +44,9 @@ public abstract class AbstractJMSRequestSinkTest extends AbstractJMSRequestTest 
 
   protected Future<Void> endOfStream;
   protected BlockingQueue<Message> queue;
+  protected BlockingQueue<Message> topic;
   protected String queueName;
+  protected String topicName;
   protected AtomicReference<RequestListener> requestListener = new AtomicReference<>();
 
 
@@ -52,9 +54,11 @@ public abstract class AbstractJMSRequestSinkTest extends AbstractJMSRequestTest 
   public void setUp() throws Exception {
     MockitoAnnotations.initMocks(this);
     queueName = "dynamicQueues/" + generateCookie(10);
+    topicName = "dynamicTopics/" + generateCookie(10);
     session = createSession();
     endOfStream = expectEndOfStream();
     queue = receiveFrom(queueName);
+    topic = receiveFrom(topicName);
 
     doAnswer(i -> {
       requestListener.set(i.getArgument(0));
@@ -94,7 +98,7 @@ public abstract class AbstractJMSRequestSinkTest extends AbstractJMSRequestTest 
     requestSink.signal(msg, requestContext, 10000);
     requestSink.abort(msg.getCallID());
     Message firstMessage = expectSignal();
-    Message secondMessage = expectMessage(JMSRequestProxy.MESSAGE_TYPE_STREAM_CLOSED);
+    Message secondMessage = expectTopicMessage(JMSRequestProxy.MESSAGE_TYPE_STREAM_CLOSED);
     assertEquals(firstMessage.getJMSCorrelationID(), secondMessage.getJMSCorrelationID());
   }
 
@@ -118,7 +122,7 @@ public abstract class AbstractJMSRequestSinkTest extends AbstractJMSRequestTest 
     //send testmessage
     requestSink.abort("abortedCallID");
     //wait for message to come through and validate
-    Message receivedMessage = expectMessage(JMSRequestProxy.MESSAGE_TYPE_STREAM_CLOSED);
+    Message receivedMessage = expectTopicMessage(JMSRequestProxy.MESSAGE_TYPE_STREAM_CLOSED);
     Assert.assertEquals(ProtocolVersion.V3.getVersionString(), receivedMessage.getStringProperty(AbstractJMSRequestBase.PROTOCOL_VERSION_KEY));
     assertEquals("abortedCallID", receivedMessage.getJMSCorrelationID());
     assertTrue(receivedMessage instanceof BytesMessage);
@@ -278,7 +282,7 @@ public abstract class AbstractJMSRequestSinkTest extends AbstractJMSRequestTest 
     requestSink.signal(testMessage, requestContext, 1000);
 
     //expect channel request
-    Message receivedMessage = expectMessage(JMSRequestProxy.MESSAGE_TYPE_CHANNEL_REQUEST);
+    Message receivedMessage = expectQueueMessage(JMSRequestProxy.MESSAGE_TYPE_CHANNEL_REQUEST);
     ChannelUploadVerifier verifier = setupChannel(receivedMessage, testMessage);
     verifier.waitForEOS();
     verifier.verify();
@@ -326,7 +330,8 @@ public abstract class AbstractJMSRequestSinkTest extends AbstractJMSRequestTest 
   protected JMSRequestSink.Builder createBaseSink() throws IOException {
     return addConnection(JMSRequestSink.builder())
             .setSerializer(serializer())
-            .setDestinationName(queueName)
+            .setQueueName(queueName)
+            .setTopicName(topicName)
             .setProtocolVersion(V3)
             .setMaxMessageSize(65536);
   }
@@ -339,17 +344,20 @@ public abstract class AbstractJMSRequestSinkTest extends AbstractJMSRequestTest 
     return expectMessage(queue, JMSRequestProxy.MESSAGE_TYPE_SIGNAL);
   }
 
-  private Message expectMessage(String messageType) throws InterruptedException, JMSException {
+  private Message expectQueueMessage(String messageType) throws InterruptedException, JMSException {
     return expectMessage(queue, messageType);
   }
 
-  private Message expectMessage(BlockingQueue<Message> queue, String messageType) throws InterruptedException, JMSException {
-    Message receivedMessage = queue.poll(1000, TimeUnit.MILLISECONDS);
+  private Message expectTopicMessage(String messageType) throws InterruptedException, JMSException {
+    return expectMessage(topic, messageType);
+  }
+
+  private Message expectMessage(BlockingQueue<Message> source, String messageType) throws InterruptedException, JMSException {
+    Message receivedMessage = source.poll(1000, TimeUnit.MILLISECONDS);
     assertNotNull(receivedMessage);
     assertEquals(messageType, receivedMessage.getStringProperty(JMSRequestProxy.PROPERTY_MESSAGE_TYPE));
     return receivedMessage;
   }
-
 
   private boolean responseQueueIsValid(Message signal) throws Exception {
     try {
@@ -388,7 +396,6 @@ public abstract class AbstractJMSRequestSinkTest extends AbstractJMSRequestTest 
   private void sendTo(Destination destination, Message msg) throws NamingException, JMSException {
     try (MessageProducer producer = session.createProducer(destination)) {
       producer.send(msg);
-      producer.close();
     }
   }
 
@@ -461,7 +468,7 @@ public abstract class AbstractJMSRequestSinkTest extends AbstractJMSRequestTest 
     return receiveFrom(lookupDestination(destination));
   }
 
-  private BlockingQueue<Message> receiveFrom(Destination destination) throws NamingException, JMSException {
+  private BlockingQueue<Message> receiveFrom(Destination destination) throws JMSException {
     BlockingQueue<Message> result = new LinkedBlockingDeque<>();
     MessageConsumer consumer = session.createConsumer(destination);
     consumer.setMessageListener(result::add);

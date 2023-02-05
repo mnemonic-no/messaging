@@ -5,18 +5,26 @@ import no.mnemonic.commons.logging.Logger;
 import no.mnemonic.commons.logging.Logging;
 import no.mnemonic.commons.utilities.AppendMembers;
 import no.mnemonic.commons.utilities.AppendUtils;
-import no.mnemonic.commons.utilities.StringUtils;
 import no.mnemonic.messaging.requestsink.jms.util.JMSUtils;
 
-import javax.jms.*;
+import javax.jms.Connection;
+import javax.jms.ConnectionFactory;
+import javax.jms.Destination;
+import javax.jms.ExceptionListener;
+import javax.jms.JMSException;
+import javax.jms.Queue;
+import javax.jms.Session;
+import javax.jms.Topic;
 import javax.naming.InitialContext;
 import javax.naming.NamingException;
-import java.lang.IllegalStateException;
 import java.util.HashMap;
 import java.util.Hashtable;
 import java.util.Map;
+import java.util.Optional;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
+
+import static no.mnemonic.commons.utilities.StringUtils.isBlank;
 
 @SuppressWarnings({"ClassReferencesSubclass"})
 public abstract class AbstractJMSRequestBase implements LifecycleAspect, AppendMembers, ExceptionListener {
@@ -54,7 +62,8 @@ public abstract class AbstractJMSRequestBase implements LifecycleAspect, AppendM
   private final String username;
   private final String password;
   private final Map<String, String> connectionProperties;
-  private final String destinationName;
+  private final String queueName;
+  private final String topicName;
   private final int priority;
   private final int maxMessageSize;
 
@@ -64,25 +73,26 @@ public abstract class AbstractJMSRequestBase implements LifecycleAspect, AppendM
   final AtomicBoolean closed = new AtomicBoolean();
   final AtomicReference<Connection> connection = new AtomicReference<>();
   final AtomicReference<Session> session = new AtomicReference<>();
-  final AtomicReference<Destination> destination = new AtomicReference<>();
+  final AtomicReference<Queue> queue = new AtomicReference<>();
+  final AtomicReference<Topic> topic = new AtomicReference<>();
 
   // ************************* constructors ********************************
 
   AbstractJMSRequestBase(String contextFactoryName, String contextURL, String connectionFactoryName,
                          String username, String password, Map<String, String> connectionProperties,
-                         String destinationName, int priority, int maxMessageSize) {
+                         String queueName, String topicName, int priority, int maxMessageSize) {
 
-    if (StringUtils.isBlank(contextFactoryName)) {
+    if (isBlank(contextFactoryName)) {
       throw new IllegalArgumentException("contextFactoryName not set");
     }
-    if (StringUtils.isBlank(contextURL)) {
+    if (isBlank(contextURL)) {
       throw new IllegalArgumentException("contextURL not set");
     }
-    if (StringUtils.isBlank(connectionFactoryName)) {
+    if (isBlank(connectionFactoryName)) {
       throw new IllegalArgumentException("connectionFactoryName not set");
     }
-    if (StringUtils.isBlank(destinationName)) {
-      throw new IllegalArgumentException("No destination name provided");
+    if (isBlank(queueName)) {
+      throw new IllegalArgumentException("No queue name provided");
     }
     if (maxMessageSize < 1) {
       throw new IllegalArgumentException("maxMessageSize cannot be lower than 1");
@@ -96,7 +106,8 @@ public abstract class AbstractJMSRequestBase implements LifecycleAspect, AppendM
     this.username = username;
     this.password = password;
     this.connectionProperties = connectionProperties;
-    this.destinationName = destinationName;
+    this.queueName = queueName;
+    this.topicName = topicName;
     this.priority = priority;
     this.maxMessageSize = maxMessageSize;
   }
@@ -108,7 +119,8 @@ public abstract class AbstractJMSRequestBase implements LifecycleAspect, AppendM
   public void appendMembers(StringBuilder buf) {
     AppendUtils.appendField(buf, "contextURL", contextURL);
     AppendUtils.appendField(buf, "connectionFactoryName", connectionFactoryName);
-    AppendUtils.appendField(buf, "destinationName", destinationName);
+    AppendUtils.appendField(buf, "queueName", queueName);
+    AppendUtils.appendField(buf, "topicName", topicName);
     AppendUtils.appendField(buf, "priority", priority);
   }
 
@@ -141,9 +153,15 @@ public abstract class AbstractJMSRequestBase implements LifecycleAspect, AppendM
     return getOrUpdateSynchronized(connection, this::createConnection);
   }
 
-  Destination getDestination() throws JMSException, NamingException {
+  Queue getQueue() throws JMSException, NamingException {
     if (isClosed()) throw new IllegalStateException(ERROR_CLOSED);
-    return getOrUpdateSynchronized(destination, this::lookupDestination);
+    return getOrUpdateSynchronized(queue, this::lookupQueue);
+  }
+
+  Optional<Topic> getTopic() throws JMSException, NamingException {
+    if (isClosed()) throw new IllegalStateException(ERROR_CLOSED);
+    if (isBlank(topicName)) return Optional.empty();
+    return Optional.of(getOrUpdateSynchronized(topic, this::lookupTopic));
   }
 
   Session getSession() throws JMSException, NamingException {
@@ -156,9 +174,24 @@ public abstract class AbstractJMSRequestBase implements LifecycleAspect, AppendM
     return getConnection().createSession(false, Session.AUTO_ACKNOWLEDGE);
   }
 
-  private Destination lookupDestination() throws NamingException, JMSException {
-    LOGGER.debug("Looking up destination %s", destinationName);
-    return lookupDestination(destinationName);
+  private Queue lookupQueue() throws NamingException, JMSException {
+    LOGGER.debug("Looking up queue %s", queueName);
+    try {
+      return (Queue) lookupDestination(queueName);
+    } catch (ClassCastException e) {
+      LOGGER.error(e,"Got unexpected destination type for destination %s, expected Queue", queueName);
+      throw e;
+    }
+  }
+
+  private Topic lookupTopic() throws NamingException, JMSException {
+    LOGGER.debug("Looking up topic %s", topicName);
+    try {
+      return (Topic) lookupDestination(topicName);
+    } catch (ClassCastException e) {
+      LOGGER.error(e,"Got unexpected destination type for destination %s, expected Topic", queueName);
+      throw e;
+    }
   }
 
   private InitialContext createInitialContext() throws NamingException {
@@ -171,7 +204,7 @@ public abstract class AbstractJMSRequestBase implements LifecycleAspect, AppendM
   }
 
   private Destination lookupDestination(String destinationName) throws JMSException, NamingException {
-    if (StringUtils.isBlank(destinationName)) throw new NamingException("Destination name not set");
+    if (isBlank(destinationName)) throw new NamingException("Destination name not set");
     Object obj = getInitialContext().lookup(destinationName);
     // error if no such destination
     if (obj == null) {
@@ -253,7 +286,8 @@ public abstract class AbstractJMSRequestBase implements LifecycleAspect, AppendM
     String username;
     String password;
     final Map<String, String> connectionProperties = new HashMap<>();
-    String destinationName;
+    String queueName;
+    String topicName;
     int maxMessageSize = DEFAULT_MAX_MAX_MESSAGE_SIZE;
     int priority = DEFAULT_PRIORITY;
 
@@ -299,10 +333,24 @@ public abstract class AbstractJMSRequestBase implements LifecycleAspect, AppendM
       return (T) this;
     }
 
-    public T setDestinationName(String destinationName) {
-      this.destinationName = destinationName;
+    /**
+     * @deprecated Use {@link #setQueueName(String)}
+     */
+    @Deprecated
+    public T setDestinationName(String queueName) {
+      return setQueueName(queueName);
+    }
+
+    public T setQueueName(String queueName) {
+      this.queueName = queueName;
       //noinspection unchecked
       return (T) this;
+    }
+
+    public T setTopicName(String topicName) {
+      this.topicName = topicName;
+      //noinspection unchecked
+      return (T)this;
     }
 
     public T setMaxMessageSize(int maxMessageSize) {

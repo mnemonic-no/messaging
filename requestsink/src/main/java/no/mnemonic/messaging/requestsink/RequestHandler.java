@@ -287,7 +287,6 @@ public class RequestHandler implements RequestContext {
       //noinspection unchecked
       return (T) responses.poll();
     } catch (InterruptedException e) {
-      close();
       throw new MessagingInterruptedException(e);
     }
   }
@@ -316,7 +315,6 @@ public class RequestHandler implements RequestContext {
           this.wait(Math.max(1, timeout - clock.millis()));
         }
       } catch (InterruptedException e) {
-        close();
         throw new MessagingInterruptedException(e);
       }
     }

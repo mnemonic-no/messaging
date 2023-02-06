@@ -3,6 +3,11 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [1.3.25] - 2023-01-30
+### Changed
+ARGUS-33796
+- Avoid closing `RequestHandler` on InterruptedException, to allow clients to deal with interrupt, possibly issuing an abort() before closing.
+
 ## [1.3.24] - 2023-01-30
 ### Changed
 ARGUS-33796

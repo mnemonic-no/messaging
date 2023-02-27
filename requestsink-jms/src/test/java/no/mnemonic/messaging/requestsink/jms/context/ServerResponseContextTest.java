@@ -52,8 +52,8 @@ public class ServerResponseContextTest {
     context = new ServerResponseContext(
             CALL_ID, session, messageProducer, replyTo, TIMEOUT, ProtocolVersion.V3,
             MAX_MESSAGE_SIZE, metrics, serializer, requestSink);
-    when(session.createTextMessage(any())).thenReturn(new ActiveMQTextMessage());
-    when(clock.millis()).thenReturn(NOW);
+    lenient().when(session.createTextMessage(any())).thenReturn(new ActiveMQTextMessage());
+    lenient().when(clock.millis()).thenReturn(NOW);
     ServerResponseContext.setClock(clock);
   }
 

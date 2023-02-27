@@ -3,6 +3,12 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [1.3.26] - 2023-02-27
+### Changed
+ARGUS-32475
+- Made project build with JDK17. **The project requires at least JDK11 to build now, but the code still executes on JDK8.**
+- Upgraded dependencies to the newest versions.
+
 ## [1.3.25] - 2023-01-30
 ### Changed
 ARGUS-33796

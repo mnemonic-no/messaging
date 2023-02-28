@@ -1,6 +1,8 @@
 package no.mnemonic.messaging.documentchannel.kafka;
 
 import org.apache.kafka.clients.consumer.KafkaConsumer;
+import org.apache.kafka.common.config.SaslConfigs;
+import org.apache.kafka.common.security.auth.SecurityProtocol;
 import org.apache.kafka.common.serialization.ByteArrayDeserializer;
 import org.apache.kafka.common.serialization.Deserializer;
 import org.apache.kafka.common.serialization.StringDeserializer;
@@ -10,6 +12,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.stream.Collectors;
 
 import static no.mnemonic.commons.utilities.collections.MapUtils.map;
+import static org.apache.kafka.clients.CommonClientConfigs.SECURITY_PROTOCOL_CONFIG;
 import static org.apache.kafka.clients.consumer.ConsumerConfig.*;
 
 /**
@@ -38,6 +41,9 @@ public class KafkaConsumerProvider {
   private final int maxPollRecords;
   private final int maxPollIntervalMs;
   private final Map<Class<?>, Deserializer<?>> deserializers;
+  private final SaslMechanism saslMechanism;
+  private final String saslUsername;
+  private final String saslPassword;
 
   private KafkaConsumerProvider(
           String kafkaHosts,
@@ -50,7 +56,10 @@ public class KafkaConsumerProvider {
           int sessionTimeoutMs,
           int maxPollRecords,
           int maxPollIntervalMs,
-          Map<Class<?>, Deserializer<?>> deserializers) {
+          Map<Class<?>, Deserializer<?>> deserializers,
+          SaslMechanism saslMechanism,
+          String saslUsername,
+          String saslPassword) {
     this.kafkaHosts = kafkaHosts;
     this.kafkaPort = kafkaPort;
     this.groupID = groupID;
@@ -62,6 +71,9 @@ public class KafkaConsumerProvider {
     this.maxPollRecords = maxPollRecords;
     this.maxPollIntervalMs = maxPollIntervalMs;
     this.deserializers = deserializers;
+    this.saslMechanism = saslMechanism;
+    this.saslUsername = saslUsername;
+    this.saslPassword = saslPassword;
 
     this.deserializers.put(String.class, new StringDeserializer());
     this.deserializers.put(byte[].class, new ByteArrayDeserializer());
@@ -101,6 +113,14 @@ public class KafkaConsumerProvider {
     properties.put(MAX_POLL_RECORDS_CONFIG, maxPollRecords);
     properties.put(MAX_POLL_INTERVAL_MS_CONFIG, maxPollIntervalMs);
     properties.put(HEARTBEAT_INTERVAL_MS_CONFIG, heartbeatIntervalMs);
+    if (saslMechanism != SaslMechanism.NONE) {
+      // https://docs.confluent.io/platform/current/kafka/authentication_sasl/authentication_sasl_scram.html#clients
+      properties.put(SECURITY_PROTOCOL_CONFIG, SecurityProtocol.SASL_SSL.name);
+      properties.put(SaslConfigs.SASL_MECHANISM, saslMechanism.getMechanismName());
+      properties.put(SaslConfigs.SASL_JAAS_CONFIG,
+              String.format("org.apache.kafka.common.security.scram.ScramLoginModule required username=\"%s\" password=\"%s\";",
+                      saslUsername, saslPassword));
+    }
     return properties;
   }
 
@@ -127,9 +147,14 @@ public class KafkaConsumerProvider {
     private int maxPollRecords = DEFAULT_MAX_POLL_RECORDS;
     private int maxPollIntervalMs = DEFAULT_MAX_POLL_INTERVAL_MILLIS;
     private Map<Class<?>, Deserializer<?>> deserializers = map();
+    private SaslMechanism saslMechanism = SaslMechanism.NONE;
+    private String saslUsername;
+    private String saslPassword;
 
     public KafkaConsumerProvider build() {
-      return new KafkaConsumerProvider(kafkaHosts, kafkaPort, groupID, offsetResetStrategy, autoCommit, heartbeatIntervalMs, requestTimeoutMs, sessionTimeoutMs, maxPollRecords, maxPollIntervalMs, deserializers);
+      return new KafkaConsumerProvider(kafkaHosts, kafkaPort, groupID, offsetResetStrategy, autoCommit, heartbeatIntervalMs,
+              requestTimeoutMs, sessionTimeoutMs, maxPollRecords, maxPollIntervalMs, deserializers, saslMechanism,
+              saslUsername, saslPassword);
     }
 
     public Builder setKafkaHosts(String kafkaHosts) {
@@ -188,6 +213,20 @@ public class KafkaConsumerProvider {
       this.deserializers.put(type, deserializer);
       return this;
     }
-  }
 
+    public Builder setSaslMechanism(SaslMechanism saslMechanism) {
+      this.saslMechanism = saslMechanism;
+      return this;
+    }
+
+    public Builder setSaslUsername(String saslUsername) {
+      this.saslUsername = saslUsername;
+      return this;
+    }
+
+    public Builder setSaslPassword(String saslPassword) {
+      this.saslPassword = saslPassword;
+      return this;
+    }
+  }
 }

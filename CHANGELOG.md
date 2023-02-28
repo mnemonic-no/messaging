@@ -3,6 +3,11 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [1.3.28] - 2023-03-03
+### Added
+ARGUS-33800
+- Added SASL authentication support to `KafkaConsumerProvider` and `KafkaProducerProvider`
+
 ## [1.3.27] - 2023-03-03
 ### Fixed
 ARGUS-33367

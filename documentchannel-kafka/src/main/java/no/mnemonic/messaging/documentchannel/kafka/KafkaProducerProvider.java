@@ -1,6 +1,8 @@
 package no.mnemonic.messaging.documentchannel.kafka;
 
 import org.apache.kafka.clients.producer.KafkaProducer;
+import org.apache.kafka.common.config.SaslConfigs;
+import org.apache.kafka.common.security.auth.SecurityProtocol;
 import org.apache.kafka.common.serialization.ByteArraySerializer;
 import org.apache.kafka.common.serialization.Serializer;
 import org.apache.kafka.common.serialization.StringSerializer;
@@ -9,6 +11,7 @@ import java.util.*;
 import java.util.stream.Collectors;
 
 import static no.mnemonic.commons.utilities.collections.MapUtils.map;
+import static org.apache.kafka.clients.CommonClientConfigs.SECURITY_PROTOCOL_CONFIG;
 import static org.apache.kafka.clients.producer.ProducerConfig.*;
 
 /**
@@ -56,6 +59,9 @@ public class KafkaProducerProvider {
   private final int lingerMs;
   private final int retries;
   private final Map<Class<?>, Serializer<?>> serializers;
+  private final SaslMechanism saslMechanism;
+  private final String saslUsername;
+  private final String saslPassword;
 
   private KafkaProducerProvider(
           String kafkaHosts,
@@ -69,7 +75,10 @@ public class KafkaProducerProvider {
           Acknowledgement acknowledgements,
           int lingerMs,
           int retries,
-          Map<Class<?>, Serializer<?>> serializers) {
+          Map<Class<?>, Serializer<?>> serializers,
+          SaslMechanism saslMechanism,
+          String saslUsername,
+          String saslPassword) {
     this.kafkaHosts = kafkaHosts;
     this.kafkaPort = kafkaPort;
     this.maxRequestSize = maxRequestSize;
@@ -82,6 +91,9 @@ public class KafkaProducerProvider {
     this.lingerMs = lingerMs;
     this.retries = retries;
     this.serializers = serializers;
+    this.saslMechanism = saslMechanism;
+    this.saslUsername = saslUsername;
+    this.saslPassword = saslPassword;
 
     this.serializers.put(String.class, new StringSerializer());
     this.serializers.put(byte[].class, new ByteArraySerializer());
@@ -119,6 +131,14 @@ public class KafkaProducerProvider {
     properties.put(REQUEST_TIMEOUT_MS_CONFIG, requestTimeoutMs);
     properties.put(MAX_BLOCK_MS_CONFIG, maxBlockMs);
     properties.put(SEND_BUFFER_CONFIG, sendBuffer);
+    if (saslMechanism != SaslMechanism.NONE) {
+      // https://docs.confluent.io/platform/current/kafka/authentication_sasl/authentication_sasl_scram.html#clients
+      properties.put(SECURITY_PROTOCOL_CONFIG, SecurityProtocol.SASL_SSL.name);
+      properties.put(SaslConfigs.SASL_MECHANISM, saslMechanism.getMechanismName());
+      properties.put(SaslConfigs.SASL_JAAS_CONFIG,
+              String.format("org.apache.kafka.common.security.scram.ScramLoginModule required username=\"%s\" password=\"%s\";",
+                      saslUsername, saslPassword));
+    }
     return properties;
   }
 
@@ -146,9 +166,13 @@ public class KafkaProducerProvider {
     private int lingerMs = DEFAULT_LINGER_MILLIS;
     private int retries = DEFAULT_RETRIES;
     private Map<Class<?>, Serializer<?>> serializers = map();
+    private SaslMechanism saslMechanism = SaslMechanism.NONE;
+    private String saslUsername;
+    private String saslPassword;
 
     public KafkaProducerProvider build() {
-      return new KafkaProducerProvider(kafkaHosts, kafkaPort, maxRequestSize, requestTimeoutMs, maxBlockMs, sendBuffer, batchSize, compression, acknowledgements, lingerMs, retries, serializers);
+      return new KafkaProducerProvider(kafkaHosts, kafkaPort, maxRequestSize, requestTimeoutMs, maxBlockMs, sendBuffer,
+              batchSize, compression, acknowledgements, lingerMs, retries, serializers, saslMechanism, saslUsername, saslPassword);
     }
 
     public Builder setKafkaHosts(String kafkaHosts) {
@@ -213,6 +237,20 @@ public class KafkaProducerProvider {
       return this;
     }
 
+    public Builder setSaslMechanism(SaslMechanism saslMechanism) {
+      this.saslMechanism = saslMechanism;
+      return this;
+    }
+
+    public Builder setSaslUsername(String saslUsername) {
+      this.saslUsername = saslUsername;
+      return this;
+    }
+
+    public Builder setSaslPassword(String saslPassword) {
+      this.saslPassword = saslPassword;
+      return this;
+    }
   }
 
 }

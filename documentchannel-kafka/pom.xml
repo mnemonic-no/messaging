@@ -5,7 +5,7 @@
   <parent>
     <groupId>no.mnemonic.messaging</groupId>
     <artifactId>parent</artifactId>
-    <version>1.3.26-SNAPSHOT</version>
+    <version>1.3.26</version>
   </parent>
   <artifactId>documentchannel-kafka</artifactId>
 

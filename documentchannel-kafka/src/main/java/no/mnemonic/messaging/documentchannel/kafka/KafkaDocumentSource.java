@@ -250,14 +250,19 @@ public class KafkaDocumentSource<T> implements DocumentSource<T>, MetricAspect {
   private void seek(String topic, Map<Integer, KafkaCursor.OffsetAndTimestamp> cursorPointers) throws KafkaInvalidSeekException {
     //determine active partitions for this topic
     Map<Integer, PartitionInfo> partitionInfos = map(getConsumerOrFail().partitionsFor(topic), p -> MapUtils.pair(p.partition(), p));
+    for (Integer partition : cursorPointers.keySet()) {
+      if (!partitionInfos.containsKey(partition)) {
+        throw new KafkaInvalidSeekException("Invalid partition " + partition);
+      }
+    }
     //assign all partitions to this consumer
     getConsumerOrFail().assign(SetUtils.set(partitionInfos.values(), p -> new TopicPartition(topic, p.partition())));
 
     //If the cursor contains timestamp: find timestamp to seek to for each partition in the cursor (all other partitions will stay at initial offset set by OffsetResetStrategy)
     Map<TopicPartition, Long> partitionsToSeek = new HashMap<>();
-    map(cursorPointers).entrySet().stream().filter(cp -> cp.getValue().getTimestamp() > 0).forEach(entry -> partitionsToSeek.put(
-            new TopicPartition(topic, entry.getKey()),
-            entry.getValue().getTimestamp()
+    map(cursorPointers).entrySet().stream().filter(cp -> cp.getValue().getTimestamp() > 0).forEach(partitionTimestamp -> partitionsToSeek.put(
+            new TopicPartition(topic, partitionTimestamp.getKey()),
+            partitionTimestamp.getValue().getTimestamp()
     ));
     //lookup offsets by timestamp from Kafka
     Map<TopicPartition, OffsetAndTimestamp> partitionOffsetMap = getConsumerOrFail().offsetsForTimes(partitionsToSeek);

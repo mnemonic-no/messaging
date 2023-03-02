@@ -3,6 +3,11 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [1.3.29] - 2023-03-03
+### Fixed
+ARGUS-34571
+- Ensure that `KafkaDocumentSource` fails with `KafkaInvalidSeekException` when invoking `seek()` with a cursor referencing non-existent partitions.
+
 ## [1.3.28] - 2023-03-03
 ### Added
 ARGUS-33800

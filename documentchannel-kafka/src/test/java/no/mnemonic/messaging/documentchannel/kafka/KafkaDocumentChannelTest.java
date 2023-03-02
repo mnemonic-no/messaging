@@ -21,6 +21,7 @@ import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Iterator;
+import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.Semaphore;
@@ -29,11 +30,14 @@ import java.util.function.Consumer;
 
 import static no.mnemonic.commons.utilities.ObjectUtils.ifNotNullDo;
 import static no.mnemonic.commons.utilities.collections.ListUtils.list;
+import static no.mnemonic.commons.utilities.collections.MapUtils.map;
+import static no.mnemonic.commons.utilities.collections.MapUtils.pair;
 import static no.mnemonic.commons.utilities.collections.SetUtils.set;
 import static no.mnemonic.commons.utilities.lambda.LambdaUtils.tryTo;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.fail;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.argThat;
@@ -98,6 +102,18 @@ public class KafkaDocumentChannelTest {
     receiverChannel2.seek(cursor.toString());
     DocumentBatch<String> batch = receiverChannel2.poll(Duration.ofSeconds(1));
     assertEquals(list("mydoc2", "mydoc3", "mydoc4"), list(batch.getDocuments()));
+  }
+
+  @Test
+  public void invalidCursor() {
+    useTopic("invalidCursor");
+    KafkaDocumentSource<String> receiverChannel1 = setupSource("group1", null, b -> b.setMaxPollRecords(10));
+
+    Map<Integer, KafkaCursor.OffsetAndTimestamp> partitions = map(
+        pair(99, new KafkaCursor.OffsetAndTimestamp(100, 1000))
+    );
+    Map<String, Map<Integer, KafkaCursor.OffsetAndTimestamp>> cursor = map(pair("invalidCursor", partitions));
+    assertThrows(KafkaInvalidSeekException.class, () -> receiverChannel1.seek(new KafkaCursor(cursor).toString()));
   }
 
   @Test

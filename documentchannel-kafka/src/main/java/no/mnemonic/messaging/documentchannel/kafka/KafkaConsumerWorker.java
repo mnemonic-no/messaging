@@ -5,6 +5,7 @@ import no.mnemonic.commons.logging.Logging;
 import no.mnemonic.messaging.documentchannel.DocumentChannelListener;
 
 import java.time.Duration;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 import static no.mnemonic.commons.utilities.collections.CollectionUtils.isEmpty;
 import static no.mnemonic.commons.utilities.lambda.LambdaUtils.tryTo;
@@ -17,6 +18,7 @@ class KafkaConsumerWorker<T> implements Runnable {
   private final KafkaDocumentSource<T> consumer;
   private final DocumentChannelListener<T> listener;
   private final KafkaDocumentSource.ConsumerCallbackInterface consumerInterface;
+  private final AtomicBoolean cancelled = new AtomicBoolean();
 
   KafkaConsumerWorker(
           KafkaDocumentSource<T> consumer,
@@ -28,17 +30,21 @@ class KafkaConsumerWorker<T> implements Runnable {
     this.consumerInterface = consumerInterface;
   }
 
+  public void cancel() {
+    cancelled.set(true);
+  }
+
   @Override
   public void run() {
     try {
       consumerInterface.consumerRunning(true);
-      while (!consumerInterface.isShutdown()) {
+      while (!cancelled.get() && !consumerInterface.isShutdown()) {
         consumeBatch();
       }
     } catch (Exception e) {
       LOGGER.error(e, "Kafka ConsumerWorker failed unrecoverable, stopping ConsumerWorker thread");
     } finally {
-      LOGGER.info("Close Kafka Consumer");
+      LOGGER.info("Close Kafka Consumer Worker");
       consumerInterface.consumerRunning(false);
       consumer.close();
     }

@@ -3,6 +3,11 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [1.3.30] - 2023-03-11
+### Fixed
+ARGUS-34837
+- Fix that `KafkaDocumentSource` document subscription closes the document source when subscription is cancelled. 
+
 ## [1.3.29] - 2023-03-03
 ### Fixed
 ARGUS-34571

@@ -168,10 +168,15 @@ public class KafkaDocumentSource<T> implements DocumentSource<T>, MetricAspect {
   @Override
   public DocumentChannelSubscription createDocumentSubscription(DocumentChannelListener<T> listener) {
     if (listener == null) throw new IllegalArgumentException("listener not set");
-    executorService.submit(new KafkaConsumerWorker<>(this, listener, createCallbackInterface()));
+    if (subscriberAttached.get()) throw new IllegalStateException("subscriber already added");
+    KafkaConsumerWorker<T> worker = new KafkaConsumerWorker<>(this, listener, createCallbackInterface());
+    executorService.submit(worker);
     subscriberAttached.set(true);
 
-    return this::close;
+    return ()->{
+      worker.cancel();
+      subscriberAttached.set(false);
+    };
   }
 
   private ConsumerCallbackInterface createCallbackInterface() {

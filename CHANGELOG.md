@@ -3,6 +3,11 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [1.3.31] - 2023-03-31
+### Fixed
+ARGUS-35324
+- `NullDocumentSource.poll(Duration)` will now block the thread for the provided duration in order to prevent underlying threads from consuming CPU needlessly
+
 ## [1.3.30] - 2023-03-11
 ### Fixed
 ARGUS-34837

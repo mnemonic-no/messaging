@@ -1,5 +1,7 @@
 package no.mnemonic.messaging.documentchannel.noop;
 
+import no.mnemonic.commons.logging.Logger;
+import no.mnemonic.commons.logging.Logging;
 import no.mnemonic.messaging.documentchannel.DocumentBatch;
 import no.mnemonic.messaging.documentchannel.DocumentChannelListener;
 import no.mnemonic.messaging.documentchannel.DocumentChannelSubscription;
@@ -16,6 +18,7 @@ import java.util.Collection;
  * @param <T> the channel document type
  */
 public class NullDocumentSource<T> implements DocumentSource<T> {
+  private static final Logger LOGGER = Logging.getLogger(NullDocumentSource.class);
 
   @Override
   public DocumentChannelSubscription createDocumentSubscription(DocumentChannelListener<T> documentChannelListener) {
@@ -26,6 +29,15 @@ public class NullDocumentSource<T> implements DocumentSource<T> {
 
   @Override
   public DocumentBatch<T> poll(Duration duration) {
+    // Block the thread for the provided duration in order to prevent underlying threads
+    // from spinning endless while-loops, consuming resources for no reason
+    try {
+      Thread.sleep(duration.toMillis());
+    } catch (InterruptedException e) {
+      LOGGER.info(e, "Caught InterruptedException in NullDocumentSource");
+      Thread.currentThread().interrupt();
+    }
+
     return new DocumentBatch<T>() {
       @Override
       public Collection<T> getDocuments() {

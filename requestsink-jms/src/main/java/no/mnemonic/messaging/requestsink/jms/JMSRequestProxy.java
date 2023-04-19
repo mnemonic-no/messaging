@@ -1,6 +1,7 @@
 package no.mnemonic.messaging.requestsink.jms;
 
 import no.mnemonic.commons.component.Dependency;
+import no.mnemonic.commons.logging.LocalLoggingContext;
 import no.mnemonic.commons.logging.Logger;
 import no.mnemonic.commons.logging.Logging;
 import no.mnemonic.commons.metrics.*;
@@ -22,6 +23,7 @@ import javax.jms.*;
 import javax.naming.NamingException;
 import java.io.IOException;
 import java.lang.IllegalStateException;
+import java.time.Clock;
 import java.util.*;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicLong;
@@ -49,8 +51,14 @@ public class JMSRequestProxy extends AbstractJMSRequestBase implements MetricAsp
 
   private static final Logger LOGGER = Logging.getLogger(JMSRequestProxy.class);
 
-  static final int DEFAULT_MAX_CONCURRENT_CALLS = 10;
-  static final int DEFAULT_SHUTDOWN_TIMEOUT = 10000;
+  private static final int DEFAULT_MAX_CONCURRENT_CALLS_STANDARD = 5;
+  private static final int DEFAULT_MAX_CONCURRENT_CALLS_BULK = 5;
+  private static final int DEFAULT_MAX_CONCURRENT_CALLS_EXPEDITE = 2;
+  private static final int DEFAULT_SHUTDOWN_TIMEOUT = 10000;
+  private static final int DEFAULT_MINIMUM_STANDARD_CAPACITY = 3;
+  private static final String LOG_KEY_PRIORITY = "priority";
+
+  private static final Clock clock = Clock.systemUTC();
 
   // properties
 
@@ -59,43 +67,60 @@ public class JMSRequestProxy extends AbstractJMSRequestBase implements MetricAsp
 
   // variables
   private final Map<String, ServerContext> calls = new ConcurrentHashMap<>();
-  private final Semaphore semaphore;
   private final AtomicLong lastCleanupTimestamp = new AtomicLong();
 
   private final ServerMetrics metrics = new ServerMetrics();
   private final LongAdder awaitPermitTime = new LongAdder();
 
   private final ExecutorService executor;
+  private final Semaphore bulkSemaphore;
+  private final Semaphore standardSemaphore;
+  private final Semaphore expediteSemaphore;
+  private final ConcurrentMap<Message.Priority, LongAdder> requestCounters = new ConcurrentHashMap<>();
+  private final ConcurrentMap<Message.Priority, LongAdder> rejectCounters = new ConcurrentHashMap<>();
   private final long shutdownTimeout;
 
   private final Set<JMSRequestProxyConnectionListener> connectionListeners = new HashSet<>();
+  private final Set<Session> consumerSessions = Collections.synchronizedSet(new HashSet<>());
   private final Map<String, MessageSerializer> serializers;
   private final AtomicReference<MessageProducer> replyProducer = new AtomicReference<>();
-  private final AtomicReference<MessageConsumer> queueConsumer = new AtomicReference<>();
+  private final ConcurrentMap<Message.Priority, MessageConsumer> queueConsumers = new ConcurrentHashMap<>();
   private final AtomicReference<MessageConsumer> topicConsumer = new AtomicReference<>();
+  private final int minimumStandardCapacity;
 
 
   private JMSRequestProxy(String contextFactoryName, String contextURL, String connectionFactoryName,
                           String username, String password, Map<String, String> connectionProperties,
-                          String queueName, String topicName, int priority, int maxConcurrentCalls,
+                          String queueName, String topicName, int priority,
+                          int maxConcurrentCallsStandard, int maxConcurrentCallsBulk, int maxConcurrentCallsExpedite,
                           int maxMessageSize, RequestSink requestSink, long shutdownTimeout,
-                          Collection<MessageSerializer> serializers) {
+                          Collection<MessageSerializer> serializers, int minimumStandardCapacity) {
     super(contextFactoryName, contextURL, connectionFactoryName,
         username, password, connectionProperties,
         queueName, topicName,
         priority, maxMessageSize);
 
-    if (maxConcurrentCalls < 1)
-      throw new IllegalArgumentException("maxConcurrentCalls cannot be lower than 1");
+    if (maxConcurrentCallsStandard < 1) throw new IllegalArgumentException("maxConcurrentCallsStandard must be at least 1");
+    if (maxConcurrentCallsBulk < 1) throw new IllegalArgumentException("maxConcurrentCallsBulk must be at least 1");
+    if (maxConcurrentCallsExpedite < 1) throw new IllegalArgumentException("maxConcurrentCallsExpedite must be at least 1");
 
+    //create common executor for all priority levels, with capacity to cover all priorities
+    int totalThreads = maxConcurrentCallsBulk + maxConcurrentCallsExpedite + maxConcurrentCallsStandard;
+    //use a synchronous queue, which does direct handoff to executing threads
+    BlockingQueue<Runnable> workQueue = new SynchronousQueue<>();
+    this.executor = new ThreadPoolExecutor(
+        totalThreads / 2, totalThreads, 10, TimeUnit.SECONDS, workQueue,
+        new ThreadFactoryBuilder().setNamePrefix("JMSRequestProxy").build()
+    );
+    //create semaphores to guard the capacity for each level
+    standardSemaphore = new Semaphore(maxConcurrentCallsStandard);
+    bulkSemaphore = new Semaphore(maxConcurrentCallsBulk);
+    expediteSemaphore = new Semaphore(maxConcurrentCallsExpedite);
+
+    this.minimumStandardCapacity = minimumStandardCapacity;
     this.shutdownTimeout = shutdownTimeout;
     this.serializers = configureSerializersWithDefault(serializers);
     this.requestSink = assertNotNull(requestSink, "requestSink not set");
-    this.executor = Executors.newFixedThreadPool(
-        maxConcurrentCalls,
-        new ThreadFactoryBuilder().setNamePrefix("JMSRequestProxy").build()
-    );
-    this.semaphore = new Semaphore(maxConcurrentCalls);
   }
 
   @Override
@@ -105,8 +130,18 @@ public class JMSRequestProxy extends AbstractJMSRequestBase implements MetricAsp
     m.addSubMetrics("server", metrics.metrics());
     m.addSubMetrics("requests", new MetricsData()
         .addData("runningRequests", calls.size()) // Approximation as finished contexts are counted until they are cleaned up.
-        .addData("pendingRequests", semaphore.getQueueLength())
-        .addData("availablePermits", semaphore.availablePermits())
+        .addData("standardRequest.pending", standardSemaphore.getQueueLength())
+        .addData("standardRequest.available", standardSemaphore.availablePermits())
+        .addData("standardRequest.count", ifNotNull(requestCounters.get(Message.Priority.standard), LongAdder::longValue, 0L))
+        .addData("standardRequest.reject", ifNotNull(rejectCounters.get(Message.Priority.standard), LongAdder::longValue, 0L))
+        .addData("bulkRequests.pending", bulkSemaphore.getQueueLength())
+        .addData("bulkRequests.available", bulkSemaphore.availablePermits())
+        .addData("bulkRequests.count", ifNotNull(requestCounters.get(Message.Priority.bulk), LongAdder::longValue, 0L))
+        .addData("bulkRequests.reject", ifNotNull(rejectCounters.get(Message.Priority.bulk), LongAdder::longValue, 0L))
+        .addData("expediteRequests.pending", expediteSemaphore.getQueueLength())
+        .addData("expediteRequests.available", expediteSemaphore.availablePermits())
+        .addData("expediteRequests.count", ifNotNull(requestCounters.get(Message.Priority.expedite), LongAdder::longValue, 0L))
+        .addData("expediteRequests.reject", ifNotNull(rejectCounters.get(Message.Priority.expedite), LongAdder::longValue, 0L))
         .addData("awaitPermitTime", awaitPermitTime)
     );
     // Add metrics for all serializers.
@@ -122,7 +157,7 @@ public class JMSRequestProxy extends AbstractJMSRequestBase implements MetricAsp
     try {
       connect();
     } catch (Exception e) {
-      executor.shutdown();
+      stopExecutor();
       throw new IllegalStateException(e);
     }
   }
@@ -132,19 +167,12 @@ public class JMSRequestProxy extends AbstractJMSRequestBase implements MetricAsp
   public void stopComponent() {
     try {
       //stop accepting messages
-      ifNotNull(
-          queueConsumer.get(),
-          c -> tryTo(() -> c.setMessageListener(null), e -> LOGGER.warning(e, "Error removing message listener"))
-      );
+      stopConsumer(Message.Priority.standard);
+      stopConsumer(Message.Priority.bulk);
+      stopConsumer(Message.Priority.expedite);
       //stop accepting requests
       closed.set(true);
-      //stop executor
-      executor.shutdown();
-      //wait for ongoing requests to finish
-      tryTo(
-          () -> executor.awaitTermination(shutdownTimeout, TimeUnit.MILLISECONDS),
-          e -> LOGGER.warning("Error waiting for executor termination")
-      );
+      stopExecutor();
     } catch (Exception e) {
       LOGGER.warning(e, "Error stopping request proxy");
     }
@@ -152,18 +180,42 @@ public class JMSRequestProxy extends AbstractJMSRequestBase implements MetricAsp
     closeAllResources();
   }
 
+
+
+  private void stopConsumer(Message.Priority priority) {
+    ifNotNull(
+        queueConsumers.get(priority),
+        c -> tryTo(() -> c.setMessageListener(null), e -> LOGGER.warning(e, "Error removing message listener"))
+    );
+  }
+
+  private void stopExecutor() {
+    if (executor == null) return;
+    //stop executor
+    executor.shutdown();
+    //wait for ongoing requests to finish
+    //noinspection ResultOfMethodCallIgnored
+    tryTo(
+        () -> executor.awaitTermination(shutdownTimeout, TimeUnit.MILLISECONDS),
+        e -> LOGGER.warning("Error waiting for executor termination")
+    );
+  }
+
   private void connect() throws NamingException, JMSException {
     synchronized (this) {
+      //create common reply producer
       MessageProducer p = getSession().createProducer(null);
       p.setDeliveryMode(DeliveryMode.NON_PERSISTENT);
       replyProducer.set(p);
 
-      MessageConsumer qc = getSession().createConsumer(getQueue());
-      qc.setMessageListener(this::processQueueMessage);
-      queueConsumer.set(qc);
+      //create consumers per priority level
+      createConsumer(Message.Priority.standard, "JMSPriority >= 4 AND JMSPriority <= 6");
+      createConsumer(Message.Priority.bulk, "JMSPriority < 4");
+      createConsumer(Message.Priority.expedite, "JMSPriority > 6");
 
       Optional<Topic> optionalTopic = getTopic();
       if (optionalTopic.isPresent()) {
+        //noinspection resource
         MessageConsumer tc = getSession().createConsumer(optionalTopic.get());
         tc.setMessageListener(this::processTopicMessage);
       }
@@ -174,13 +226,36 @@ public class JMSRequestProxy extends AbstractJMSRequestBase implements MetricAsp
     }
   }
 
+  private void createConsumer(Message.Priority priority, String messageSelector) throws JMSException, NamingException {
+    //noinspection resource
+    MessageConsumer consumer = createConsumerSession().createConsumer(getQueue(), messageSelector);
+    consumer.setMessageListener(msg -> {
+      try (LocalLoggingContext ctx = LocalLoggingContext.create().using(LOG_KEY_PRIORITY, priority.name())) {
+        processQueueMessage(msg, priority);
+      }
+    });
+    queueConsumers.put(priority, consumer);
+  }
+
+  private Session createConsumerSession() throws NamingException, JMSException {
+    Session session = createSession();
+    consumerSessions.add(session);
+    return session;
+  }
+
   private synchronized void closeAllResources() {
     try {
       // try to nicely shut down all resources
       executeAndReset(replyProducer, MessageProducer::close, "Error closing reply producer");
-      executeAndReset(queueConsumer, MessageConsumer::close, "Error closing queue consumer");
+      executeAndReset(queueConsumers, Message.Priority.standard, MessageConsumer::close, "Error closing queue consumer");
+      executeAndReset(queueConsumers, Message.Priority.bulk, MessageConsumer::close, "Error closing queue consumer");
+      executeAndReset(queueConsumers, Message.Priority.expedite, MessageConsumer::close, "Error closing queue consumer");
       executeAndReset(topicConsumer, MessageConsumer::close, "Error closing topic consumer");
       executeAndReset(session, Session::close, "Error closing session");
+      for (Session s : consumerSessions) {
+        tryTo(s::close);
+      }
+      consumerSessions.clear();
       executeAndReset(connection, Connection::close, "Error closing connection");
     } finally {
       resetState();
@@ -188,12 +263,14 @@ public class JMSRequestProxy extends AbstractJMSRequestBase implements MetricAsp
   }
 
   private synchronized void resetState() {
+    queueConsumers.clear();
     replyProducer.set(null);
-    queueConsumer.set(null);
     topicConsumer.set(null);
     session.set(null);
+    consumerSessions.clear();
     queue.set(null);
     topic.set(null);
+    connection.set(null);
   }
 
   @Override
@@ -214,7 +291,10 @@ public class JMSRequestProxy extends AbstractJMSRequestBase implements MetricAsp
    *
    * @param message message to process
    */
-  private void processQueueMessage(javax.jms.Message message) {
+  private void processQueueMessage(javax.jms.Message message, Message.Priority priority) {
+    if (LOGGER.isDebug()) {
+      LOGGER.debug("<< processQueueMessage [priority=%s]", priority);
+    }
     metrics.request();
     checkCleanRequests();
     try {
@@ -224,35 +304,137 @@ public class JMSRequestProxy extends AbstractJMSRequestBase implements MetricAsp
         return;
       }
 
+      //if message is past timeout already when being consumed, do not bother scheduling it
       long timeout = message.getLongProperty(PROPERTY_REQ_TIMEOUT);
-      long maxWait = timeout - System.currentTimeMillis();
+      long maxWait = timeout - clock.millis();
       if (maxWait <= 0) {
-        LOGGER.warning("Ignoring queue request: timed out");
+        LOGGER.warning("Ignoring queued %s request: timed out", priority);
         metrics.requestTimeout();
         return;
       }
 
       String messageType = message.getStringProperty(PROPERTY_MESSAGE_TYPE);
       if (LOGGER.isDebug()) {
-        LOGGER.debug("<< process queueMessage [callID=%s type=%s]", message.getJMSCorrelationID(), messageType);
+        LOGGER.debug("<< receive queueMessage [callID=%s type=%s priority=%s]", message.getJMSCorrelationID(), messageType, priority);
       }
 
       try (TimerContext ignored = TimerContext.timerMillis(awaitPermitTime::add)) {
-        //avoid enqueueing a lot of messages into the executor queue, we rather want them to stay in JMS
-        //if semaphore is depleted, this should block the activemq consumer, causing messages to queue up in JMS
-        semaphore.acquire();
+        //schedule message for processing
+        acquireSemaphoreAndSchedule(message, priority, messageType, timeout, maxWait);
       }
-
-      //schedule message for processing
-      executor.submit(() -> doProcessQueueMessage(message, messageType, timeout));
     } catch (Exception e) {
       metrics.error();
       LOGGER.warning(e, "Error handling message");
     }
   }
 
-  private void doProcessQueueMessage(javax.jms.Message message, String messageType, long timeout) {
+  /**
+   * Try to acquire a semaphore, and if successful, schedule for execution
+   *
+   * @param message     the message to schedule
+   * @param priority    the priority of the message
+   * @param messageType the type of the message
+   * @param timeout     the timestamp when this message is timed out
+   * @param maxWait     the max ms to wait when scheduling this message
+   */
+  private void acquireSemaphoreAndSchedule(javax.jms.Message message, Message.Priority priority, String messageType, long timeout, long maxWait) throws JMSException {
     try {
+      //determine which semaphore to use
+      Semaphore semaphore = selectSemaphore(priority);
+      boolean acquired = semaphore.tryAcquire(maxWait, TimeUnit.MILLISECONDS);
+      if (acquired) {
+        if (LOGGER.isDebug()) {
+          LOGGER.debug("<< acquired queueMessage [callID=%s type=%s priority=%s]", message.getJMSCorrelationID(), messageType, priority);
+        }
+        //schedule for execution
+        //NOTE: semaphore is acquired, so must be released!
+        scheduleForProcessing(semaphore, message, priority, messageType, timeout);
+      } else {
+        //Semaphore is NOT acquired, so no release
+        rejectCounters.computeIfAbsent(priority, pri -> new LongAdder()).increment();
+        metrics.requestTimeout();
+        LOGGER.warning("Timed out waiting for %s semaphore", priority);
+      }
+    } catch (InterruptedException e) {
+      //Semaphore is NOT acquired, so no release
+      LOGGER.error(e, "Interrupted while waiting for semaphore");
+      Thread.currentThread().interrupt();
+    }
+  }
+
+  /**
+   * Schedule message for processing
+   *
+   * @param message     the message to schedule
+   * @param priority    the priority of the message
+   * @param messageType the type of the message
+   * @param timeout     the timestamp when this message is timed out
+   */
+  private void scheduleForProcessing(Semaphore semaphore, javax.jms.Message message, Message.Priority priority, String messageType, long timeout) {
+    try {
+      //schedule for execution
+      requestCounters.computeIfAbsent(priority, pri -> new LongAdder()).increment();
+      //NOTE: semaphore is acquired, so must be released by executor thread
+      executor.submit(() -> {
+        try (LocalLoggingContext ctx = LocalLoggingContext.create().using(LOG_KEY_PRIORITY, priority.name())) {
+          doProcessQueueMessage(message, messageType, timeout, semaphore, priority);
+        }
+      });
+    } catch (RejectedExecutionException e) {
+      //IMPORTANT: remember to release the semaphore we got a permit from
+      semaphore.release();
+      LOGGER.warning("Submission of processing %s request failed: timed out", priority);
+      metrics.requestTimeout();
+      rejectCounters.computeIfAbsent(priority, pri -> new LongAdder()).increment();
+    }
+  }
+
+  private Semaphore selectSemaphore(Message.Priority priority) {
+    switch (priority) {
+      case bulk:
+        //try for available capacity in bulk first
+        if (bulkSemaphore.availablePermits() > 1) return bulkSemaphore;
+        //try for available excess capacity (above minimumStandardCapacity) in standard, to utilize any free capacity
+        if (standardSemaphore.availablePermits() > minimumStandardCapacity) return standardSemaphore;
+        //fallback to waiting for the bulk semaphore
+        return bulkSemaphore;
+      case standard:
+        //try for available capacity in bulk first, as standard traffic should use any available capacity
+        if (bulkSemaphore.availablePermits() > 1) return bulkSemaphore;
+        return standardSemaphore;
+      case expedite:
+        //expedite traffic should use any available capacity
+        if (expediteSemaphore.availablePermits() > 1) return expediteSemaphore;
+        if (bulkSemaphore.availablePermits() > 1) return bulkSemaphore;
+        if (standardSemaphore.availablePermits() > 1) return standardSemaphore;
+        return expediteSemaphore;
+      default:
+        return standardSemaphore;
+    }
+  }
+
+  /**
+   * Actually process the message
+   *
+   * @param message     message to process
+   * @param messageType message type
+   * @param timeout     the timestamp when this message is timed out
+   * @param semaphore   the semaphore we got a permit from, must be released when done processing
+   * @param priority    the priority of the incoming message
+   */
+  private void doProcessQueueMessage(javax.jms.Message message, String messageType, long timeout, Semaphore semaphore, Message.Priority priority) {
+    //if message has timed out while waiting for scheduling, do not bother executing it
+    if (clock.millis() > timeout) {
+      //IMPORTANT: remember to release the semaphore we got a permit from
+      semaphore.release();
+      metrics.requestTimeout();
+      LOGGER.warning("Ignoring process request: timed out");
+      return;
+    }
+    try {
+      if (LOGGER.isDebug()) {
+        LOGGER.debug("<< processing queueMessage [callID=%s type=%s priority=%s]", message.getJMSCorrelationID(), messageType, priority);
+      }
       // get reply address and call lifetime
       if (MESSAGE_TYPE_SIGNAL.equals(messageType)) {
         handleSignalMessage(message, timeout);
@@ -266,6 +448,7 @@ public class JMSRequestProxy extends AbstractJMSRequestBase implements MetricAsp
       metrics.error();
       LOGGER.error(e, "Error handling JMS call");
     } finally {
+      //IMPORTANT: remember to release the semaphore we got a permit from
       semaphore.release();
       if (LOGGER.isDebug()) {
         LOGGER.debug("# end process [type=%s]", messageType);
@@ -288,9 +471,6 @@ public class JMSRequestProxy extends AbstractJMSRequestBase implements MetricAsp
       }
 
       //schedule topic message for direct processing
-      //
-      //not waiting for a semaphore for topic messages means that these will be processed even if
-      //queue messages are throttled by semaphore.
       executor.submit(() -> doProcessTopicMessage(message, messageType));
     } catch (Exception e) {
       metrics.error();
@@ -397,8 +577,8 @@ public class JMSRequestProxy extends AbstractJMSRequestBase implements MetricAsp
    * Walk through responsesinks and remove them if they are closed
    */
   private void checkCleanRequests() {
-    if (System.currentTimeMillis() - lastCleanupTimestamp.get() < 10000) return;
-    lastCleanupTimestamp.set(System.currentTimeMillis());
+    if (clock.millis() - lastCleanupTimestamp.get() < 10000) return;
+    lastCleanupTimestamp.set(clock.millis());
     for (Map.Entry<String, ServerContext> e : calls.entrySet()) {
       ServerContext sink = e.getValue();
       if (sink != null && sink.isClosed()) {
@@ -413,7 +593,7 @@ public class JMSRequestProxy extends AbstractJMSRequestBase implements MetricAsp
    *
    * @param callID  callID for the call this responsesink is attached to
    * @param replyTo destination which responses will be sent to
-   * @param timeout how long this responsesink will forward messages
+   * @param timeout how long this responsesink will forward response messages
    * @return a responsesink fulfilling this API
    */
   private ServerResponseContext setupServerContext(final String callID, Destination replyTo, long timeout, ProtocolVersion protocolVersion, MessageSerializer serializer) throws JMSException, NamingException {
@@ -469,7 +649,10 @@ public class JMSRequestProxy extends AbstractJMSRequestBase implements MetricAsp
   public static class Builder extends AbstractJMSRequestBase.BaseBuilder<Builder> {
 
     private RequestSink requestSink;
-    private int maxConcurrentCalls = DEFAULT_MAX_CONCURRENT_CALLS;
+    private int maxConcurrentCallsStandard = DEFAULT_MAX_CONCURRENT_CALLS_STANDARD;
+    private int maxConcurrentCallsBulk = DEFAULT_MAX_CONCURRENT_CALLS_BULK;
+    private int maxConcurrentCallsExpedite = DEFAULT_MAX_CONCURRENT_CALLS_EXPEDITE;
+    private int minimumStandardCapacity = DEFAULT_MINIMUM_STANDARD_CAPACITY;
     private int shutdownTimeout = DEFAULT_SHUTDOWN_TIMEOUT;
     private List<MessageSerializer> serializers = ListUtils.list();
 
@@ -482,14 +665,39 @@ public class JMSRequestProxy extends AbstractJMSRequestBase implements MetricAsp
       return new JMSRequestProxy(
           contextFactoryName, contextURL, connectionFactoryName, username, password,
           connectionProperties, queueName, topicName, priority,
-          maxConcurrentCalls, maxMessageSize, requestSink, shutdownTimeout, serializers);
+          maxConcurrentCallsStandard, maxConcurrentCallsBulk, maxConcurrentCallsExpedite,
+          maxMessageSize, requestSink, shutdownTimeout, serializers, minimumStandardCapacity);
     }
 
     //setters
 
 
-    public Builder setMaxConcurrentCalls(int maxConcurrentCalls) {
-      this.maxConcurrentCalls = maxConcurrentCalls;
+    /**
+     * @deprecated Use {@link #setMaxConcurrentCallsStandard(int)}
+     */
+    @Deprecated
+    public Builder setMaxConcurrentCalls(int maxConcurrentCallsStandard) {
+      this.maxConcurrentCallsStandard = maxConcurrentCallsStandard;
+      return this;
+    }
+
+    public Builder setMaxConcurrentCallsStandard(int maxConcurrentCallsStandard) {
+      this.maxConcurrentCallsStandard = maxConcurrentCallsStandard;
+      return this;
+    }
+
+    public Builder setMaxConcurrentCallsBulk(int maxConcurrentCallsBulk) {
+      this.maxConcurrentCallsBulk = maxConcurrentCallsBulk;
+      return this;
+    }
+
+    public Builder setMaxConcurrentCallsExpedite(int maxConcurrentCallsExpedite) {
+      this.maxConcurrentCallsExpedite = maxConcurrentCallsExpedite;
+      return this;
+    }
+
+    public Builder setMinimumStandardCapacity(int minimumStandardCapacity) {
+      this.minimumStandardCapacity = minimumStandardCapacity;
       return this;
     }
 

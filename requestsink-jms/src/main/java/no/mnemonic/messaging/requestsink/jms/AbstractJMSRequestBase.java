@@ -7,14 +7,7 @@ import no.mnemonic.commons.utilities.AppendMembers;
 import no.mnemonic.commons.utilities.AppendUtils;
 import no.mnemonic.messaging.requestsink.jms.util.JMSUtils;
 
-import javax.jms.Connection;
-import javax.jms.ConnectionFactory;
-import javax.jms.Destination;
-import javax.jms.ExceptionListener;
-import javax.jms.JMSException;
-import javax.jms.Queue;
-import javax.jms.Session;
-import javax.jms.Topic;
+import javax.jms.*;
 import javax.naming.InitialContext;
 import javax.naming.NamingException;
 import java.util.HashMap;
@@ -25,6 +18,8 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static no.mnemonic.commons.utilities.StringUtils.isBlank;
+
+import java.lang.IllegalStateException;
 
 @SuppressWarnings({"ClassReferencesSubclass"})
 public abstract class AbstractJMSRequestBase implements LifecycleAspect, AppendMembers, ExceptionListener {
@@ -169,7 +164,7 @@ public abstract class AbstractJMSRequestBase implements LifecycleAspect, AppendM
     return getOrUpdateSynchronized(session, this::createSession);
   }
 
-  private Session createSession() throws NamingException, JMSException {
+  protected Session createSession() throws NamingException, JMSException {
     LOGGER.debug("Creating session");
     return getConnection().createSession(false, Session.AUTO_ACKNOWLEDGE);
   }
@@ -269,6 +264,18 @@ public abstract class AbstractJMSRequestBase implements LifecycleAspect, AppendM
   <T> void executeAndReset(AtomicReference<T> ref, JMSUtils.JMSConsumer<T> op, String errorString) {
     T val = ref.getAndUpdate(t -> null);
     if (val != null) {
+      try {
+        op.apply(val);
+      } catch (Exception e) {
+        LOGGER.warning(e, errorString);
+      }
+    }
+  }
+
+  <K, T> void executeAndReset(Map<K, T> ref, K key, JMSUtils.JMSConsumer<T> op, String errorString) {
+    T val = ref.get(key);
+    if (val != null) {
+      ref.remove(key);
       try {
         op.apply(val);
       } catch (Exception e) {

@@ -1,6 +1,7 @@
 package no.mnemonic.messaging.requestsink.jms;
 
 import no.mnemonic.commons.container.ComponentContainer;
+import no.mnemonic.messaging.requestsink.Message.Priority;
 import no.mnemonic.messaging.requestsink.RequestContext;
 import no.mnemonic.messaging.requestsink.RequestSink;
 import no.mnemonic.messaging.requestsink.jms.serializer.DefaultJavaMessageSerializer;
@@ -16,11 +17,17 @@ import javax.naming.NamingException;
 import java.io.IOException;
 import java.util.Date;
 import java.util.List;
+import java.util.Set;
 import java.util.concurrent.*;
+import java.util.function.Consumer;
 
+import static no.mnemonic.commons.utilities.collections.ListUtils.list;
+import static no.mnemonic.commons.utilities.collections.SetUtils.set;
+import static no.mnemonic.messaging.requestsink.Message.Priority.*;
 import static no.mnemonic.messaging.requestsink.jms.util.JMSUtils.*;
-import static org.junit.Assert.*;
 import static org.junit.Assert.assertNotNull;
+import static org.junit.Assert.*;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.mockito.Mockito.*;
 
 public class JMSRequestProxyTest extends AbstractJMSRequestTest {
@@ -75,6 +82,43 @@ public class JMSRequestProxyTest extends AbstractJMSRequestTest {
     assertEquals(ProtocolVersion.V2, getProtocolVersion(eosMessage));
   }
 
+
+  @Test
+  public void testResourceIsolationForBulkAndStandardRequest() throws Exception {
+    setupEnvironment(e->e
+        .setMaxConcurrentCallsBulk(1)
+        .setMaxConcurrentCallsStandard(3)
+        .setMaxConcurrentCallsExpedite(1)
+    );
+    CountDownLatch latch = new CountDownLatch(1);
+    try {
+      //blocking queue, which registers the signals, but keeps them trapped until the latch is count down
+      BlockingQueue<TestMessage> signalQueue = getBlockingSignalQueue(latch);
+
+      signal(new TestMessage("standard1").setPriority(standard), 1000, ProtocolVersion.V2);
+      signal(new TestMessage("standard2").setPriority(standard), 1000, ProtocolVersion.V2);
+      signal(new TestMessage("bulk1").setPriority(bulk), 1000, ProtocolVersion.V2);
+      //this message is never accepted by the proxy, because it has run out of concurrent bulk calls
+      signal(new TestMessage("bulk2").setPriority(bulk), 1000, ProtocolVersion.V2);
+      signal(new TestMessage("expedite1").setPriority(expedite), 1000, ProtocolVersion.V2);
+      //this message is never accepted by the proxy, because it has run out of concurrent expedite calls
+      signal(new TestMessage("expedite2").setPriority(expedite), 1000, ProtocolVersion.V2);
+
+      //verify four received messages
+      Set<String> received = set();
+      for (int i = 0; i < 4; i++) {
+        TestMessage msg = signalQueue.poll(1000, TimeUnit.MILLISECONDS);
+        assertNotNull(msg);
+        received.add(msg.getId());
+      }
+      //no more messages received
+      assertNull(signalQueue.poll(1000, TimeUnit.MILLISECONDS));
+      //verify that we got two standard, one expedite and one bulk message through
+      assertEquals(set("bulk1", "standard1", "standard2", "expedite1"), received);
+    } finally {
+      latch.countDown();
+    }
+  }
 
   @Test
   public void testSignalSingleResponse() throws Exception {
@@ -226,14 +270,7 @@ public class JMSRequestProxyTest extends AbstractJMSRequestTest {
   //private methods
 
   private void doTestSignalResponse(int numberOfResponses) throws NamingException, JMSException, IOException, InterruptedException, ClassNotFoundException {
-    when(endpoint.signal(any(), any(), anyLong())).thenAnswer(inv -> {
-      RequestContext ctx = inv.getArgument(1);
-      for (int i = 0; i < numberOfResponses; i++) {
-        ctx.addResponse(new TestMessage("resp" + i));
-      }
-      ctx.endOfStream();
-      return ctx;
-    });
+    respondToSignal(numberOfResponses);
 
     TestMessage sentMessage = new TestMessage("test1");
     Destination responseQueue = signal(sentMessage, 1000, ProtocolVersion.V2);
@@ -249,6 +286,29 @@ public class JMSRequestProxyTest extends AbstractJMSRequestTest {
     }
     Message eosMessage = response.poll(1000, TimeUnit.MILLISECONDS);
     Assert.assertEquals(JMSRequestProxy.MESSAGE_TYPE_STREAM_CLOSED, eosMessage.getStringProperty(JMSRequestProxy.PROPERTY_MESSAGE_TYPE));
+  }
+
+  private void respondToSignal(int numberOfResponses) {
+    when(endpoint.signal(any(), any(), anyLong())).thenAnswer(inv -> {
+      RequestContext ctx = inv.getArgument(1);
+      for (int i = 0; i < numberOfResponses; i++) {
+        ctx.addResponse(new TestMessage("resp" + i));
+      }
+      ctx.endOfStream();
+      return ctx;
+    });
+  }
+
+  private BlockingQueue<TestMessage> getBlockingSignalQueue(CountDownLatch latch) {
+    BlockingQueue<TestMessage> queue = new LinkedBlockingQueue<>();
+    when(endpoint.signal(any(), any(), anyLong())).thenAnswer(i -> {
+      TestMessage signal = i.getArgument(0);
+      RequestContext ctx = i.getArgument(1);
+      queue.add(signal);
+      latch.await(1000, TimeUnit.MILLISECONDS);
+      return ctx;
+    });
+    return queue;
   }
 
   private Future<MessageAndContext> expectSignal() {
@@ -286,16 +346,28 @@ public class JMSRequestProxyTest extends AbstractJMSRequestTest {
   }
 
   private Destination signal(no.mnemonic.messaging.requestsink.Message msg, long timeout, ProtocolVersion protocolVersion)
-          throws NamingException, JMSException, IOException {
+          throws JMSException, IOException {
+    int priority = determinePriority(msg);
     Destination responseQueue = session.createTemporaryQueue();
     Message message = byteMsg(msg, JMSRequestProxy.MESSAGE_TYPE_SIGNAL, msg.getCallID());
     message.setLongProperty(JMSRequestProxy.PROPERTY_REQ_TIMEOUT, System.currentTimeMillis() + timeout);
     message.setStringProperty(JMSRequestProxy.PROTOCOL_VERSION_KEY, protocolVersion.getVersionString());
     message.setJMSReplyTo(responseQueue);
     MessageProducer producer = session.createProducer(queue);
-    producer.send(message);
+    producer.send(message, DeliveryMode.NON_PERSISTENT, priority, timeout);
     producer.close();
     return responseQueue;
+  }
+
+  private int determinePriority(no.mnemonic.messaging.requestsink.Message msg) {
+    Priority pri = msg.getPriority();
+    if (pri == null) return 4;
+    switch (pri) {
+      case standard: return 4;
+      case bulk: return 1;
+      case expedite: return 9;
+      default: return 4;
+    }
   }
 
   private void uploadAndCloseChannel(Destination channel, String callID, byte[] data, int maxSize) throws Exception {
@@ -340,24 +412,27 @@ public class JMSRequestProxyTest extends AbstractJMSRequestTest {
     container.initialize();
   }
 
-  private void setupProxy(String queueName, String topicName) {
+  @SafeVarargs
+  private final void setupProxy(String queueName, String topicName, final Consumer<JMSRequestProxy.Builder>... edits) {
     //set up request sink pointing at a vm-local topic
-    requestProxy = addConnection(JMSRequestProxy.builder())
-            .setShutdownTimeout(500)
-            .addSerializer(new DefaultJavaMessageSerializer())
-            .setQueueName(queueName)
-            .setTopicName(topicName)
-            .setRequestSink(endpoint)
-            .setMaxMessageSize(1000)
-            .build();
+    JMSRequestProxy.Builder builder = addConnection(JMSRequestProxy.builder())
+        .setShutdownTimeout(500)
+        .addSerializer(new DefaultJavaMessageSerializer())
+        .setQueueName(queueName)
+        .setTopicName(topicName)
+        .setRequestSink(endpoint)
+        .setMaxMessageSize(1000);
+    list(edits).forEach(e->e.accept(builder));
+    requestProxy = builder.build();
   }
 
-  private void setupEnvironment() throws NamingException, JMSException, InterruptedException, ExecutionException, TimeoutException {
+  @SafeVarargs
+  private final void setupEnvironment(final Consumer<JMSRequestProxy.Builder>... edits) throws NamingException, JMSException, InterruptedException, ExecutionException, TimeoutException {
     //set up a real JMS connection to a vm-local activemq
     String queueName = "dynamicQueues/" + generateCookie(10);
     String topicName = "dynamicTopics/" + generateCookie(10);
 
-    setupProxy(queueName, topicName);
+    setupProxy(queueName, topicName, edits);
     Future<Void> proxyConnected = listenForProxyConnection();
     createContainer();
 

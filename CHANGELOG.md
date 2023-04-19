@@ -3,6 +3,23 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [1.3.32] - 2023-04-19
+### Changed
+ARGUS-35360
+- Changed `JMSRequestProxy` to set up one JMS consumer per priority (`standard`, `bulk` and `expedite`),
+  using JMS filters to route the different priorities to separate executor thread pools.
+- Any spare bulk capacity will always be available to standard or expedite clients.
+- Any spare standard capacity will be available expedite clients. Bulk clients can use 
+  spare capacity as long as there are a minimum number of unused threads.
+
+### Upgrade notes
+- The change in `JMSRequestProxy` should be transparent to clients,
+  but beware that there are now new and separate configuration options 
+  for the number of threads for each priority level, which clients should configure.
+- Builder method `setMaxConcurrentCalls(int)` is deprecated.
+- Use `setMaxConcurrentCallsStandard(int)`, `setMaxConcurrentCallsBulk(int)` and `setMaxConcurrentCallsExpedite(int)` instead.
+- Method `setMinimumStandardCapacity(int)` configures how many spare threads must be available for bulk clients to be allowed to use standard capacity.   
+
 ## [1.3.31] - 2023-03-31
 ### Fixed
 ARGUS-35324

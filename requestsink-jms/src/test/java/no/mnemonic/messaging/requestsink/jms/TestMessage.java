@@ -19,10 +19,21 @@ public class TestMessage implements Message {
   public SubClass objectField1;
   public SubClass objectField2;
   public MyEnum enumField;
+  public Priority priority;
 
   public TestMessage(String id) {
     this.id = id;
     this.callID = UUID.randomUUID().toString();
+  }
+
+  @Override
+  public Priority getPriority() {
+    return priority;
+  }
+
+  public TestMessage setPriority(Priority priority) {
+    this.priority = priority;
+    return this;
   }
 
   @Override

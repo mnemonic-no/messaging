@@ -8,10 +8,7 @@ import no.mnemonic.commons.metrics.Metrics;
 import no.mnemonic.commons.metrics.MetricsGroup;
 import no.mnemonic.commons.utilities.lambda.LambdaUtils;
 import no.mnemonic.messaging.requestsink.Message;
-import no.mnemonic.messaging.requestsink.MessagingException;
-import no.mnemonic.messaging.requestsink.RequestContext;
-import no.mnemonic.messaging.requestsink.RequestListener;
-import no.mnemonic.messaging.requestsink.RequestSink;
+import no.mnemonic.messaging.requestsink.*;
 import no.mnemonic.messaging.requestsink.jms.context.ChannelUploadMessageContext;
 import no.mnemonic.messaging.requestsink.jms.context.ClientRequestContext;
 import no.mnemonic.messaging.requestsink.jms.serializer.DefaultJavaMessageSerializer;
@@ -24,11 +21,7 @@ import javax.naming.NamingException;
 import java.io.ByteArrayInputStream;
 import java.io.IOException;
 import java.lang.IllegalStateException;
-import java.util.Collections;
-import java.util.Date;
-import java.util.Map;
-import java.util.Optional;
-import java.util.Set;
+import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -193,7 +186,7 @@ public class JMSRequestSink extends AbstractJMSRequestBase implements RequestSin
       return;
     }
     sendMessage(topic, null, CHANNEL_CLOSED_REQUEST_MSG, callID,
-        MESSAGE_TYPE_STREAM_CLOSED, getPriority(), ABORT_MSG_LIFETIME_MS);
+        Message.Priority.standard, MESSAGE_TYPE_STREAM_CLOSED, ABORT_MSG_LIFETIME_MS);
   }
 
   @Override
@@ -333,7 +326,6 @@ public class JMSRequestSink extends AbstractJMSRequestBase implements RequestSin
   private void checkForFragmentationAndSignal(Message msg, RequestContext ctx, long maxWait) {
     try {
       byte[] messageBytes = serializer.serialize(msg);
-      int priority = resolveJMSPriority(msg);
       String messageType = JMSRequestProxy.MESSAGE_TYPE_SIGNAL;
       //check if we need to fragment this request message
       if (messageBytes.length > getMaxMessageSize()) {
@@ -374,7 +366,7 @@ public class JMSRequestSink extends AbstractJMSRequestBase implements RequestSin
         }
       });
       //send signal message
-      sendMessage(getOrCreateQueueProducer(), getCurrentResponseQueue(), messageBytes, msg.getCallID(), messageType, priority, maxWait);
+      sendMessage(getOrCreateQueueProducer(), getCurrentResponseQueue(), messageBytes, msg.getCallID(), msg.getPriority(), messageType, maxWait);
       metrics.request();
     } catch (IOException | JMSException | NamingException e) {
       LOGGER.warning(e, "Error in checkForFragmentationAndSignal");
@@ -385,12 +377,12 @@ public class JMSRequestSink extends AbstractJMSRequestBase implements RequestSin
   /**
    * JMS priority is defined as an integer between 1 and 9, where 4 is the default.
    *
-   * @param msg the Message to prioritize
+   * @param priority the priority of the message, or null if not set
    * @return the JMS priority. Bulk will be mapped to 1, expedite to 9.
    */
-  private int resolveJMSPriority(Message msg) {
-    if (msg.getPriority() == Message.Priority.bulk) return 1;
-    if (msg.getPriority() == Message.Priority.expedite) return 9;
+  private int resolveJMSPriority(Message.Priority priority) {
+    if (priority == Message.Priority.bulk) return 1;
+    if (priority == Message.Priority.expedite) return 9;
     return 4;
   }
 
@@ -402,7 +394,7 @@ public class JMSRequestSink extends AbstractJMSRequestBase implements RequestSin
     return ifNull(currentResponseQueue.get(), this::replaceResponseQueue);
   }
 
-  private void sendMessage(MessageProducer producer, Destination replyTo, byte[] messageBytes, String callID, String messageType, int priority, long lifeTime) {
+  private void sendMessage(MessageProducer producer, Destination replyTo, byte[] messageBytes, String callID, Message.Priority priority, String messageType, long lifeTime) {
     if (producer == null) {
       throw new IllegalArgumentException("Producer not set");
     }
@@ -411,10 +403,9 @@ public class JMSRequestSink extends AbstractJMSRequestBase implements RequestSin
       long timeout = System.currentTimeMillis() + lifeTime;
       m.setJMSReplyTo(replyTo);
       m.setJMSCorrelationID(callID);
-      m.setJMSPriority(priority);
       m.setStringProperty(PROPERTY_MESSAGE_TYPE, messageType);
       m.setLongProperty(JMSRequestProxy.PROPERTY_REQ_TIMEOUT, timeout);
-      producer.send(m, DeliveryMode.NON_PERSISTENT, getPriority(), lifeTime);
+      producer.send(m, DeliveryMode.NON_PERSISTENT, resolveJMSPriority(priority), lifeTime);
       if (LOGGER.isDebug()) {
         LOGGER.debug(">> sendMessage [callID=%s messageType=%s replyTo=%s timeout=%s]", callID, messageType, replyTo, new Date(timeout));
       }
@@ -449,6 +440,7 @@ public class JMSRequestSink extends AbstractJMSRequestBase implements RequestSin
     session.set(null);
     queue.set(null);
     topic.set(null);
+    connection.set(null);
   }
 
   private static class ResponseQueueState {

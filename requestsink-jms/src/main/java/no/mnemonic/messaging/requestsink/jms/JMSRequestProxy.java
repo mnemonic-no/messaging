@@ -130,10 +130,10 @@ public class JMSRequestProxy extends AbstractJMSRequestBase implements MetricAsp
     m.addSubMetrics("server", metrics.metrics());
     m.addSubMetrics("requests", new MetricsData()
         .addData("runningRequests", calls.size()) // Approximation as finished contexts are counted until they are cleaned up.
-        .addData("standardRequest.pending", standardSemaphore.getQueueLength())
-        .addData("standardRequest.available", standardSemaphore.availablePermits())
-        .addData("standardRequest.count", ifNotNull(requestCounters.get(Message.Priority.standard), LongAdder::longValue, 0L))
-        .addData("standardRequest.reject", ifNotNull(rejectCounters.get(Message.Priority.standard), LongAdder::longValue, 0L))
+        .addData("standardRequests.pending", standardSemaphore.getQueueLength())
+        .addData("standardRequests.available", standardSemaphore.availablePermits())
+        .addData("standardRequests.count", ifNotNull(requestCounters.get(Message.Priority.standard), LongAdder::longValue, 0L))
+        .addData("standardRequests.reject", ifNotNull(rejectCounters.get(Message.Priority.standard), LongAdder::longValue, 0L))
         .addData("bulkRequests.pending", bulkSemaphore.getQueueLength())
         .addData("bulkRequests.available", bulkSemaphore.availablePermits())
         .addData("bulkRequests.count", ifNotNull(requestCounters.get(Message.Priority.bulk), LongAdder::longValue, 0L))

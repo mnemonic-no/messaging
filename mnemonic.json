@@ -1,0 +1,10 @@
+{
+  "projectName": "mnemonic messaging",
+  "projectPage": "https://github.com/mnemonic-no/messaging",
+  "systemOwner": "joakim",
+  "repositoryOwner": "konstantin",
+  "language": "java",
+  "criticality": "critical",
+  "policyExceptions": [
+  ]
+}

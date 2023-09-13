@@ -3,6 +3,25 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [1.4.0] - 2023-09-27
+### Changed
+ARGUSUSER-6549
+- Protocol versions V1 and V2 are removed. New default protocol version is V3. 
+- New SMB protocol version V4 introduced with flow control support.
+
+### Upgrade notes
+- The protocol version V4 introduces a flow control mechanism, where the client sends acknowledgements
+back to the server to allow more responses, to avoid overrunning the client with a large resultset.
+- The flow control introduces a "segment window size" on the server side, which is acquired from for every reply sent, 
+and replenished by client acknowledgement messages. The client side is explicitly invoking `ResponseListener.responseAccepted()` to
+signal to the server-side that a response has been processed, opening up the segment window for more data. This is done automatically by the
+`RequestHandler` when response data is retrieved from the `RequestHandler`.
+- Clients directly implementing their own `RequestContext` MUST invoke `ResponseListener.responseAccepted()` to avoid starvation.
+- The client must not use V4 protocol version until the server side is upgraded to support V4.
+- Client implementations may override the method `Message.getResponseWindowSize()` to control the window size per request. The
+default window size is 50 messages.
+
+
 ## [1.3.33] - 2023-04-27
 ### Changed
 ARGUS-35360

@@ -16,4 +16,9 @@ public interface ServerContext {
    * Ongoing execution should be interrupted.
    */
   void abort();
+
+  /**
+   * Acknowledgement from client that a response has been processed at the client
+   */
+  void acknowledgeResponse();
 }

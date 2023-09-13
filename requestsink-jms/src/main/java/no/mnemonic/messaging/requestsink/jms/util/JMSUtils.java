@@ -38,6 +38,7 @@ import static no.mnemonic.commons.utilities.lambda.LambdaUtils.tryTo;
  */
 public class JMSUtils {
 
+  public static final int DEFAULT_SEGMENT_WINDOW_SIZE = 50;
   private static final Logger LOGGER = Logging.getLogger(JMSUtils.class);
 
   private JMSUtils() {}
@@ -152,6 +153,14 @@ public class JMSUtils {
     return ProtocolVersion.versionOf(message.getStringProperty(AbstractJMSRequestBase.PROTOCOL_VERSION_KEY));
   }
 
+  public static int getSegmentWindowSize(Message message) throws JMSException {
+    if (message.propertyExists(AbstractJMSRequestBase.PROPERTY_SEGMENT_WINDOW_SIZE)) {
+      return message.getIntProperty(AbstractJMSRequestBase.PROPERTY_SEGMENT_WINDOW_SIZE);
+    } else {
+      return DEFAULT_SEGMENT_WINDOW_SIZE;
+    }
+  }
+
   public static void removeMessageListenerAndClose(MessageConsumer consumer) {
     ifNotNullDo(consumer, p -> tryTo(
             () -> {
@@ -159,12 +168,6 @@ public class JMSUtils {
               p.close();
             },
             e -> LOGGER.warning(e, "Could not close consumer"))
-    );
-  }
-
-  public static void closeConsumer(MessageConsumer consumer) {
-    ifNotNullDo(consumer,
-            c -> tryTo(c::close, e -> LOGGER.warning(e, "Could not close consumer"))
     );
   }
 

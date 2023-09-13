@@ -1,8 +1,8 @@
 package no.mnemonic.messaging.requestsink.jms;
 
 import no.mnemonic.commons.container.ComponentContainer;
-import no.mnemonic.messaging.requestsink.RequestSink;
 import no.mnemonic.messaging.requestsink.RequestContext;
+import no.mnemonic.messaging.requestsink.RequestSink;
 import no.mnemonic.messaging.requestsink.jms.serializer.DefaultJavaMessageSerializer;
 import org.junit.After;
 import org.junit.Before;
@@ -51,17 +51,20 @@ public class JMSMultiResponseTest extends AbstractJMSRequestTest {
     MockitoAnnotations.initMocks(this);
 
     String queueName = "dynamicQueues/" + generateCookie(10);
+    String topicName = "dynamicTopics/" + generateCookie(10);
 
     requestSink = addConnection(JMSRequestSink.builder())
             .setSerializer(new DefaultJavaMessageSerializer())
             .setProtocolVersion(ProtocolVersion.V3)
-            .setDestinationName(queueName)
+            .setQueueName(queueName)
+            .setTopicName(topicName)
             .build();
 
     //set up request sink pointing at a vm-local topic
     requestProxy = addConnection(JMSRequestProxy.builder())
             .addSerializer(new DefaultJavaMessageSerializer())
-            .setDestinationName(queueName)
+            .setQueueName(queueName)
+            .setTopicName(topicName)
             .setRequestSink(endpoint)
             .build();
 
@@ -88,7 +91,7 @@ public class JMSMultiResponseTest extends AbstractJMSRequestTest {
       RequestContext ctx = i.getArgument(1);
       executor.submit(() -> {
         for (int i1 = 0; i1 < 100; i1++) {
-          ctx.addResponse(reply);
+          ctx.addResponse(reply, ()->{});
         }
         ctx.notifyError(new RuntimeException("test"));
         ctx.endOfStream();
@@ -114,7 +117,7 @@ public class JMSMultiResponseTest extends AbstractJMSRequestTest {
       executor.submit(() -> {
         System.out.println("Submitting responses");
         for (int i1 = 0; i1 < 100; i1++) {
-          endpointRequestContext.addResponse(reply);
+          endpointRequestContext.addResponse(reply, ()->{});
         }
         endpointRequestContext.endOfStream();
         System.out.println("Sent EOS");
@@ -131,7 +134,7 @@ public class JMSMultiResponseTest extends AbstractJMSRequestTest {
 
   private void mockEndpoint() {
     List<TestMessage> responses = new ArrayList<>();
-    when(requestContext.addResponse(any())).thenAnswer(i -> {
+    when(requestContext.addResponse(any(), any())).thenAnswer(i -> {
       responses.add(i.getArgument(0));
       return true;
     });

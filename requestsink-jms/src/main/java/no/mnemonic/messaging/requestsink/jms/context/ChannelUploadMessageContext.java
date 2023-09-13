@@ -4,12 +4,17 @@ import no.mnemonic.commons.logging.Logger;
 import no.mnemonic.commons.logging.Logging;
 import no.mnemonic.messaging.requestsink.RequestContext;
 import no.mnemonic.messaging.requestsink.RequestListener;
+import no.mnemonic.messaging.requestsink.ResponseListener;
 import no.mnemonic.messaging.requestsink.jms.JMSRequestProxy;
 import no.mnemonic.messaging.requestsink.jms.ProtocolVersion;
 import no.mnemonic.messaging.requestsink.jms.util.ClientMetrics;
 import no.mnemonic.messaging.requestsink.jms.util.FragmentConsumer;
 
-import javax.jms.*;
+import javax.jms.BytesMessage;
+import javax.jms.Destination;
+import javax.jms.JMSException;
+import javax.jms.MessageProducer;
+import javax.jms.Session;
 import java.io.IOException;
 import java.io.InputStream;
 import java.time.Clock;
@@ -97,6 +102,11 @@ public class ChannelUploadMessageContext implements RequestContext {
   @Override
   public boolean addResponse(no.mnemonic.messaging.requestsink.Message msg) {
     return realContext.addResponse(msg);
+  }
+
+  @Override
+  public boolean addResponse(no.mnemonic.messaging.requestsink.Message msg, ResponseListener responseListener) {
+    return realContext.addResponse(msg, responseListener);
   }
 
   @Override

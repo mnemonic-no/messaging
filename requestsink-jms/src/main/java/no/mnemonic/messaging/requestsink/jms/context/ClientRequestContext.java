@@ -4,6 +4,7 @@ import no.mnemonic.commons.logging.Logger;
 import no.mnemonic.commons.logging.Logging;
 import no.mnemonic.commons.utilities.ClassLoaderContext;
 import no.mnemonic.messaging.requestsink.RequestContext;
+import no.mnemonic.messaging.requestsink.ResponseListener;
 import no.mnemonic.messaging.requestsink.jms.AbstractJMSRequestBase;
 import no.mnemonic.messaging.requestsink.jms.ExceptionMessage;
 import no.mnemonic.messaging.requestsink.jms.serializer.MessageSerializer;
@@ -62,8 +63,13 @@ public class ClientRequestContext {
   private final Map<String, Collection<MessageFragment>> fragments = new ConcurrentHashMap<>();
   private final Map<String, FragmentEOSState> fragmentedState = new ConcurrentHashMap<>();
 
-  public ClientRequestContext(String callID, Session session, ClientMetrics metrics, ClassLoader classLoader,
-                       RequestContext requestContext, Runnable closeListener, MessageSerializer serializer) {
+  public ClientRequestContext(String callID,
+                              Session session,
+                              ClientMetrics metrics,
+                              ClassLoader classLoader,
+                              RequestContext requestContext,
+                              Runnable closeListener,
+                              MessageSerializer serializer) {
     this.serializer = assertNotNull(serializer, "serializer not set");
     this.closeListener = assertNotNull(closeListener, "closeListener not set");
     this.classLoader = assertNotNull(classLoader, "classLoader not set");
@@ -86,7 +92,7 @@ public class ClientRequestContext {
     requestContext.notifyClose();
   }
 
-  boolean addFragment(MessageFragment messageFragment) {
+  boolean addFragment(MessageFragment messageFragment, ResponseListener responseListener) {
     if (messageFragment == null) {
       LOGGER.warning("Fragment was null");
       return false;
@@ -96,7 +102,7 @@ public class ClientRequestContext {
             .add(messageFragment);
     //if this fragmented response has already received EOS, try to reassemble again
     FragmentEOSState state = fragmentedState.get(messageFragment.getResponseID());
-    if (state != null && reassemble(messageFragment.getResponseID(), state.totalFragments, state.checksum)) {
+    if (state != null && reassemble(messageFragment.getResponseID(), state.totalFragments, state.checksum, responseListener)) {
       return true;
     }
     //notify requestcontext for each fragment to avoid long fragment stream causing timeout
@@ -104,7 +110,7 @@ public class ClientRequestContext {
     return true;
   }
 
-  boolean reassemble(String responseID, int totalFragments, String checksum) {
+  boolean reassemble(String responseID, int totalFragments, String checksum, ResponseListener responseListener) {
     try {
       Collection<MessageFragment> responseFragments = this.fragments.get(responseID);
       if (isEmpty(responseFragments)) {
@@ -123,7 +129,9 @@ public class ClientRequestContext {
         LOGGER.debug("# addReassembledResponse [responseID=%s]", responseID);
       }
       this.fragments.remove(responseID);
-      return requestContext.addResponse(serializer.deserialize(reassembledData, classLoader));
+      return requestContext.addResponse(
+              serializer.deserialize(reassembledData, classLoader), responseListener
+      );
     } catch (JMSException | IOException e) {
       LOGGER.warning(e, "Error unpacking fragments");
       requestContext.notifyError(e);
@@ -132,7 +140,7 @@ public class ClientRequestContext {
   }
 
   @SuppressWarnings("UnusedReturnValue")
-  public boolean handleResponse(javax.jms.Message message) throws JMSException {
+  public boolean handleResponse(javax.jms.Message message, ResponseCallback responseCallback) throws JMSException {
     if (message == null) {
       metrics.incompatibleMessage();
       LOGGER.warning("No message");
@@ -164,11 +172,11 @@ public class ClientRequestContext {
     if (responseType == null) responseType = "N/A";
     switch (responseType) {
       case MESSAGE_TYPE_SIGNAL_RESPONSE:
-        return handleSignalResponse(message);
+        return handleSignalResponse(message, responseCallback::responseAccepted);
       case MESSAGE_TYPE_SIGNAL_FRAGMENT:
-        return handleSignalResponseFragment(message);
+        return handleSignalResponseFragment(message, responseCallback::responseAccepted);
       case MESSAGE_TYPE_END_OF_FRAGMENTED_MESSAGE:
-        return handleEndOfFragmentedResponse(message);
+        return handleEndOfFragmentedResponse(message, responseCallback::responseAccepted);
       case MESSAGE_TYPE_CHANNEL_SETUP:
         return handleChannelSetup(message);
       case MESSAGE_TYPE_EXCEPTION:
@@ -186,7 +194,7 @@ public class ClientRequestContext {
 
   //private methods
 
-  private boolean handleSignalResponseFragment(javax.jms.Message fragmentSignal) throws JMSException {
+  private boolean handleSignalResponseFragment(javax.jms.Message fragmentSignal, ResponseListener responseListener) throws JMSException {
     if (fragmentSignal == null) throw new IllegalArgumentException("fragment was null");
     if (!fragmentSignal.propertyExists(AbstractJMSRequestBase.PROPERTY_RESPONSE_ID)) {
       metrics.incompatibleMessage();
@@ -205,10 +213,10 @@ public class ClientRequestContext {
               messageFragment.getCallID(), messageFragment.getResponseID(),
               messageFragment.getIdx(), messageFragment.getData().length);
     }
-    return addFragment(messageFragment);
+    return addFragment(messageFragment, responseListener);
   }
 
-  private boolean handleEndOfFragmentedResponse(Message endMessage) throws JMSException {
+  private boolean handleEndOfFragmentedResponse(Message endMessage, ResponseListener responseListener) throws JMSException {
     if (endMessage == null) throw new IllegalArgumentException("end-message was null");
     if (!endMessage.propertyExists(AbstractJMSRequestBase.PROPERTY_RESPONSE_ID)) {
       metrics.incompatibleMessage();
@@ -233,16 +241,19 @@ public class ClientRequestContext {
               callID, responseID, totalFragments);
     }
     metrics.fragmentedReplyCompleted();
-    return reassemble(responseID, totalFragments, checksum);
+    return reassemble(responseID, totalFragments, checksum, responseListener);
   }
 
-  private boolean handleSignalResponse(Message response) throws JMSException {
+  private boolean handleSignalResponse(Message response, ResponseListener responseListener) throws JMSException {
     if (LOGGER.isDebug()) {
       LOGGER.debug("<< addResponse [callID=%s]", response.getJMSCorrelationID());
     }
     try (ClassLoaderContext ignored = ClassLoaderContext.of(classLoader)) {
       metrics.reply();
-      return requestContext.addResponse(serializer.deserialize(extractMessageBytes(response), classLoader));
+      return requestContext.addResponse(
+              serializer.deserialize(extractMessageBytes(response), classLoader),
+              responseListener
+      );
     } catch (IOException e) {
       LOGGER.error(e, "Error deserializing response");
       requestContext.notifyError(e);
@@ -317,5 +328,9 @@ public class ClientRequestContext {
 
   static void setClock(Clock clock) {
     ClientRequestContext.clock = clock;
+  }
+
+  public interface ResponseCallback {
+    void responseAccepted();
   }
 }

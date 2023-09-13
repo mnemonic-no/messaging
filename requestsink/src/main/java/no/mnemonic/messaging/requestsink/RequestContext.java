@@ -54,8 +54,23 @@ public interface RequestContext {
    *
    * @param msg the response message to add
    * @return true if the response message was accepted, false if it was discarded
+   * @deprecated Use {@link #addResponse(Message, ResponseListener)}
    */
+  @Deprecated
   boolean addResponse(Message msg);
+
+  /**
+   * Add a signal response to give back to requesting client, with a acknoeldgement listener to notify when the response
+   * has been accepted.
+   *
+   * When using this method, clients MUST invoke {@link ResponseListener#responseAccepted()} when the response has been handled,
+   * else the sender may starve the client once the sender has sent responses enough to fill the agreed client buffer.
+   *
+   * @param msg the response message to add
+   * @param responseListener listener to acknowledge to when the response has been accepted.
+   * @return true if the response message was accepted, false if it was discarded
+   */
+  boolean addResponse(Message msg, ResponseListener responseListener);
 
   /**
    * Signal end of stream (the current context holder will not provide any more data).

@@ -4,17 +4,23 @@ import no.mnemonic.commons.container.ComponentContainer;
 import no.mnemonic.messaging.requestsink.Message;
 import no.mnemonic.messaging.requestsink.RequestContext;
 import no.mnemonic.messaging.requestsink.RequestSink;
+import no.mnemonic.messaging.requestsink.ResponseListener;
 import org.junit.Test;
 
 import java.util.ArrayList;
 import java.util.List;
-import java.util.concurrent.*;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.Semaphore;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 
 import static no.mnemonic.commons.utilities.lambda.LambdaUtils.tryTo;
 import static org.junit.Assert.*;
-import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.ArgumentMatchers.anyLong;
-import static org.mockito.ArgumentMatchers.isA;
+import static org.mockito.ArgumentMatchers.*;
 import static org.mockito.Mockito.*;
 
 public abstract class AbstractJMSRequestSinkProxyTest extends AbstractJMSRequestTest {
@@ -24,6 +30,8 @@ public abstract class AbstractJMSRequestSinkProxyTest extends AbstractJMSRequest
   protected ComponentContainer clientContainer, serverContainer;
   protected RequestSink endpoint;
   protected RequestContext requestContext;
+  protected ResponseListener clientResponseListener;
+  protected ResponseListener serverResponseListener;
   protected String queueName;
   protected String topicName;
 
@@ -44,7 +52,7 @@ public abstract class AbstractJMSRequestSinkProxyTest extends AbstractJMSRequest
     //wait for reply
     assertEquals(1, response.get(1000, TimeUnit.MILLISECONDS).size());
     //verify that client was given resultsby request sink, and that context was closed
-    verify(requestContext, times(1)).addResponse(any());
+    verify(requestContext, times(1)).addResponse(any(), any());
   }
 
   @Test
@@ -79,7 +87,7 @@ public abstract class AbstractJMSRequestSinkProxyTest extends AbstractJMSRequest
     when(endpoint.signal(isA(TestMessage.class), isA(RequestContext.class), anyLong())).thenAnswer(i -> {
       requestReceived.complete(i.getArgument(0));
       RequestContext ctx = i.getArgument(1);
-      ctx.addResponse(serverResponse.get(10000, TimeUnit.MILLISECONDS));
+      ctx.addResponse(serverResponse.get(10000, TimeUnit.MILLISECONDS), ()->{});
       ctx.endOfStream();
       System.out.println("Finished request");
       return ctx;
@@ -114,7 +122,7 @@ public abstract class AbstractJMSRequestSinkProxyTest extends AbstractJMSRequest
     requestSink = addConnection(JMSRequestSink.builder())
             .setQueueName(queueName)
             //set protocol V16 to enable channel upload
-            .setProtocolVersion(ProtocolVersion.V1)
+            .setProtocolVersion(ProtocolVersion.V3)
             //set max message size to 100 bytes, to force channel upload with message fragments
             .setMaxMessageSize(100)
             .build();
@@ -150,7 +158,7 @@ public abstract class AbstractJMSRequestSinkProxyTest extends AbstractJMSRequest
     //wait for replies
     assertEquals(3, response.get(1000, TimeUnit.MILLISECONDS).size());
     //verify that client was given resultsby request sink, and that context was closed
-    verify(requestContext, times(3)).addResponse(isA(Message.class));
+    verify(requestContext, times(3)).addResponse(isA(Message.class), any());
   }
 
   @Test
@@ -169,7 +177,7 @@ public abstract class AbstractJMSRequestSinkProxyTest extends AbstractJMSRequest
   }
 
   @Test
-  public void testSignalSequence() throws InterruptedException, TimeoutException, ExecutionException {
+  public void testSignalSequence() throws InterruptedException {
     serverContainer.initialize();
     clientContainer.initialize();
     Semaphore sem = new Semaphore(0);
@@ -179,7 +187,7 @@ public abstract class AbstractJMSRequestSinkProxyTest extends AbstractJMSRequest
     }).when(requestContext).endOfStream();
     when(endpoint.signal(isA(TestMessage.class), isA(RequestContext.class), anyLong())).thenAnswer(i -> {
       RequestContext ctx = (RequestContext) i.getArguments()[1];
-      ctx.addResponse(new TestMessage("reploy"));
+      ctx.addResponse(new TestMessage("reploy"), ()->{});
       ctx.endOfStream();
       return ctx;
     });
@@ -188,14 +196,14 @@ public abstract class AbstractJMSRequestSinkProxyTest extends AbstractJMSRequest
     requestSink.signal(new TestMessage("request"), requestContext, 10000);
     //verify that reply was received and context closed
     assertTrue(sem.tryAcquire(1000, TimeUnit.MILLISECONDS));
-    verify(requestContext, times(1)).addResponse(isA(Message.class));
+    verify(requestContext, times(1)).addResponse(isA(Message.class), any());
     verify(endpoint, times(1)).signal(any(), any(), anyLong());
 
     //do second request
     requestSink.signal(new TestMessage("request"), requestContext, 10000);
     //verify that reply was received and context closed
     assertTrue(sem.tryAcquire(1000, TimeUnit.MILLISECONDS));
-    verify(requestContext, times(2)).addResponse(isA(Message.class));
+    verify(requestContext, times(2)).addResponse(isA(Message.class), any());
     verify(endpoint, times(2)).signal(any(), any(), anyLong());
   }
 
@@ -208,7 +216,7 @@ public abstract class AbstractJMSRequestSinkProxyTest extends AbstractJMSRequest
       RequestContext ctx = (RequestContext) i.getArguments()[1];
       System.out.println(String.format("Received request, responding with %d replies", replies.length));
       for (T reply : replies) {
-        ctx.addResponse(reply);
+        ctx.addResponse(reply, serverResponseListener);
       }
       System.out.println("Closing");
       ctx.endOfStream();
@@ -221,7 +229,7 @@ public abstract class AbstractJMSRequestSinkProxyTest extends AbstractJMSRequest
   <T extends Message> Future<List<T>> mockReceiveResponse() {
     List<T> responses = new ArrayList<>();
     CompletableFuture<List<T>> responseFuture = new CompletableFuture<>();
-    when(requestContext.addResponse(any())).thenAnswer(i -> {
+    when(requestContext.addResponse(any(), any())).thenAnswer(i -> {
       if (responseFuture.isDone()) throw new IllegalStateException("Received response to closed client");
       responses.add(i.getArgument(0));
       return true;

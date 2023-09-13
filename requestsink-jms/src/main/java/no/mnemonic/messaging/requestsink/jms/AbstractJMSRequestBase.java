@@ -7,27 +7,32 @@ import no.mnemonic.commons.utilities.AppendMembers;
 import no.mnemonic.commons.utilities.AppendUtils;
 import no.mnemonic.messaging.requestsink.jms.util.JMSUtils;
 
-import javax.jms.*;
+import javax.jms.Connection;
+import javax.jms.ConnectionFactory;
+import javax.jms.Destination;
+import javax.jms.ExceptionListener;
+import javax.jms.JMSException;
+import javax.jms.MessageConsumer;
+import javax.jms.Queue;
+import javax.jms.Session;
+import javax.jms.Topic;
 import javax.naming.InitialContext;
 import javax.naming.NamingException;
 import java.util.HashMap;
 import java.util.Hashtable;
 import java.util.Map;
-import java.util.Optional;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static no.mnemonic.commons.utilities.StringUtils.isBlank;
-
-import java.lang.IllegalStateException;
 
 @SuppressWarnings({"ClassReferencesSubclass"})
 public abstract class AbstractJMSRequestBase implements LifecycleAspect, AppendMembers, ExceptionListener {
 
   private static final Logger LOGGER = Logging.getLogger(AbstractJMSRequestBase.class);
 
-  static final int DEFAULT_MAX_MAX_MESSAGE_SIZE = 100000;
-  static final int DEFAULT_PRIORITY = 1;
+  public static final int DEFAULT_MAX_MAX_MESSAGE_SIZE = 100000;
+  public static final int DEFAULT_PRIORITY = 1;
 
   public static final String SERIALIZER_KEY = "ArgusMessagingSerializer";
   public static final String PROTOCOL_VERSION_KEY = "ArgusMessagingProtocol";
@@ -40,8 +45,10 @@ public abstract class AbstractJMSRequestBase implements LifecycleAspect, AppendM
   public static final String MESSAGE_TYPE_CHANNEL_SETUP = "JMSChannelSetup";
   public static final String MESSAGE_TYPE_SIGNAL_FRAGMENT = "JMSSignalFragment";
   public static final String MESSAGE_TYPE_SIGNAL_RESPONSE = "JMSSignalResponse";
+  public static final String MESSAGE_TYPE_CLIENT_RESPONSE_ACKNOWLEDGEMENT = "JMSClientResponseAcknowledgement";
   public static final String MESSAGE_TYPE_EXTEND_WAIT = "JMSExtendWait";
   public static final String PROPERTY_REQ_TIMEOUT = "RequestTimeout";
+  public static final String PROPERTY_SEGMENT_WINDOW_SIZE = "SegmentWindowSize";
   public static final String PROPERTY_FRAGMENTS_TOTAL = "TotalFragments";
   public static final String PROPERTY_FRAGMENTS_IDX = "FragmentIndex";
   public static final String PROPERTY_RESPONSE_ID = "ResponseID";
@@ -153,10 +160,9 @@ public abstract class AbstractJMSRequestBase implements LifecycleAspect, AppendM
     return getOrUpdateSynchronized(queue, this::lookupQueue);
   }
 
-  Optional<Topic> getTopic() throws JMSException, NamingException {
+  Topic getTopic() throws JMSException, NamingException {
     if (isClosed()) throw new IllegalStateException(ERROR_CLOSED);
-    if (isBlank(topicName)) return Optional.empty();
-    return Optional.of(getOrUpdateSynchronized(topic, this::lookupTopic));
+    return getOrUpdateSynchronized(topic, this::lookupTopic);
   }
 
   Session getSession() throws JMSException, NamingException {
@@ -272,15 +278,12 @@ public abstract class AbstractJMSRequestBase implements LifecycleAspect, AppendM
     }
   }
 
-  <K, T> void executeAndReset(Map<K, T> ref, K key, JMSUtils.JMSConsumer<T> op, String errorString) {
-    T val = ref.get(key);
-    if (val != null) {
-      ref.remove(key);
-      try {
-        op.apply(val);
-      } catch (Exception e) {
-        LOGGER.warning(e, errorString);
-      }
+  static void closeConsumer(MessageConsumer op) {
+    if (op == null) return;
+    try {
+      op.close();
+    } catch (Exception e) {
+      LOGGER.warning(e, "Error closing consumer");
     }
   }
 

@@ -120,6 +120,7 @@ public class JMSFailoverTest {
     return JMSRequestProxy.builder()
             .addSerializer(new DefaultJavaMessageSerializer())
             .setDestinationName("dynamicQueues/testqueue")
+            .setTopicName("dynamicTopics/testtopic")
             .setRequestSink(endpoint);
   }
 

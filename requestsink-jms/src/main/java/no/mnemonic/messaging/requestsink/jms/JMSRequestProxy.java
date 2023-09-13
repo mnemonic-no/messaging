@@ -4,7 +4,12 @@ import no.mnemonic.commons.component.Dependency;
 import no.mnemonic.commons.logging.LocalLoggingContext;
 import no.mnemonic.commons.logging.Logger;
 import no.mnemonic.commons.logging.Logging;
-import no.mnemonic.commons.metrics.*;
+import no.mnemonic.commons.metrics.MetricAspect;
+import no.mnemonic.commons.metrics.MetricException;
+import no.mnemonic.commons.metrics.Metrics;
+import no.mnemonic.commons.metrics.MetricsData;
+import no.mnemonic.commons.metrics.MetricsGroup;
+import no.mnemonic.commons.metrics.TimerContext;
 import no.mnemonic.commons.utilities.ClassLoaderContext;
 import no.mnemonic.commons.utilities.collections.CollectionUtils;
 import no.mnemonic.commons.utilities.collections.ListUtils;
@@ -19,13 +24,34 @@ import no.mnemonic.messaging.requestsink.jms.serializer.MessageSerializer;
 import no.mnemonic.messaging.requestsink.jms.util.ServerMetrics;
 import no.mnemonic.messaging.requestsink.jms.util.ThreadFactoryBuilder;
 
-import javax.jms.*;
+import javax.jms.Connection;
+import javax.jms.DeliveryMode;
+import javax.jms.Destination;
+import javax.jms.JMSException;
+import javax.jms.MessageConsumer;
+import javax.jms.MessageProducer;
+import javax.jms.Session;
+import javax.jms.TemporaryQueue;
 import javax.naming.NamingException;
 import java.io.IOException;
-import java.lang.IllegalStateException;
 import java.time.Clock;
-import java.util.*;
-import java.util.concurrent.*;
+import java.util.ArrayList;
+import java.util.Collection;
+import java.util.Collections;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Map;
+import java.util.Objects;
+import java.util.Set;
+import java.util.concurrent.BlockingQueue;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentMap;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.RejectedExecutionException;
+import java.util.concurrent.Semaphore;
+import java.util.concurrent.SynchronousQueue;
+import java.util.concurrent.ThreadPoolExecutor;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.atomic.LongAdder;
@@ -82,10 +108,11 @@ public class JMSRequestProxy extends AbstractJMSRequestBase implements MetricAsp
 
   private final Set<JMSRequestProxyConnectionListener> connectionListeners = new HashSet<>();
   private final Set<Session> consumerSessions = Collections.synchronizedSet(new HashSet<>());
+  private final Set<MessageConsumer> allConsumers = Collections.synchronizedSet(new HashSet<>());
   private final Map<String, MessageSerializer> serializers;
   private final AtomicReference<MessageProducer> replyProducer = new AtomicReference<>();
+  private final AtomicReference<Destination> acknowledgeTo = new AtomicReference<>();
   private final ConcurrentMap<Message.Priority, MessageConsumer> queueConsumers = new ConcurrentHashMap<>();
-  private final AtomicReference<MessageConsumer> topicConsumer = new AtomicReference<>();
   private final int minimumStandardCapacity;
 
 
@@ -100,6 +127,8 @@ public class JMSRequestProxy extends AbstractJMSRequestBase implements MetricAsp
         queueName, topicName,
         priority, maxMessageSize);
 
+    Objects.requireNonNull(topicName, "topicName not set");
+    Objects.requireNonNull(queueName, "queueName not set");
     if (maxConcurrentCallsStandard < 1) throw new IllegalArgumentException("maxConcurrentCallsStandard must be at least 1");
     if (maxConcurrentCallsBulk < 1) throw new IllegalArgumentException("maxConcurrentCallsBulk must be at least 1");
     if (maxConcurrentCallsExpedite < 1) throw new IllegalArgumentException("maxConcurrentCallsExpedite must be at least 1");
@@ -181,7 +210,6 @@ public class JMSRequestProxy extends AbstractJMSRequestBase implements MetricAsp
   }
 
 
-
   private void stopConsumer(Message.Priority priority) {
     ifNotNull(
         queueConsumers.get(priority),
@@ -213,16 +241,53 @@ public class JMSRequestProxy extends AbstractJMSRequestBase implements MetricAsp
       createConsumer(Message.Priority.bulk, "JMSPriority < 4");
       createConsumer(Message.Priority.expedite, "JMSPriority > 6");
 
-      Optional<Topic> optionalTopic = getTopic();
-      if (optionalTopic.isPresent()) {
-        //noinspection resource
-        MessageConsumer tc = getSession().createConsumer(optionalTopic.get());
-        tc.setMessageListener(this::processTopicMessage);
-      }
+      //set up server acknowledgement queue, to receive acknowledgement from client
+      TemporaryQueue responseAcknowledgementQueue = getSession().createTemporaryQueue();
+      MessageConsumer responseAcknowledgementConsumer = getSession().createConsumer(responseAcknowledgementQueue);
+      responseAcknowledgementConsumer.setMessageListener(this::handleResponseAcknowledgement);
+      allConsumers.add(responseAcknowledgementConsumer);
+      acknowledgeTo.set(responseAcknowledgementQueue);
 
+      //set up topic to receive broadcasts
+      MessageConsumer tc = getSession().createConsumer(getTopic());
+      tc.setMessageListener(this::processTopicMessage);
+      allConsumers.add(tc);
+
+      //notify any connection listeners that setup is done
       set(connectionListeners).forEach(l -> l.connected(this));
       LOGGER.info("Connected");
       metrics.reconnected();
+    }
+  }
+
+  private void handleResponseAcknowledgement(javax.jms.Message message) {
+    if (LOGGER.isDebug()) {
+      LOGGER.debug("<< handleResponseAcknowledgement");
+    }
+    try {
+      if (!isCompatible(message)) {
+        LOGGER.warning("Ignoring acknowledgement message of incompatible version: " + message);
+        metrics.incompatibleMessage();
+        return;
+      }
+      String messageType = message.getStringProperty(PROPERTY_MESSAGE_TYPE);
+      if (LOGGER.isDebug()) {
+        LOGGER.debug("<< process acknowledgement [callID=%s type=%s]", message.getJMSCorrelationID(), messageType);
+      }
+      if (MESSAGE_TYPE_CLIENT_RESPONSE_ACKNOWLEDGEMENT.equals(messageType)) {
+        ServerContext serverContext = calls.get(message.getJMSCorrelationID());
+        if (serverContext == null) {
+          LOGGER.info("Received acknowledgement for unknown callID : " + message.getJMSCorrelationID());
+          return;
+        }
+        serverContext.acknowledgeResponse();
+      } else {
+        LOGGER.warning("Received unexpected message on acknowledgement queue: %s", messageType);
+      }
+
+    } catch (Exception e) {
+      metrics.error();
+      LOGGER.warning(e, "Error handling message");
     }
   }
 
@@ -235,6 +300,7 @@ public class JMSRequestProxy extends AbstractJMSRequestBase implements MetricAsp
       }
     });
     queueConsumers.put(priority, consumer);
+    allConsumers.add(consumer);
   }
 
   private Session createConsumerSession() throws NamingException, JMSException {
@@ -247,14 +313,14 @@ public class JMSRequestProxy extends AbstractJMSRequestBase implements MetricAsp
     try {
       // try to nicely shut down all resources
       executeAndReset(replyProducer, MessageProducer::close, "Error closing reply producer");
-      executeAndReset(queueConsumers, Message.Priority.standard, MessageConsumer::close, "Error closing queue consumer");
-      executeAndReset(queueConsumers, Message.Priority.bulk, MessageConsumer::close, "Error closing queue consumer");
-      executeAndReset(queueConsumers, Message.Priority.expedite, MessageConsumer::close, "Error closing queue consumer");
-      executeAndReset(topicConsumer, MessageConsumer::close, "Error closing topic consumer");
+      for (MessageConsumer consumer : allConsumers) {
+        closeConsumer(consumer);
+      }
       executeAndReset(session, Session::close, "Error closing session");
       for (Session s : consumerSessions) {
         tryTo(s::close);
       }
+      allConsumers.clear();
       consumerSessions.clear();
       executeAndReset(connection, Connection::close, "Error closing connection");
     } finally {
@@ -264,8 +330,8 @@ public class JMSRequestProxy extends AbstractJMSRequestBase implements MetricAsp
 
   private synchronized void resetState() {
     queueConsumers.clear();
+    allConsumers.clear();
     replyProducer.set(null);
-    topicConsumer.set(null);
     session.set(null);
     consumerSessions.clear();
     queue.set(null);
@@ -376,7 +442,7 @@ public class JMSRequestProxy extends AbstractJMSRequestBase implements MetricAsp
       requestCounters.computeIfAbsent(priority, pri -> new LongAdder()).increment();
       //NOTE: semaphore is acquired, so must be released by executor thread
       executor.submit(() -> {
-        try (LocalLoggingContext ctx = LocalLoggingContext.create().using(LOG_KEY_PRIORITY, priority.name())) {
+        try (LocalLoggingContext ignored = LocalLoggingContext.create().using(LOG_KEY_PRIORITY, priority.name())) {
           doProcessQueueMessage(message, messageType, timeout, semaphore, priority);
         }
       });
@@ -510,7 +576,12 @@ public class JMSRequestProxy extends AbstractJMSRequestBase implements MetricAsp
       LOGGER.debug("<< handleSignal [callID=%s]", message.getJMSCorrelationID());
     }
     // create a response context to handle response messages
-    ServerResponseContext ctx = setupServerContext(callID, responseDestination, timeout, getProtocolVersion(message), serializer);
+    ServerResponseContext ctx = setupServerContext(callID,
+        responseDestination,
+        timeout,
+        getSegmentWindowSize(message),
+        getProtocolVersion(message),
+        serializer);
     try {
       ctx.handle(serializer.deserialize(extractMessageBytes(message), Thread.currentThread().getContextClassLoader()));
     } catch (IOException e) {
@@ -533,7 +604,12 @@ public class JMSRequestProxy extends AbstractJMSRequestBase implements MetricAsp
     if (LOGGER.isDebug()) {
       LOGGER.debug("<< channelRequest [callID=%s]", message.getJMSCorrelationID());
     }
-    setupChannel(callID, responseDestination, timeout, getProtocolVersion(message), serializer);
+    setupChannel(callID,
+        responseDestination,
+        timeout,
+        getSegmentWindowSize(message),
+        getProtocolVersion(message),
+        serializer);
   }
 
   private void handleClientClosedStream(javax.jms.Message message) throws JMSException {
@@ -554,9 +630,29 @@ public class JMSRequestProxy extends AbstractJMSRequestBase implements MetricAsp
     serverContext.abort();
   }
 
-  private void handleChannelUploadCompleted(String callID, byte[] data, Destination replyTo, long timeout, ProtocolVersion protocolVersion, MessageSerializer serializer) throws IOException, JMSException, NamingException {
+  private void handleChannelUploadCompleted(String callID,
+                                            byte[] data,
+                                            Destination replyTo,
+                                            long timeout,
+                                            int segmentWindowSize,
+                                            ProtocolVersion protocolVersion,
+                                            MessageSerializer serializer
+  ) throws IOException, JMSException, NamingException {
     // create a response context to handle response messages
-    ServerResponseContext r = new ServerResponseContext(callID, getSession(), replyProducer.get(), replyTo, timeout, protocolVersion, getMaxMessageSize(), metrics, serializer, requestSink);
+    ServerResponseContext r = ServerResponseContext.builder()
+        .setCallID(callID)
+        .setSession(getSession())
+        .setReplyProducer(replyProducer.get())
+        .setReplyTo(replyTo)
+        .setAcknowledgementTo(acknowledgeTo.get())
+        .setTimeout(timeout)
+        .setProtocolVersion(protocolVersion)
+        .setMaxMessageSize(getMaxMessageSize())
+        .setSegmentWindowSize(segmentWindowSize)
+        .setMetrics(metrics)
+        .setSerializer(serializer)
+        .setRequestSink(requestSink)
+        .build();
     // overwrite channel upload context with a server response context
     calls.put(callID, r);
     //send uploaded signal to requestSink
@@ -596,23 +692,48 @@ public class JMSRequestProxy extends AbstractJMSRequestBase implements MetricAsp
    * @param timeout how long this responsesink will forward response messages
    * @return a responsesink fulfilling this API
    */
-  private ServerResponseContext setupServerContext(final String callID, Destination replyTo, long timeout, ProtocolVersion protocolVersion, MessageSerializer serializer) throws JMSException, NamingException {
+  private ServerResponseContext setupServerContext(
+      final String callID,
+      Destination replyTo,
+      long timeout,
+      int segmentWindowSize,
+      ProtocolVersion protocolVersion,
+      MessageSerializer serializer
+  ) throws JMSException, NamingException {
     ServerContext ctx = calls.get(callID);
     if (ctx != null) return (ServerResponseContext) ctx;
     //create new response context
-    ServerResponseContext context = new ServerResponseContext(callID, getSession(), replyProducer.get(), replyTo, timeout, protocolVersion, getMaxMessageSize(), metrics, serializer, requestSink);
+    ServerResponseContext context = ServerResponseContext.builder()
+        .setCallID(callID)
+        .setSession(getSession())
+        .setReplyProducer(replyProducer.get())
+        .setReplyTo(replyTo)
+        .setAcknowledgementTo(acknowledgeTo.get())
+        .setTimeout(timeout)
+        .setProtocolVersion(protocolVersion)
+        .setMaxMessageSize(getMaxMessageSize())
+        .setSegmentWindowSize(segmentWindowSize)
+        .setMetrics(metrics)
+        .setSerializer(serializer)
+        .setRequestSink(requestSink)
+        .build();
     // register this responsesink
     calls.put(callID, context);
     // and return it
     return context;
   }
 
-  private void setupChannel(String callID, Destination replyTo, long timeout, ProtocolVersion protocolVersion, MessageSerializer serializer) throws NamingException, JMSException {
+  private void setupChannel(String callID,
+                            Destination replyTo,
+                            long timeout,
+                            int segmentWindowSize,
+                            ProtocolVersion protocolVersion,
+                            MessageSerializer serializer) throws NamingException, JMSException {
     metrics.fragmentedUploadRequested();
     ServerContext ctx = calls.get(callID);
     if (ctx != null) return;
     //create new upload context
-    ServerChannelUploadContext context = new ServerChannelUploadContext(callID, getSession(), replyTo, timeout, protocolVersion, metrics, serializer);
+    ServerChannelUploadContext context = new ServerChannelUploadContext(callID, getSession(), replyTo, timeout, protocolVersion, segmentWindowSize, metrics, serializer);
     // register this responsesink
     calls.put(callID, context);
     //listen on upload messages and transmit channel setup

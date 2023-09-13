@@ -30,7 +30,7 @@ abstract class AbstractJMSRequestTest {
 
   TextMessage textMsg(String text, String messageType, String callID, JMSRequestProxyTest.JMSAction... actions) throws Exception {
     TextMessage msg = session.createTextMessage(text);
-    msg.setStringProperty(AbstractJMSRequestBase.PROTOCOL_VERSION_KEY, ProtocolVersion.V1.getVersionString());
+    msg.setStringProperty(AbstractJMSRequestBase.PROTOCOL_VERSION_KEY, ProtocolVersion.V3.getVersionString());
     msg.setStringProperty(JMSRequestProxy.PROPERTY_MESSAGE_TYPE, messageType);
     msg.setJMSCorrelationID(callID);
     if (actions != null) {
@@ -42,7 +42,7 @@ abstract class AbstractJMSRequestTest {
   BytesMessage byteMsg(no.mnemonic.messaging.requestsink.Message obj, String messageType, String callID) throws JMSException, IOException {
     BytesMessage msg = session.createBytesMessage();
     msg.writeBytes(TestUtils.serialize(obj));
-    msg.setStringProperty(AbstractJMSRequestBase.PROTOCOL_VERSION_KEY, ProtocolVersion.V1.getVersionString());
+    msg.setStringProperty(AbstractJMSRequestBase.PROTOCOL_VERSION_KEY, ProtocolVersion.V3.getVersionString());
     msg.setStringProperty(JMSRequestProxy.PROPERTY_MESSAGE_TYPE, messageType);
     msg.setJMSCorrelationID(callID);
     return msg;
@@ -51,7 +51,7 @@ abstract class AbstractJMSRequestTest {
   BytesMessage byteMsg(byte[] data, String messageType, String callID) throws JMSException, IOException {
     BytesMessage msg = session.createBytesMessage();
     msg.writeBytes(data);
-    msg.setStringProperty(AbstractJMSRequestBase.PROTOCOL_VERSION_KEY, ProtocolVersion.V1.getVersionString());
+    msg.setStringProperty(AbstractJMSRequestBase.PROTOCOL_VERSION_KEY, ProtocolVersion.V3.getVersionString());
     msg.setStringProperty(JMSRequestProxy.PROPERTY_MESSAGE_TYPE, messageType);
     msg.setJMSCorrelationID(callID);
     return msg;

@@ -3,25 +3,36 @@ package no.mnemonic.messaging.requestsink.jms.context;
 import no.mnemonic.commons.logging.Logger;
 import no.mnemonic.commons.logging.Logging;
 import no.mnemonic.messaging.requestsink.Message;
+import no.mnemonic.messaging.requestsink.MessagingInterruptedException;
 import no.mnemonic.messaging.requestsink.RequestContext;
 import no.mnemonic.messaging.requestsink.RequestListener;
 import no.mnemonic.messaging.requestsink.RequestSink;
+import no.mnemonic.messaging.requestsink.ResponseListener;
 import no.mnemonic.messaging.requestsink.jms.ExceptionMessage;
 import no.mnemonic.messaging.requestsink.jms.ProtocolVersion;
 import no.mnemonic.messaging.requestsink.jms.serializer.MessageSerializer;
 import no.mnemonic.messaging.requestsink.jms.util.FragmentConsumer;
 import no.mnemonic.messaging.requestsink.jms.util.ServerMetrics;
 
-import javax.jms.*;
+import javax.jms.BytesMessage;
+import javax.jms.Destination;
+import javax.jms.InvalidDestinationException;
+import javax.jms.JMSException;
+import javax.jms.MessageProducer;
+import javax.jms.Session;
 import java.io.ByteArrayInputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.time.Clock;
 import java.util.Date;
 import java.util.UUID;
+import java.util.concurrent.Semaphore;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicReference;
 
+import static no.mnemonic.commons.utilities.ObjectUtils.ifNotNullDo;
 import static no.mnemonic.messaging.requestsink.jms.JMSRequestProxy.*;
 import static no.mnemonic.messaging.requestsink.jms.util.JMSUtils.*;
 
@@ -35,36 +46,55 @@ import static no.mnemonic.messaging.requestsink.jms.util.JMSUtils.*;
  */
 public class ServerResponseContext implements RequestContext, ServerContext {
 
+  private static final int DEFAULT_MAX_WINDOW_ATTEMPTS = 10;
+  private static final int DEFAULT_WINDOW_WAIT_SECONDS = 10;
+
   private static final Logger LOGGER = Logging.getLogger(ServerResponseContext.class);
   private static Clock clock = Clock.systemUTC();
 
   private final Session session;
   private final MessageProducer replyProducer;
   private final Destination replyTo;
+  private final Destination acknowledgementTo;
   private final String callID;
   private final AtomicLong timeout = new AtomicLong();
   private final AtomicBoolean closed = new AtomicBoolean();
   private final ProtocolVersion protocolVersion;
   private final int maxMessageSize;
+  private final int maxWindowAttempts;
+  private final int maxWindowWaitSeconds;
   private final ServerMetrics metrics;
   private final MessageSerializer serializer;
   private final RequestSink requestSink;
+  private final AtomicReference<ResponseListener> lastResponseListener = new AtomicReference<>();
 
-  public ServerResponseContext(
+  private final Semaphore segmentWindow;
+
+  private ServerResponseContext(
           String callID,
           Session session,
           MessageProducer replyProducer,
           Destination replyTo,
+          Destination acknowledgementTo,
           long timeout,
           ProtocolVersion protocolVersion,
           int maxMessageSize,
+          int maxWindowAttempts,
+          int maxWindowWaitSeconds,
+          int segmentWindowSize,
           ServerMetrics metrics,
           MessageSerializer serializer,
           RequestSink requestSink) {
+    if (segmentWindowSize < 1) throw new IllegalArgumentException("segmentWindowSize must be at least 1");
+    if (maxWindowAttempts < 1) throw new IllegalArgumentException("maxWindowAttempts must be at least 1");
+    if (maxWindowWaitSeconds < 1) throw new IllegalArgumentException("maxWindowWaitSeconds must be at least 1");
+    this.maxWindowAttempts = maxWindowAttempts;
+    this.maxWindowWaitSeconds = maxWindowWaitSeconds;
     this.callID = assertNotNull(callID, "CallID not set");
     this.session = assertNotNull(session, "session not set");
     this.replyProducer = assertNotNull(replyProducer, "replyProducer not set");
     this.replyTo = assertNotNull(replyTo, "replyTo not set");
+    this.acknowledgementTo = assertNotNull(acknowledgementTo, "acknowledgementTo not set");
     this.protocolVersion = assertNotNull(protocolVersion, "ProtocolVersion not set");
     this.metrics = assertNotNull(metrics, "metrics not set");
     this.serializer = assertNotNull(serializer, "serializer not set");
@@ -73,6 +103,7 @@ public class ServerResponseContext implements RequestContext, ServerContext {
     if (timeout <= 0) throw new IllegalArgumentException("Timeout must be a positive integer");
     this.maxMessageSize = maxMessageSize;
     this.timeout.set(timeout);
+    this.segmentWindow = new Semaphore(segmentWindowSize);
   }
 
   /**
@@ -113,16 +144,45 @@ public class ServerResponseContext implements RequestContext, ServerContext {
     return true;
   }
 
+  @Deprecated
   public boolean addResponse(Message msg) {
+    return this.addResponse(msg, () -> {
+    });
+  }
+
+  @Override
+  public boolean addResponse(Message msg, ResponseListener responseListener) {
+
+    //for V4 protocol, require free segment window to add another response
+    int windowAttempts = 0;
+    while (protocolVersion.atLeast(ProtocolVersion.V4) && !isClosed()) {
+      try {
+        if (segmentWindow.tryAcquire(maxWindowWaitSeconds, TimeUnit.SECONDS)) {
+          break;
+        } else {
+          windowAttempts++;
+          if (windowAttempts > maxWindowAttempts) {
+            throw new IllegalStateException(String.format("Could not acquire from segment window after %d attempts", maxWindowAttempts));
+          }
+          LOGGER.warning("Throttling sending segments for callID %s after %d seconds", callID, maxWindowWaitSeconds);
+        }
+      } catch (InterruptedException e) {
+        LOGGER.error(e, "Interrupted waiting for segmentWindow " + callID);
+        close();
+        throw new MessagingInterruptedException(e);
+      }
+    }
     // drop message if we're closed
     if (isClosed()) {
       return false;
     }
 
+    if (responseListener != null) lastResponseListener.set(responseListener);
+
     try {
       byte[] messageBytes = serializer.serialize(msg);
       //if request origin is sending using protocol V2 or higher, fragmented responses are supported, so fragment big responses
-      if (protocolVersion.atLeast(ProtocolVersion.V2) && messageBytes.length > maxMessageSize) {
+      if (messageBytes.length > maxMessageSize) {
         sendResponseFragments(messageBytes);
       } else {
         sendSingleResponse(messageBytes);
@@ -151,6 +211,7 @@ public class ServerResponseContext implements RequestContext, ServerContext {
     // construct single response message
     javax.jms.Message returnMessage = createByteMessage(session, messageBytes, protocolVersion, serializer.serializerID());
     returnMessage.setJMSCorrelationID(callID);
+    returnMessage.setJMSReplyTo(acknowledgementTo);
     returnMessage.setStringProperty(PROPERTY_MESSAGE_TYPE, MESSAGE_TYPE_SIGNAL_RESPONSE);
     // send return message
     replyProducer.send(replyTo, returnMessage);
@@ -168,6 +229,7 @@ public class ServerResponseContext implements RequestContext, ServerContext {
         public void fragment(byte[] data, int idx) throws JMSException {
           BytesMessage fragment = createByteMessage(session, data, protocolVersion, serializer.serializerID());
           fragment.setJMSCorrelationID(callID);
+          fragment.setJMSReplyTo(acknowledgementTo);
           fragment.setStringProperty(PROPERTY_MESSAGE_TYPE, MESSAGE_TYPE_SIGNAL_FRAGMENT);
           fragment.setStringProperty(PROPERTY_RESPONSE_ID, responseID.toString());
           fragment.setIntProperty(PROPERTY_FRAGMENTS_IDX, idx);
@@ -184,6 +246,7 @@ public class ServerResponseContext implements RequestContext, ServerContext {
           //prepare EOS message (message text has no meaning)
           javax.jms.Message eof = createTextMessage(session, "End-Of-Stream", protocolVersion);
           eof.setJMSCorrelationID(callID);
+          eof.setJMSReplyTo(acknowledgementTo);
           eof.setStringProperty(PROPERTY_MESSAGE_TYPE, MESSAGE_TYPE_END_OF_FRAGMENTED_MESSAGE);
           eof.setStringProperty(PROPERTY_RESPONSE_ID, responseID.toString());
           //send total number of fragments and message digest with EOS message, to allow receiver to verify
@@ -269,9 +332,140 @@ public class ServerResponseContext implements RequestContext, ServerContext {
     //do nothing
   }
 
+  @Override
+  public void acknowledgeResponse() {
+    if (LOGGER.isDebug()) {
+      LOGGER.debug(" << responseAcknowledgement releasing segment window (available=%d)", segmentWindow.availablePermits());
+    }
+    segmentWindow.release();
+    ifNotNullDo(lastResponseListener.get(), ResponseListener::responseAccepted);
+  }
+
+  //builder
+
+  public static Builder builder() {
+    return new Builder();
+  }
+
+  public static class Builder {
+
+    //fields
+    private String callID;
+    private Session session;
+    private MessageProducer replyProducer;
+    private Destination replyTo;
+    private Destination acknowledgementTo;
+    private long timeout;
+    private ProtocolVersion protocolVersion = ProtocolVersion.V3;
+    private int maxMessageSize = DEFAULT_MAX_MAX_MESSAGE_SIZE;
+    private int segmentWindowSize = DEFAULT_SEGMENT_WINDOW_SIZE;
+    private int maxWindowWaitSeconds = DEFAULT_WINDOW_WAIT_SECONDS;
+    private int maxWindowAttempts = DEFAULT_MAX_WINDOW_ATTEMPTS;
+    private ServerMetrics metrics;
+    private MessageSerializer serializer;
+    private RequestSink requestSink;
+
+    public ServerResponseContext build() {
+      return new ServerResponseContext(
+          callID,
+          session,
+          replyProducer,
+          replyTo,
+          acknowledgementTo,
+          timeout,
+          protocolVersion,
+          maxMessageSize,
+          maxWindowAttempts,
+          maxWindowWaitSeconds,
+          segmentWindowSize,
+          metrics,
+          serializer,
+          requestSink
+      );
+    }
+
+    //setters
+
+
+    public Builder setMaxWindowWaitSeconds(int maxWindowWaitSeconds) {
+      this.maxWindowWaitSeconds = maxWindowWaitSeconds;
+      return this;
+    }
+
+    public Builder setMaxWindowAttempts(int maxWindowAttempts) {
+      this.maxWindowAttempts = maxWindowAttempts;
+      return this;
+    }
+
+    public Builder setCallID(String callID) {
+      this.callID = callID;
+      return this;
+    }
+
+    public Builder setSession(Session session) {
+      this.session = session;
+      return this;
+    }
+
+    public Builder setReplyProducer(MessageProducer replyProducer) {
+      this.replyProducer = replyProducer;
+      return this;
+    }
+
+    public Builder setReplyTo(Destination replyTo) {
+      this.replyTo = replyTo;
+      return this;
+    }
+
+    public Builder setAcknowledgementTo(Destination acknowledgementTo) {
+      this.acknowledgementTo = acknowledgementTo;
+      return this;
+    }
+
+    public Builder setTimeout(long timeout) {
+      this.timeout = timeout;
+      return this;
+    }
+
+    public Builder setProtocolVersion(ProtocolVersion protocolVersion) {
+      this.protocolVersion = protocolVersion;
+      return this;
+    }
+
+    public Builder setMaxMessageSize(int maxMessageSize) {
+      this.maxMessageSize = maxMessageSize;
+      return this;
+    }
+
+    public Builder setSegmentWindowSize(int segmentWindowSize) {
+      this.segmentWindowSize = segmentWindowSize;
+      return this;
+    }
+
+    public Builder setMetrics(ServerMetrics metrics) {
+      this.metrics = metrics;
+      return this;
+    }
+
+    public Builder setSerializer(MessageSerializer serializer) {
+      this.serializer = serializer;
+      return this;
+    }
+
+    public Builder setRequestSink(RequestSink requestSink) {
+      this.requestSink = requestSink;
+      return this;
+    }
+  }
+
+
   //for testing only
 
   static void setClock(Clock clock) {
     ServerResponseContext.clock = clock;
+  }
+
+  int getAvailableSegmentWindow() {
+    return segmentWindow.availablePermits();
   }
 }

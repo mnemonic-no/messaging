@@ -3,6 +3,7 @@ package no.mnemonic.messaging.requestsink.jms;
 import no.mnemonic.commons.container.ComponentContainer;
 import no.mnemonic.messaging.requestsink.RequestContext;
 import no.mnemonic.messaging.requestsink.RequestSink;
+import no.mnemonic.messaging.requestsink.ResponseListener;
 import no.mnemonic.messaging.requestsink.jms.serializer.DefaultJavaMessageSerializer;
 import org.junit.After;
 import org.junit.Before;
@@ -18,6 +19,8 @@ public class JMSRequestSinkJavaSerializationProxyTest extends AbstractJMSRequest
     //create mock client (requestor to requestSink) and endpoint (target for requestProxy)
     endpoint = mock(RequestSink.class);
     requestContext = mock(RequestContext.class);
+    clientResponseListener = mock(ResponseListener.class);
+    serverResponseListener = mock(ResponseListener.class);
 
     //set up a real JMS connection to a vm-local activemq
     queueName = "dynamicQueues/" + generateCookie(10);

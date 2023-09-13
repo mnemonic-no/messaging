@@ -9,17 +9,26 @@ import org.mockito.junit.jupiter.MockitoExtension;
 
 import java.lang.reflect.InvocationTargetException;
 import java.util.Collection;
-import java.util.concurrent.*;
+import java.util.concurrent.Callable;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 
 import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
 
 @ExtendWith(MockitoExtension.class)
 public class RequestHandlerTest {
 
   private static final ExecutorService executor = Executors.newSingleThreadExecutor();
   @Mock
-  private RequestListener listener;
+  private RequestListener requestListener;
+  @Mock
+  private ResponseListener responseListener;
 
   @AfterAll
   public static void afterAll() {
@@ -28,24 +37,36 @@ public class RequestHandlerTest {
 
   @Test
   public void testCloseHandler() {
-    RequestHandler handler = new RequestHandler(false, "callid", 10000);
-    handler.addListener(listener);
+    RequestHandler handler = createHandler();
+    handler.addListener(requestListener);
     assertFalse(handler.isClosed());
     handler.close();
     assertTrue(handler.isClosed());
-    verify(listener).close("callid");
+    verify(requestListener).close("callid");
   }
 
   @Test
   public void testGetResponsesNoWaitWithoutResults() throws InvocationTargetException {
-    RequestHandler handler = new RequestHandler(false, "callid", 10000);
-    assertTrue(handler.getResponsesNoWait().isEmpty());
+    RequestHandler handler = RequestHandler.builder().setAllowKeepAlive(false).setCallID("callid").setMaxWait(10000).build();
+    assertTrue(handler.addResponse(new TestMessage("msg"), responseListener));
+    verifyNoInteractions(responseListener);
+    assertNotNull(handler.getNextResponse());
+    verify(responseListener).responseAccepted();
   }
 
   @Test
   public void testGetResponsesNoWaitWithResult() throws InvocationTargetException {
-    RequestHandler handler = new RequestHandler(false, "callid", 10000);
-    assertTrue(handler.addResponse(new TestMessage("msg")));
+    RequestHandler handler = createHandler();
+    assertTrue(handler.addResponse(new TestMessage("msg"), responseListener));
+    Collection<TestMessage> response = handler.getResponsesNoWait();
+    assertEquals(1, response.size());
+    assertEquals("msg", response.iterator().next().getMsgID());
+  }
+
+  @Test
+  public void testGetNextResponseSendsAck() throws InvocationTargetException {
+    RequestHandler handler = createHandler();
+    assertTrue(handler.addResponse(new TestMessage("msg"), responseListener));
     Collection<TestMessage> response = handler.getResponsesNoWait();
     assertEquals(1, response.size());
     assertEquals("msg", response.iterator().next().getMsgID());
@@ -53,51 +74,55 @@ public class RequestHandlerTest {
 
   @Test
   public void testGetResponsesNoWaitWithMultipleResults() throws InvocationTargetException {
-    RequestHandler handler = new RequestHandler(false, "callid", 10000);
-    assertTrue(handler.addResponse(new TestMessage("msg1")));
-    assertTrue(handler.addResponse(new TestMessage("msg2")));
-    assertTrue(handler.addResponse(new TestMessage("msg3")));
+    RequestHandler handler = createHandler();
+    assertTrue(handler.addResponse(new TestMessage("msg1"), responseListener));
+    assertTrue(handler.addResponse(new TestMessage("msg2"), responseListener));
+    assertTrue(handler.addResponse(new TestMessage("msg3"), responseListener));
     assertEquals(SetUtils.set("msg1", "msg2", "msg3"), SetUtils.set(handler.getResponsesNoWait(), m -> ((TestMessage) m).getMsgID()));
   }
 
   @Test
   public void testGetResponsesNoWaitEnqueuesMoreResults() throws InvocationTargetException {
-    RequestHandler handler = new RequestHandler(false, "callid", 10000);
-    assertTrue(handler.addResponse(new TestMessage("msg1")));
-    assertTrue(handler.addResponse(new TestMessage("msg2")));
+    RequestHandler handler = createHandler();
+    assertTrue(handler.addResponse(new TestMessage("msg1"), responseListener));
+    assertTrue(handler.addResponse(new TestMessage("msg2"), responseListener));
     assertEquals(SetUtils.set("msg1", "msg2"), SetUtils.set(handler.getResponsesNoWait(), m -> ((TestMessage) m).getMsgID()));
-    assertTrue(handler.addResponse(new TestMessage("msg3")));
+    assertTrue(handler.addResponse(new TestMessage("msg3"), responseListener));
     assertEquals(SetUtils.set("msg3"), SetUtils.set(handler.getResponsesNoWait(), m -> ((TestMessage) m).getMsgID()));
   }
 
   @Test
   public void testGetResponsesNoWaitWithError() {
-    RequestHandler handler = new RequestHandler(false, "callid", 10000);
-    assertTrue(handler.addResponse(new TestMessage("msg")));
+    RequestHandler handler = createHandler();
+    assertTrue(handler.addResponse(new TestMessage("msg"), responseListener));
     handler.notifyError(new IllegalArgumentException("invalid"));
-    assertThrows(InvocationTargetException.class, ()->handler.getResponsesNoWait());
+    assertThrows(InvocationTargetException.class, handler::getResponsesNoWait);
   }
 
   @Test
   public void testGetNextResponse() throws InterruptedException, ExecutionException, TimeoutException {
-    RequestHandler handler = new RequestHandler(false, "callid", 10000);
+    RequestHandler handler = createHandler();
     Future<TestMessage> msg = executor.submit(() -> handler.getNextResponse(1000));
     assertFalse(msg.isDone());
-    handler.addResponse(new TestMessage("msg"));
+    handler.addResponse(new TestMessage("msg"), responseListener);
     assertNotNull(msg.get(1000, TimeUnit.MILLISECONDS));
   }
 
   @Test
   public void testGetResponsesWaitForTimeout() throws InterruptedException, ExecutionException, TimeoutException {
-    RequestHandler handler = new RequestHandler(false, "callid", 10000);
+    RequestHandler handler = createHandler();
     Future<Collection<TestMessage>> msg = executor.submit(() -> handler.getResponses(200, 3));
-    handler.addResponse(new TestMessage("msg1"));
+    handler.addResponse(new TestMessage("msg1"), responseListener);
     assertEquals(1, msg.get(500, TimeUnit.MILLISECONDS).size());
   }
 
   @Test
   public void testGetResponsesWaitForEndOfStream() throws InterruptedException, ExecutionException, TimeoutException {
-    RequestHandler handler = new RequestHandler(true, "callid", 10000);
+    RequestHandler handler = RequestHandler.builder()
+        .setAllowKeepAlive(true)
+        .setCallID("callid")
+        .setMaxWait(10000)
+        .build();
     Future<TestMessage> msg = executor.submit((Callable<TestMessage>) handler::getNextResponse);
     Thread.sleep(300);
     assertFalse(msg.isDone());
@@ -107,20 +132,24 @@ public class RequestHandlerTest {
 
   @Test
   public void testGetResponsesWaitForMessage() throws InterruptedException, ExecutionException, TimeoutException {
-    RequestHandler handler = new RequestHandler(true, "callid", 10000);
+    RequestHandler handler = RequestHandler.builder()
+        .setAllowKeepAlive(true)
+        .setCallID("callid")
+        .setMaxWait(10000)
+        .build();
     Future<TestMessage> msg = executor.submit((Callable<TestMessage>) handler::getNextResponse);
     Thread.sleep(300);
     assertFalse(msg.isDone());
-    handler.addResponse(new TestMessage("msg1"));
+    handler.addResponse(new TestMessage("msg1"), responseListener);
     assertEquals("msg1", msg.get(500, TimeUnit.MILLISECONDS).getMsgID());
   }
 
   @Test
   public void testGetResponsesReturnError() throws Throwable {
-    RequestHandler handler = new RequestHandler(false, "callid", 10000);
+    RequestHandler handler = createHandler();
     Future<Collection<TestMessage>> msg = executor.submit(() -> handler.getResponses(200, 3));
     assertFalse(msg.isDone());
-    handler.addResponse(new TestMessage("msg1"));
+    handler.addResponse(new TestMessage("msg1"), responseListener);
     Thread.sleep(100);
     handler.notifyError(new IllegalArgumentException("invalid"));
     ExecutionException ex = assertThrows(ExecutionException.class, () -> msg.get(1000, TimeUnit.MILLISECONDS));
@@ -129,16 +158,16 @@ public class RequestHandlerTest {
 
   @Test
   public void testGetResponsesReturnsPendingResultsWhenClosed() throws Throwable {
-    RequestHandler handler = new RequestHandler(false, "callid", 10000);
-    handler.addResponse(new TestMessage("msg3"));
+    RequestHandler handler = createHandler();
+    handler.addResponse(new TestMessage("msg3"), responseListener);
     handler.endOfStream();
     assertNotNull(executor.submit(() -> handler.getNextResponse(100)).get(100, TimeUnit.MILLISECONDS));
   }
 
   @Test
   public void testGetResponsesReturnsNullWhenClosedAndNoMoreResults() throws Throwable {
-    RequestHandler handler = new RequestHandler(false, "callid", 10000);
-    handler.addResponse(new TestMessage("msg3"));
+    RequestHandler handler = createHandler();
+    handler.addResponse(new TestMessage("msg3"), responseListener);
     handler.endOfStream();
     assertNotNull(executor.submit(() -> handler.getNextResponse(100)).get(100, TimeUnit.MILLISECONDS));
     assertNull(executor.submit(() -> handler.getNextResponse(100)).get(100, TimeUnit.MILLISECONDS));
@@ -146,22 +175,22 @@ public class RequestHandlerTest {
 
   @Test
   public void testGetResponsesWaitForResults() throws InterruptedException, ExecutionException, TimeoutException {
-    RequestHandler handler = new RequestHandler(false, "callid", 10000);
+    RequestHandler handler = createHandler();
     Future<Collection<TestMessage>> msg = executor.submit(() -> handler.getResponses(1000, 3));
     assertFalse(msg.isDone());
-    handler.addResponse(new TestMessage("msg1"));
+    handler.addResponse(new TestMessage("msg1"), responseListener);
     Thread.sleep(100);
     assertFalse(msg.isDone());
-    handler.addResponse(new TestMessage("msg2"));
+    handler.addResponse(new TestMessage("msg2"), responseListener);
     Thread.sleep(100);
     assertFalse(msg.isDone());
-    handler.addResponse(new TestMessage("msg3"));
+    handler.addResponse(new TestMessage("msg3"), responseListener);
     assertEquals(3, msg.get(100, TimeUnit.MILLISECONDS).size());
   }
 
   @Test
   public void testGetNextResponseWhenError() {
-    RequestHandler handler = new RequestHandler(false, "callid", 10000);
+    RequestHandler handler = createHandler();
     Future<TestMessage> msg = executor.submit(() -> handler.getNextResponse(1000));
     assertFalse(msg.isDone());
     handler.notifyError(new IllegalArgumentException("invalid"));
@@ -171,7 +200,7 @@ public class RequestHandlerTest {
 
   @Test
   public void testGetNextResponseReturnsWhenEOS() throws InterruptedException, ExecutionException, TimeoutException {
-    RequestHandler handler = new RequestHandler(false, "callid", 10000);
+    RequestHandler handler = createHandler();
     Future<TestMessage> msg = executor.submit(() -> handler.getNextResponse(1000));
     assertFalse(msg.isDone());
     handler.endOfStream();
@@ -180,7 +209,7 @@ public class RequestHandlerTest {
 
   @Test
   public void testGetNextResponseTimeout() throws InterruptedException, ExecutionException, TimeoutException {
-    RequestHandler handler = new RequestHandler(false, "callid", 10000);
+    RequestHandler handler = createHandler();
     Future<TestMessage> msg = executor.submit(() -> handler.getNextResponse(100));
     assertFalse(msg.isDone());
     assertNull(msg.get(1000, TimeUnit.MILLISECONDS));
@@ -188,7 +217,7 @@ public class RequestHandlerTest {
 
   @Test
   public void testWaitForEndOfStream() throws InterruptedException, ExecutionException, TimeoutException {
-    RequestHandler handler = new RequestHandler(false, "callid", 10000);
+    RequestHandler handler = createHandler();
     Future<Boolean> msg = executor.submit(() -> handler.waitForEndOfStream(1000));
     assertFalse(msg.isDone());
     handler.endOfStream();
@@ -197,7 +226,11 @@ public class RequestHandlerTest {
 
   @Test
   public void testWaitForEndOfStreamTimeout() throws InterruptedException, ExecutionException, TimeoutException {
-    RequestHandler handler = new RequestHandler(false, "callid", 100);
+    RequestHandler handler = RequestHandler.builder()
+        .setAllowKeepAlive(false)
+        .setCallID("callid")
+        .setMaxWait(100)
+        .build();
     Future<Boolean> msg = executor.submit(() -> handler.waitForEndOfStream(150));
     assertFalse(msg.isDone());
     assertTrue(msg.get(1000, TimeUnit.MILLISECONDS));
@@ -205,7 +238,11 @@ public class RequestHandlerTest {
 
   @Test
   public void testWaitForEndOfStreamKeepAliveNotEnabled() throws InterruptedException, ExecutionException, TimeoutException {
-    RequestHandler handler = new RequestHandler(false, "callid", 500);
+    RequestHandler handler = RequestHandler.builder()
+        .setAllowKeepAlive(false)
+        .setCallID("callid")
+        .setMaxWait(500)
+        .build();
     //wait for end of stream, wait at most 100ms before closing
     Future<Boolean> msg = executor.submit(() -> handler.waitForEndOfStream(600));
     assertFalse(msg.isDone());
@@ -217,7 +254,11 @@ public class RequestHandlerTest {
 
   @Test
   public void testWaitForEndOfStreamKeepAlive() throws InterruptedException, ExecutionException, TimeoutException {
-    RequestHandler handler = new RequestHandler(true, "callid", 200);
+    RequestHandler handler = RequestHandler.builder()
+        .setAllowKeepAlive(false)
+        .setCallID("callid")
+        .setMaxWait(200)
+        .build();
     //wait for end of stream, wait at most 100ms before closing
     Future<Boolean> msg = executor.submit(() -> handler.waitForEndOfStream(100));
     assertFalse(msg.isDone());
@@ -227,6 +268,14 @@ public class RequestHandlerTest {
     msg = executor.submit(() -> handler.waitForEndOfStream(200));
     //when waitForEndOfStream resolves, it should return true (channel was closed)
     assertTrue(msg.get(1000, TimeUnit.MILLISECONDS));
+  }
+
+  private static RequestHandler createHandler() {
+    return RequestHandler.builder()
+        .setAllowKeepAlive(false)
+        .setCallID("callid")
+        .setMaxWait(10000)
+        .build();
   }
 
   public static class TestMessage implements Message {

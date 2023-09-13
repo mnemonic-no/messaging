@@ -6,7 +6,6 @@ import no.mnemonic.messaging.requestsink.RequestContext;
 import no.mnemonic.messaging.requestsink.RequestListener;
 import no.mnemonic.messaging.requestsink.jms.serializer.MessageSerializer;
 import no.mnemonic.messaging.requestsink.jms.util.FragmentConsumer;
-import org.apache.activemq.DestinationDoesNotExistException;
 import org.junit.After;
 import org.junit.Assert;
 import org.junit.Before;
@@ -14,18 +13,28 @@ import org.junit.Test;
 import org.mockito.Mock;
 import org.mockito.MockitoAnnotations;
 
-import javax.jms.*;
+import javax.jms.BytesMessage;
+import javax.jms.Destination;
+import javax.jms.JMSException;
+import javax.jms.Message;
+import javax.jms.MessageConsumer;
+import javax.jms.MessageProducer;
+import javax.jms.TemporaryQueue;
+import javax.jms.TextMessage;
 import javax.naming.NamingException;
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.security.MessageDigest;
 import java.util.UUID;
-import java.util.concurrent.*;
+import java.util.concurrent.BlockingQueue;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.Future;
+import java.util.concurrent.LinkedBlockingDeque;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
 
-import static no.mnemonic.messaging.requestsink.jms.ProtocolVersion.V1;
 import static no.mnemonic.messaging.requestsink.jms.ProtocolVersion.V3;
 import static no.mnemonic.messaging.requestsink.jms.util.JMSUtils.*;
 import static org.junit.Assert.assertNotNull;
@@ -125,7 +134,7 @@ public abstract class AbstractJMSRequestSinkTest extends AbstractJMSRequestTest 
     Message receivedMessage = expectTopicMessage(JMSRequestProxy.MESSAGE_TYPE_STREAM_CLOSED);
     Assert.assertEquals(ProtocolVersion.V3.getVersionString(), receivedMessage.getStringProperty(AbstractJMSRequestBase.PROTOCOL_VERSION_KEY));
     assertEquals("abortedCallID", receivedMessage.getJMSCorrelationID());
-    assertTrue(receivedMessage instanceof BytesMessage);
+    assertTrue(receivedMessage instanceof TextMessage);
   }
 
   @Test
@@ -187,17 +196,6 @@ public abstract class AbstractJMSRequestSinkTest extends AbstractJMSRequestTest 
   }
 
   @Test
-  public void testSignalWithProtocolLevelV1() throws Exception {
-    setupSinkAndContainer(b -> b.setProtocolVersion(V1));
-    TestMessage testMessage = new TestMessage("test1");
-    //send testmessage
-    requestSink.signal(testMessage, requestContext, 10000);
-    //wait for message to come through and validate
-    Message receivedMessage = expectSignal();
-    Assert.assertEquals(ProtocolVersion.V1.getVersionString(), receivedMessage.getStringProperty(AbstractJMSRequestBase.PROTOCOL_VERSION_KEY));
-  }
-
-  @Test
   public void testSignalReceiveSingleResult() throws Exception {
     doTestSignalReceiveResults(1);
   }
@@ -235,7 +233,7 @@ public abstract class AbstractJMSRequestSinkTest extends AbstractJMSRequestTest 
       }
 
       @Override
-      public void end(int fragments, byte[] digest) throws JMSException {
+      public void end(int fragments, byte[] digest) {
         try {
           //end-of-fragment message contains responseID, fragment count and md5 checksum
           sendTo(
@@ -256,7 +254,7 @@ public abstract class AbstractJMSRequestSinkTest extends AbstractJMSRequestTest 
     //wait for EOS
     waitForEOS();
     //verify that the response got through as well
-    verify(requestContext).addResponse(eq(responseMessage));
+    verify(requestContext).addResponse(eq(responseMessage), any());
   }
 
 
@@ -293,7 +291,7 @@ public abstract class AbstractJMSRequestSinkTest extends AbstractJMSRequestTest 
 
     waitForEOS();
     verify(requestContext, atLeastOnce()).keepAlive(anyLong());
-    verify(requestContext).addResponse(eq(new TestMessage("response")));
+    verify(requestContext).addResponse(eq(new TestMessage("response")), any());
     verify(requestContext).endOfStream();
   }
 
@@ -315,7 +313,7 @@ public abstract class AbstractJMSRequestSinkTest extends AbstractJMSRequestTest 
     eos(receivedMessage);
     waitForEOS();
     //verify that the response got through as well
-    verify(requestContext, times(resultCount)).addResponse(eq(responseMessage));
+    verify(requestContext, times(resultCount)).addResponse(eq(responseMessage), any());
   }
 
   @SafeVarargs
@@ -359,12 +357,12 @@ public abstract class AbstractJMSRequestSinkTest extends AbstractJMSRequestTest 
     return receivedMessage;
   }
 
-  private boolean responseQueueIsValid(Message signal) throws Exception {
+  private boolean responseQueueIsValid(Message signal) {
     try {
       //send reply to response queue and expect exception because it is removed
       reply(signal, new TestMessage("obj"));
       return true;
-    } catch (DestinationDoesNotExistException e) {
+    } catch (Exception e) {
       return false;
     }
   }
@@ -404,7 +402,7 @@ public abstract class AbstractJMSRequestSinkTest extends AbstractJMSRequestTest 
     BytesMessage msg = session.createBytesMessage();
     msg.writeBytes(serializer().serialize(obj));
     msg.setStringProperty(AbstractJMSRequestBase.SERIALIZER_KEY, serializer().serializerID());
-    msg.setStringProperty(AbstractJMSRequestBase.PROTOCOL_VERSION_KEY, ProtocolVersion.V1.getVersionString());
+    msg.setStringProperty(AbstractJMSRequestBase.PROTOCOL_VERSION_KEY, ProtocolVersion.V3.getVersionString());
     msg.setStringProperty(JMSRequestProxy.PROPERTY_MESSAGE_TYPE, messageType);
     msg.setJMSCorrelationID(callID);
     return msg;

@@ -6,13 +6,21 @@ import no.mnemonic.commons.utilities.lambda.LambdaUtils;
 
 import java.lang.reflect.InvocationTargetException;
 import java.time.Clock;
-import java.util.*;
+import java.util.ArrayList;
+import java.util.Collection;
+import java.util.Collections;
+import java.util.Date;
+import java.util.HashSet;
+import java.util.Set;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.LinkedBlockingDeque;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.stream.Collectors;
 
+import static no.mnemonic.commons.utilities.ObjectUtils.ifNotNullDo;
 import static no.mnemonic.commons.utilities.collections.ListUtils.list;
 
 /**
@@ -24,28 +32,59 @@ import static no.mnemonic.commons.utilities.collections.ListUtils.list;
 @SuppressWarnings({"WeakerAccess", "SameParameterValue"})
 public class RequestHandler implements RequestContext {
 
-  static final int KEEPALIVE_PERIOD = 10000;
+  private static final int KEEPALIVE_PERIOD = 10000;
+  private static final int DEFAULT_RESPONSE_QUEUE_SIZE = 100;
+  private static final int DEFAULT_ADD_RESPONSE_MAX_WAIT_SECONDS = 30;
+
   private static Clock clock = Clock.systemUTC();
   private static final Logger LOGGER = Logging.getLogger(RequestHandler.class);
 
-  private final BlockingQueue<Message> responses = new LinkedBlockingDeque<>();
+  private final BlockingQueue<Response> responses;
   private final AtomicBoolean closed = new AtomicBoolean();
   private final AtomicReference<Throwable> error = new AtomicReference<>();
   private final Set<RequestListener> requestListeners = Collections.synchronizedSet(new HashSet<>());
   private final boolean allowKeepAlive;
   private final String callID;
   private final AtomicLong timeout = new AtomicLong();
+  private final int addResponseMaxWaitSeconds;
 
   /**
-   * Initialize a RequestHandler
+   * Initialize a RequestHandler with an unbounded internal buffering queue.
+   * If using JMSRequestSink, clients should not switch to use bounded response buffer queue unless
+   * they have enabled the V4 JMSRequestSink protocol.
+   *
    * @param allowKeepAlive if allowKeepalive, received keepalive messages and responses will cause call timeout to be extended
    * @param callID         the ID of the call this handler represents
    * @param maxWait        the maximum time in milliseconds before this call times out (unless keepAlive is received)
+   * @deprecated Use builder instead
    */
+  @Deprecated
   public RequestHandler(boolean allowKeepAlive, String callID, long maxWait) {
+    this(allowKeepAlive, callID, maxWait, 0, DEFAULT_ADD_RESPONSE_MAX_WAIT_SECONDS);
+  }
+
+  /**
+   * Initialize a RequestHandler
+   *
+   * @param allowKeepAlive            if allowKeepalive, received keepalive messages and responses will cause call timeout to be extended
+   * @param callID                    the ID of the call this handler represents
+   * @param maxWait                   the maximum time in milliseconds before this call times out (unless keepAlive is received)
+   * @param responseQueueSize         the capacity of the internal buffering queue. A value of 0 means unbounded.
+   *                                  If bounding the queue, make sure the underlying RequestSink protocol supports
+   *                                  using segment window, with a segment window size smaller than the responseQueueSize.
+   * @param addResponseMaxWaitSeconds
+   */
+  private RequestHandler(boolean allowKeepAlive, String callID, long maxWait, int responseQueueSize, int addResponseMaxWaitSeconds) {
     this.allowKeepAlive = allowKeepAlive;
     this.callID = callID;
+    this.addResponseMaxWaitSeconds = addResponseMaxWaitSeconds;
     this.timeout.set(clock.millis() + maxWait);
+    //default
+    if (responseQueueSize == 0) {
+      responses = new LinkedBlockingDeque<>();
+    } else {
+      responses  = new LinkedBlockingDeque<>(responseQueueSize);
+    }
   }
 
   /**
@@ -56,12 +95,18 @@ public class RequestHandler implements RequestContext {
    * @param allowKeepAlive if keepalive should be allowed
    * @param maxWait        max initial milliseconds before request times out (if no keepalive)
    * @return the RequestHandler which is used as RequestContext
+   * @deprecated Use the {@link #builder()} to create the RequestHandler, and invoke {@link RequestSink#signal(Message, RequestContext, long)} directly.
    */
+  @Deprecated
   public static RequestHandler signal(RequestSink sink, Message msg, boolean allowKeepAlive, long maxWait) {
     if (sink == null) throw new IllegalArgumentException("RequestSink cannot be null");
     if (msg == null) throw new IllegalArgumentException("Message cannot be null");
     if (maxWait <= 0) throw new IllegalArgumentException("MaxWait must be a positive integer");
-    RequestHandler handler = new RequestHandler(allowKeepAlive, msg.getCallID(), maxWait);
+    RequestHandler handler =  RequestHandler.builder()
+        .setAllowKeepAlive(allowKeepAlive)
+        .setCallID(msg.getCallID())
+        .setMaxWait(maxWait)
+        .build();
     sink.signal(msg, handler, maxWait);
     if (LOGGER.isDebug()) {
       LOGGER.debug(">> signal [callID=%s msg=%s allowKeepalive=%s maxWait=%d]", msg.getCallID(), msg.getClass(), allowKeepAlive, maxWait);
@@ -123,6 +168,12 @@ public class RequestHandler implements RequestContext {
 
   @Override
   public boolean addResponse(Message msg) {
+    return this.addResponse(msg, ()->{});
+  }
+
+  @Override
+  public boolean addResponse(Message msg, ResponseListener responseListener) {
+
     if (isClosed()) {
       if (LOGGER.isDebug()) {
         LOGGER.debug("<< addResponse rejected [callID=%s]", callID);
@@ -130,9 +181,17 @@ public class RequestHandler implements RequestContext {
       return false;
     }
     if (LOGGER.isDebug()) {
-      LOGGER.debug("<< addResponse [callID=%s]", callID);
+      LOGGER.debug("<< addResponse [callID=%s, responseQueueSize=%d]", callID, responses.size());
     }
-    responses.add(msg);
+    try {
+      if (!responses.offer(new Response(msg, responseListener), addResponseMaxWaitSeconds, TimeUnit.SECONDS)) {
+        LOGGER.error("Timed out waiting for client queue capacity, client has been terminated");
+        abort();
+        responses.clear();
+      }
+    } catch (InterruptedException e) {
+      throw new MessagingInterruptedException(e);
+    }
     //whenever receiving another response, this is an implicit 10sec keepalive
     keepAlive(clock.millis() + KEEPALIVE_PERIOD);
     synchronized (this) {
@@ -245,10 +304,14 @@ public class RequestHandler implements RequestContext {
    */
   public <T extends Message> Collection<T> getResponsesNoWait() throws InvocationTargetException {
     checkIfReceivedError();
-    Collection<Message> result = new ArrayList<>();
+    Collection<Response> result = new ArrayList<>();
     responses.drainTo(result);
-    //noinspection unchecked
-    return list(result, v -> (T) v);
+    return result.stream()
+            .map(r->{
+              ifNotNullDo(r.listener, ResponseListener::responseAccepted);
+              return (T)(r.message);
+            })
+            .collect(Collectors.toList());
   }
 
 
@@ -285,7 +348,10 @@ public class RequestHandler implements RequestContext {
         checkIfReceivedError();
       }
       //noinspection unchecked
-      return (T) responses.poll();
+      Response r = responses.poll();
+      if (r == null) return null;
+      ifNotNullDo(r.listener, ResponseListener::responseAccepted);
+      return (T) (r.message);
     } catch (InterruptedException e) {
       throw new MessagingInterruptedException(e);
     }
@@ -330,4 +396,66 @@ public class RequestHandler implements RequestContext {
     }
   }
 
+  private static class Response {
+    private final Message message;
+    private final ResponseListener listener;
+
+    public Response(Message message, ResponseListener listener) {
+      this.message = message;
+      this.listener = listener;
+    }
+  }
+
+  //setters
+
+  public static Builder builder() {
+    return new Builder();
+  }
+
+  public static class Builder {
+
+    //fields
+    private boolean allowKeepAlive;
+    private String callID;
+    private long maxWait;
+    private int responseQueueSize = DEFAULT_RESPONSE_QUEUE_SIZE;
+    private int addResponseMaxWaitSeconds = DEFAULT_ADD_RESPONSE_MAX_WAIT_SECONDS;
+
+    public RequestHandler build() {
+      return new RequestHandler(allowKeepAlive, callID, maxWait, responseQueueSize, addResponseMaxWaitSeconds);
+    }
+
+    //setters
+
+    public Builder setAddResponseMaxWaitSeconds(int addResponseMaxWaitSeconds) {
+      this.addResponseMaxWaitSeconds = addResponseMaxWaitSeconds;
+      return this;
+    }
+
+    public Builder setAllowKeepAlive(boolean allowKeepAlive) {
+      this.allowKeepAlive = allowKeepAlive;
+      return this;
+    }
+
+    public Builder setCallID(String callID) {
+      this.callID = callID;
+      return this;
+    }
+
+    public Builder setMaxWait(long maxWait) {
+      this.maxWait = maxWait;
+      return this;
+    }
+
+    public Builder setResponseQueueSize(int responseQueueSize) {
+      this.responseQueueSize = responseQueueSize;
+      return this;
+    }
+
+  }
+
+  //for testing only
+  static void setClock(Clock clock) {
+    RequestHandler.clock = clock;
+  }
 }

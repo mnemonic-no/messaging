@@ -8,7 +8,11 @@ import no.mnemonic.commons.metrics.Metrics;
 import no.mnemonic.commons.metrics.MetricsGroup;
 import no.mnemonic.commons.utilities.lambda.LambdaUtils;
 import no.mnemonic.messaging.requestsink.Message;
-import no.mnemonic.messaging.requestsink.*;
+import no.mnemonic.messaging.requestsink.MessagingException;
+import no.mnemonic.messaging.requestsink.RequestContext;
+import no.mnemonic.messaging.requestsink.RequestListener;
+import no.mnemonic.messaging.requestsink.RequestSink;
+import no.mnemonic.messaging.requestsink.ResponseListener;
 import no.mnemonic.messaging.requestsink.jms.context.ChannelUploadMessageContext;
 import no.mnemonic.messaging.requestsink.jms.context.ClientRequestContext;
 import no.mnemonic.messaging.requestsink.jms.serializer.DefaultJavaMessageSerializer;
@@ -16,12 +20,22 @@ import no.mnemonic.messaging.requestsink.jms.serializer.MessageSerializer;
 import no.mnemonic.messaging.requestsink.jms.util.ClientMetrics;
 import no.mnemonic.messaging.requestsink.jms.util.ThreadFactoryBuilder;
 
-import javax.jms.*;
+import javax.jms.Connection;
+import javax.jms.DeliveryMode;
+import javax.jms.Destination;
+import javax.jms.JMSException;
+import javax.jms.MessageConsumer;
+import javax.jms.MessageListener;
+import javax.jms.MessageProducer;
+import javax.jms.Session;
+import javax.jms.TemporaryQueue;
 import javax.naming.NamingException;
 import java.io.ByteArrayInputStream;
 import java.io.IOException;
-import java.lang.IllegalStateException;
-import java.util.*;
+import java.util.Collections;
+import java.util.Date;
+import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -78,8 +92,9 @@ import static no.mnemonic.messaging.requestsink.jms.util.JMSUtils.*;
 public class JMSRequestSink extends AbstractJMSRequestBase implements RequestSink, MessageListener, MetricAspect {
 
   private static final Logger LOGGER = Logging.getLogger(JMSRequestSink.class);
-  private static final byte[] CHANNEL_CLOSED_REQUEST_MSG = "channel close request".getBytes();
-  private static final byte[] CHANNEL_UPLOAD_REQUEST_MSG = "channel upload request".getBytes();
+  private static final String CLIENT_RESPONSE_ACKNOWLEDGEMENT = "segment processed";
+  private static final String CHANNEL_CLOSED_REQUEST_MSG = "channel close request";
+  private static final String CHANNEL_UPLOAD_REQUEST_MSG = "channel upload request";
   private static final int ABORT_MSG_LIFETIME_MS = 1000;
 
   private final ProtocolVersion protocolVersion;
@@ -90,6 +105,7 @@ public class JMSRequestSink extends AbstractJMSRequestBase implements RequestSin
   private final ExecutorService executor;
 
   private final AtomicReference<MessageProducer> queueProducer = new AtomicReference<>();
+  private final AtomicReference<MessageProducer> responseAcknowledgementProducer = new AtomicReference<>();
   private final AtomicReference<MessageProducer> topicProducer = new AtomicReference<>();
   private final AtomicReference<ResponseQueueState> currentResponseQueue = new AtomicReference<>();
   private final Set<ResponseQueueState> invalidatedResponseQueues = Collections.newSetFromMap(new ConcurrentHashMap<>());
@@ -109,9 +125,7 @@ public class JMSRequestSink extends AbstractJMSRequestBase implements RequestSin
     //do not use custom serializer unless version V3 is enabled
     this.executor = Executors.newSingleThreadExecutor(new ThreadFactoryBuilder().setNamePrefix("JMSRequestSink").build());
     this.protocolVersion = assertNotNull(protocolVersion, "protocolVersion not set");
-    if (serializer == null || !protocolVersion.atLeast(ProtocolVersion.V3))
-      serializer = new DefaultJavaMessageSerializer();
-    this.serializer = serializer;
+    this.serializer = assertNotNull(serializer, "serializer not set");
   }
 
   // **************** interface methods **************************
@@ -155,12 +169,20 @@ public class JMSRequestSink extends AbstractJMSRequestBase implements RequestSin
             message.getStringProperty(PROPERTY_MESSAGE_TYPE));
         return;
       }
-      handler.handleResponse(message);
+
+      String callID = message.getJMSCorrelationID();
+      Destination replyDestination = message.getJMSReplyTo();
+      handler.handleResponse(message, () -> {
+        if (protocolVersion.atLeast(ProtocolVersion.V4)) {
+          sendAcknowledgement(replyDestination, callID);
+        }
+      });
     } catch (Exception e) {
       metrics.error();
       LOGGER.error(e, "Error receiving message");
     }
   }
+
 
   @Override
   public <T extends RequestContext> T signal(Message msg, final T signalContext, long maxWait) {
@@ -180,19 +202,30 @@ public class JMSRequestSink extends AbstractJMSRequestBase implements RequestSin
 
   @Override
   public void abort(String callID) {
-    MessageProducer topic = getOrCreateTopicProducer();
-    if (topic == null) {
+    MessageProducer topicProducer = getOrCreateTopicProducer();
+    if (topicProducer == null) {
       LOGGER.warning("abort() is not supported until a broadcast topic has been configured.");
       return;
     }
-    sendMessage(topic, null, CHANNEL_CLOSED_REQUEST_MSG, callID,
-        Message.Priority.standard, MESSAGE_TYPE_STREAM_CLOSED, ABORT_MSG_LIFETIME_MS);
+    try {
+      sendMessage(topicProducer,
+          this.topic.get(),
+          null,
+          createTextMessage(getSession(), CHANNEL_CLOSED_REQUEST_MSG, protocolVersion),
+          callID,
+          Message.Priority.standard,
+          MESSAGE_TYPE_STREAM_CLOSED,
+          ABORT_MSG_LIFETIME_MS,
+          0);
+    } catch (JMSException | NamingException e) {
+      throw new IllegalStateException("Error creating message", e);
+    }
   }
 
   @Override
   public void onException(JMSException e) {
     //replace response queue on received exception
-    replaceResponseQueue();
+    currentResponseQueue.updateAndGet(this::replaceResponseQueue);
   }
 
   @Override
@@ -200,8 +233,10 @@ public class JMSRequestSink extends AbstractJMSRequestBase implements RequestSin
     try {
       //prepare producer
       getOrCreateQueueProducer();
+      //prepare acknowledgement producer
+      getOrCreateResponseAcknowledgementProducer();
       //initialize response queue
-      replaceResponseQueue();
+      currentResponseQueue.updateAndGet(q -> q != null ? q : replaceResponseQueue(null));
     } catch (Exception e) {
       executor.shutdown();
       throw new IllegalStateException("Error setting up connection", e);
@@ -224,6 +259,25 @@ public class JMSRequestSink extends AbstractJMSRequestBase implements RequestSin
 
   // ****************** private methods ************************
 
+  private void sendAcknowledgement(Destination ackQueue, String callID) {
+    if (ackQueue == null) return;
+    try {
+      sendMessage(
+          getOrCreateResponseAcknowledgementProducer(),
+          ackQueue,
+          null,
+          createTextMessage(getSession(), CLIENT_RESPONSE_ACKNOWLEDGEMENT, protocolVersion),
+          callID,
+          Message.Priority.standard,
+          MESSAGE_TYPE_CLIENT_RESPONSE_ACKNOWLEDGEMENT,
+          ABORT_MSG_LIFETIME_MS,
+          0);
+    } catch (JMSException | NamingException e) {
+      throw new IllegalStateException("Error creating message", e);
+    }
+    LOGGER.debug(">> acknowledge [callID=%s messageType=%s replyTo=%s]", callID, MESSAGE_TYPE_CLIENT_RESPONSE_ACKNOWLEDGEMENT, ackQueue);
+  }
+
   private MessageProducer getOrCreateQueueProducer() {
     return queueProducer.updateAndGet(prod -> {
       if (prod != null) return prod;
@@ -237,14 +291,24 @@ public class JMSRequestSink extends AbstractJMSRequestBase implements RequestSin
     });
   }
 
+  private MessageProducer getOrCreateResponseAcknowledgementProducer() {
+    return responseAcknowledgementProducer.updateAndGet(prod -> {
+      if (prod != null) return prod;
+      try {
+        prod = getSession().createProducer(null);
+        prod.setDeliveryMode(DeliveryMode.NON_PERSISTENT);
+        return prod;
+      } catch (JMSException | NamingException e) {
+        throw new IllegalStateException("Error setting up acknowledgement producer", e);
+      }
+    });
+  }
+
   private MessageProducer getOrCreateTopicProducer() {
     return topicProducer.updateAndGet(p -> {
       if (p != null) return p;
       try {
-        //if topic is not supported, return null
-        Optional<Topic> optionalTopic = getTopic();
-        if (!optionalTopic.isPresent()) return null;
-        MessageProducer producer = getSession().createProducer(optionalTopic.get());
+        MessageProducer producer = getSession().createProducer(getTopic());
         producer.setDeliveryMode(DeliveryMode.NON_PERSISTENT);
         return producer;
       } catch (JMSException | NamingException e) {
@@ -264,7 +328,7 @@ public class JMSRequestSink extends AbstractJMSRequestBase implements RequestSin
     }
   }
 
-  private ResponseQueueState replaceResponseQueue() {
+  private ResponseQueueState replaceResponseQueue(ResponseQueueState oldState) {
     try {
       //create new temporary queue and set a message consumer on it
       TemporaryQueue queue = getSession().createTemporaryQueue();
@@ -272,9 +336,6 @@ public class JMSRequestSink extends AbstractJMSRequestBase implements RequestSin
       consumer.setMessageListener(this);
       ResponseQueueState newState = new ResponseQueueState(queue, consumer);
       LOGGER.info("Created new response queue %s", newState.getResponseQueue());
-
-      //add to list of response queues and set as current active responsequeue
-      ResponseQueueState oldState = currentResponseQueue.getAndUpdate(s -> newState);
 
       //mark old responsequeue as invalidated (if set)
       ifNotNullDo(oldState, s -> {
@@ -331,22 +392,26 @@ public class JMSRequestSink extends AbstractJMSRequestBase implements RequestSin
       if (messageBytes.length > getMaxMessageSize()) {
         //if needing to fragment, replace signal context with a wrapper client upload context and send a channel request
         ctx = new ChannelUploadMessageContext(ctx, new ByteArrayInputStream(messageBytes), msg.getCallID(), getMaxMessageSize(), protocolVersion, metrics);
-        messageBytes = CHANNEL_UPLOAD_REQUEST_MSG;
+        messageBytes = CHANNEL_UPLOAD_REQUEST_MSG.getBytes();
         messageType = JMSRequestProxy.MESSAGE_TYPE_CHANNEL_REQUEST;
         metrics.fragmentedUploadRequested();
       }
+      ResponseQueueState thisCallResponseQueue = getCurrentResponseQueueState();
       //select response queue to use for this request
-      ResponseQueueState currentResponseQueue = getCurrentResponseQueueState();
       //setup handler for this request
       ClientRequestContext handler = new ClientRequestContext(
-          msg.getCallID(), getSession(), metrics,
-          Thread.currentThread().getContextClassLoader(), ctx,
-          () -> currentResponseQueue.endCall(msg.getCallID()), serializer);
+          msg.getCallID(),
+          getSession(),
+          metrics,
+          Thread.currentThread().getContextClassLoader(),
+          ctx,
+          () -> thisCallResponseQueue.endCall(msg.getCallID()),
+          serializer);
 
       //register handler
       requestHandlers.put(msg.getCallID(), handler);
       //register call in current response queue
-      currentResponseQueue.addCall(msg.getCallID());
+      getCurrentResponseQueueState().addCall(msg.getCallID());
       //register for client-side notifications
       ctx.addListener(new RequestListener() {
         @Override
@@ -362,11 +427,21 @@ public class JMSRequestSink extends AbstractJMSRequestBase implements RequestSin
 
         @Override
         public void timeout() {
-          replaceResponseQueue();
+          currentResponseQueue.updateAndGet(JMSRequestSink.this::replaceResponseQueue);
         }
       });
       //send signal message
-      sendMessage(getOrCreateQueueProducer(), getCurrentResponseQueue(), messageBytes, msg.getCallID(), msg.getPriority(), messageType, maxWait);
+      sendMessage(
+          getOrCreateQueueProducer(),
+          getQueue(),
+          getCurrentResponseQueue(),
+          createByteMessage(getSession(), messageBytes, protocolVersion, serializer.serializerID()),
+          msg.getCallID(),
+          msg.getPriority(),
+          messageType,
+          maxWait,
+          msg.getResponseWindowSize()
+      );
       metrics.request();
     } catch (IOException | JMSException | NamingException e) {
       LOGGER.warning(e, "Error in checkForFragmentationAndSignal");
@@ -391,21 +466,29 @@ public class JMSRequestSink extends AbstractJMSRequestBase implements RequestSin
   }
 
   private ResponseQueueState getCurrentResponseQueueState() {
-    return ifNull(currentResponseQueue.get(), this::replaceResponseQueue);
+    return currentResponseQueue.updateAndGet(q -> q != null ? q : replaceResponseQueue(null));
   }
 
-  private void sendMessage(MessageProducer producer, Destination replyTo, byte[] messageBytes, String callID, Message.Priority priority, String messageType, long lifeTime) {
-    if (producer == null) {
-      throw new IllegalArgumentException("Producer not set");
-    }
+  private void sendMessage(MessageProducer producer,
+                           Destination destination,
+                           Destination replyTo,
+                           javax.jms.Message msg,
+                           String callID,
+                           Message.Priority priority,
+                           String messageType,
+                           long lifeTime,
+                           int segmentWindowSize) {
+    assertNotNull(producer, "Producer  not set");
+    assertNotNull(msg, "Message not set");
+    assertNotNull(destination, "Destination  not set");
     try {
-      javax.jms.Message m = createByteMessage(getSession(), messageBytes, protocolVersion, serializer.serializerID());
       long timeout = System.currentTimeMillis() + lifeTime;
-      m.setJMSReplyTo(replyTo);
-      m.setJMSCorrelationID(callID);
-      m.setStringProperty(PROPERTY_MESSAGE_TYPE, messageType);
-      m.setLongProperty(JMSRequestProxy.PROPERTY_REQ_TIMEOUT, timeout);
-      producer.send(m, DeliveryMode.NON_PERSISTENT, resolveJMSPriority(priority), lifeTime);
+      msg.setJMSReplyTo(replyTo);
+      msg.setJMSCorrelationID(callID);
+      msg.setStringProperty(PROPERTY_MESSAGE_TYPE, messageType);
+      msg.setLongProperty(JMSRequestProxy.PROPERTY_REQ_TIMEOUT, timeout);
+      msg.setIntProperty(JMSRequestProxy.PROPERTY_SEGMENT_WINDOW_SIZE, segmentWindowSize);
+      producer.send(destination, msg, DeliveryMode.NON_PERSISTENT, resolveJMSPriority(priority), lifeTime);
       if (LOGGER.isDebug()) {
         LOGGER.debug(">> sendMessage [callID=%s messageType=%s replyTo=%s timeout=%s]", callID, messageType, replyTo, new Date(timeout));
       }
@@ -424,6 +507,7 @@ public class JMSRequestSink extends AbstractJMSRequestBase implements RequestSin
       // try to nicely shut down all resources
       executeAndReset(currentResponseQueue, ResponseQueueState::close, "Error closing response queue");
       executeAndReset(queueProducer, MessageProducer::close, "Error closing queue producer");
+      executeAndReset(responseAcknowledgementProducer, MessageProducer::close, "Error closing acknowledgement producer");
       executeAndReset(topicProducer, MessageProducer::close, "Error closing topic producer");
       executeAndReset(session, Session::close, "Error closing session");
       executeAndReset(connection, Connection::close, "Error closing connection");
@@ -436,6 +520,7 @@ public class JMSRequestSink extends AbstractJMSRequestBase implements RequestSin
   private synchronized void resetState() {
     currentResponseQueue.set(null);
     queueProducer.set(null);
+    responseAcknowledgementProducer.set(null);
     topicProducer.set(null);
     session.set(null);
     queue.set(null);
@@ -483,6 +568,12 @@ public class JMSRequestSink extends AbstractJMSRequestBase implements RequestSin
       return false;
     }
 
+    @Override
+    public boolean addResponse(Message msg, ResponseListener responseListener) {
+      responseListener.responseAccepted();
+      return false;
+    }
+
     public boolean keepAlive(long until) {
       return false;
     }
@@ -522,7 +613,7 @@ public class JMSRequestSink extends AbstractJMSRequestBase implements RequestSin
   public static class Builder extends AbstractJMSRequestBase.BaseBuilder<Builder> {
 
     //fields
-    private ProtocolVersion protocolVersion = ProtocolVersion.V1;
+    private ProtocolVersion protocolVersion = ProtocolVersion.V3;
     private MessageSerializer serializer = new DefaultJavaMessageSerializer();
 
     private Builder() {

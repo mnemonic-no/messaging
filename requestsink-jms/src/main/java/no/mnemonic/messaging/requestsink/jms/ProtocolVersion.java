@@ -1,16 +1,12 @@
 package no.mnemonic.messaging.requestsink.jms;
 
-import no.mnemonic.commons.logging.Logger;
-import no.mnemonic.commons.logging.Logging;
-
 import javax.jms.JMSException;
 import java.util.Objects;
 
 public enum ProtocolVersion {
 
-  V1(1),
-  V2(2),
-  V3(3);
+  V3(3),
+  V4(4);
 
   private final int version;
 

@@ -9,8 +9,14 @@ import no.mnemonic.messaging.requestsink.jms.serializer.MessageSerializer;
 import no.mnemonic.messaging.requestsink.jms.util.MessageFragment;
 import no.mnemonic.messaging.requestsink.jms.util.ServerMetrics;
 
-import javax.jms.*;
-import javax.naming.NamingException;
+import javax.jms.BytesMessage;
+import javax.jms.Destination;
+import javax.jms.JMSException;
+import javax.jms.Message;
+import javax.jms.MessageConsumer;
+import javax.jms.MessageProducer;
+import javax.jms.Session;
+import javax.jms.TemporaryQueue;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.LinkedBlockingDeque;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -38,6 +44,7 @@ public class ServerChannelUploadContext implements ServerContext {
   private final BlockingQueue<MessageFragment> fragments = new LinkedBlockingDeque<>();
   private final AtomicLong timeout = new AtomicLong();
   private final ProtocolVersion protocolVersion;
+  private final int segmentWindowSize;
   private final ServerMetrics metrics;
   private final MessageSerializer serializer;
 
@@ -46,11 +53,20 @@ public class ServerChannelUploadContext implements ServerContext {
   private TemporaryQueue channelQueue;
   private MessageConsumer channelConsumer;
 
-  public ServerChannelUploadContext(String callID, Session session, Destination responseDestination, long timeout, ProtocolVersion protocolVersion, ServerMetrics metrics, MessageSerializer serializer) throws JMSException, NamingException {
+  public ServerChannelUploadContext(String callID,
+                                    Session session,
+                                    Destination responseDestination,
+                                    long timeout,
+                                    ProtocolVersion protocolVersion,
+                                    int segmentWindowSize,
+                                    ServerMetrics metrics,
+                                    MessageSerializer serializer
+  ) {
     this.callID = assertNotNull(callID, "CallID not set");
     this.session = assertNotNull(session, "Session not set");
     this.responseDestination = assertNotNull(responseDestination, "ResponseDestination not set");
     this.protocolVersion = assertNotNull(protocolVersion, "ProtocolVersion not set");
+    this.segmentWindowSize = segmentWindowSize;
     this.metrics = assertNotNull(metrics, "metrics not set");
     this.serializer = assertNotNull(serializer, "serializer not set");
     this.timeout.set(timeout);
@@ -67,7 +83,7 @@ public class ServerChannelUploadContext implements ServerContext {
     this.channelQueue = session.createTemporaryQueue();
     this.channelConsumer = session.createConsumer(channelQueue);
     this.channelConsumer.setMessageListener(this::onMessage);
-    //create producer to send feedback to the client
+    //create producer to send acknowledgement to the client
     this.replyTo = session.createProducer(responseDestination);
     //send a channel setup message to the client (message text has no meaning)
     Message setupMessage = createTextMessage(session, "channel setup", protocolVersion);
@@ -139,7 +155,7 @@ public class ServerChannelUploadContext implements ServerContext {
         return;
       }
       metrics.fragmentedUploadCompleted();
-      uploadHandler.handleRequest(callID, messageData, responseDestination, timeout.get(), protocolVersion, serializer);
+      uploadHandler.handleRequest(callID, messageData, responseDestination, timeout.get(), segmentWindowSize, protocolVersion, serializer);
     } catch (Exception e) {
       LOGGER.warning("Error handling end-of-stream: " + callID);
       notifyError(e);
@@ -196,7 +212,21 @@ public class ServerChannelUploadContext implements ServerContext {
     deleteTemporaryQueue(channelQueue);
   }
 
+  @Override
+  public void acknowledgeResponse() {
+    if (LOGGER.isDebug()) {
+      LOGGER.debug(" << responseAcknowledgement");
+    }
+  }
+
   public interface UploadHandler {
-    void handleRequest(String callID, byte[] message, Destination replyTo, long timeout, ProtocolVersion protocolVersion, MessageSerializer serializer) throws Exception;
+    void handleRequest(String callID,
+                       byte[] message,
+                       Destination replyTo,
+                       long timeout,
+                       int segmentWindowSize,
+                       ProtocolVersion protocolVersion,
+                       MessageSerializer serializer
+    ) throws Exception;
   }
 }

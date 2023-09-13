@@ -5,6 +5,7 @@ import no.mnemonic.commons.container.ComponentContainer;
 import no.mnemonic.messaging.requestsink.Message;
 import no.mnemonic.messaging.requestsink.RequestContext;
 import no.mnemonic.messaging.requestsink.RequestSink;
+import no.mnemonic.messaging.requestsink.ResponseListener;
 import no.mnemonic.messaging.requestsink.jms.serializer.DefaultJavaMessageSerializer;
 import no.mnemonic.messaging.requestsink.jms.serializer.XStreamMessageSerializer;
 import org.junit.After;
@@ -12,10 +13,13 @@ import org.junit.Before;
 import org.junit.Test;
 
 import java.util.concurrent.Future;
+import java.util.concurrent.Semaphore;
 import java.util.concurrent.TimeUnit;
 
 import static org.junit.Assert.assertNotNull;
-import static org.mockito.Mockito.mock;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.*;
 
 public class JMSRequestSinkProxyXStreamTest extends AbstractJMSRequestSinkProxyTest {
 
@@ -26,6 +30,8 @@ public class JMSRequestSinkProxyXStreamTest extends AbstractJMSRequestSinkProxyT
     //create mock client (requestor to requestSink) and endpoint (target for requestProxy)
     endpoint = mock(RequestSink.class);
     requestContext = mock(RequestContext.class);
+    clientResponseListener = mock(ResponseListener.class);
+    serverResponseListener = mock(ResponseListener.class);
 
     //set up a real JMS connection to a vm-local activemq
     queueName = "dynamicQueues/" + generateCookie(10);
@@ -33,7 +39,7 @@ public class JMSRequestSinkProxyXStreamTest extends AbstractJMSRequestSinkProxyT
 
     //set up request sink pointing at a vm-local topic
     requestSink = addConnection(JMSRequestSink.builder())
-            .setProtocolVersion(ProtocolVersion.V3)
+            .setProtocolVersion(ProtocolVersion.V4)
             .setSerializer(createXstream())
             .setQueueName(queueName)
             .setTopicName(topicName)
@@ -82,6 +88,36 @@ public class JMSRequestSinkProxyXStreamTest extends AbstractJMSRequestSinkProxyT
     requestSink.signal(new TestMessage("message"), requestContext, 10000);
     IllegalDeserializationException e = future.get(1, TimeUnit.SECONDS);
     assertNotNull(e);
+  }
+
+  @Test
+  public void testAcknowledgeResponse() throws Exception {
+    serverContainer.initialize();
+    clientContainer.initialize();
+    Semaphore acksem = new Semaphore(0);
+
+    //mock receiving ack back to server
+    doAnswer(i->{
+      acksem.release();
+      return null;
+    }).when(serverResponseListener).responseAccepted();
+
+    //mock client handling of response
+    when(requestContext.addResponse(any(), any())).thenAnswer(i -> {
+      ResponseListener l = i.getArgument(1);
+      l.responseAccepted();
+      return true;
+    });
+
+    //when endpoint receives signal, it replies with two replies
+    mockEndpointSignal(new TestMessage("reply1"), new TestMessage("reply2"));
+    requestSink.signal(new TestMessage("request"), requestContext, 10000);
+
+    //wait for two acknowledgements to be received serverside
+    assertTrue(acksem.tryAcquire(2, 2, TimeUnit.SECONDS));
+    verify(requestContext, times(2)).addResponse(any(), any());
+    verify(serverResponseListener, times(2)).responseAccepted();
+
   }
 
   private XStreamMessageSerializer createXstream() {

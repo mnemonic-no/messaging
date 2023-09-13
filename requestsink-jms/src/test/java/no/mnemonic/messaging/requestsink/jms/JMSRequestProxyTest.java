@@ -12,7 +12,14 @@ import org.junit.Test;
 import org.mockito.Mock;
 import org.mockito.MockitoAnnotations;
 
-import javax.jms.*;
+import javax.jms.DeliveryMode;
+import javax.jms.Destination;
+import javax.jms.JMSException;
+import javax.jms.Message;
+import javax.jms.MessageConsumer;
+import javax.jms.MessageProducer;
+import javax.jms.Queue;
+import javax.jms.Topic;
 import javax.naming.NamingException;
 import java.io.IOException;
 import java.util.Date;
@@ -59,7 +66,7 @@ public class JMSRequestProxyTest extends AbstractJMSRequestTest {
     Future<MessageAndContext> expectedSignal = expectSignal();
     //send testmessage
     TestMessage sentMessage = new TestMessage("test1");
-    signal(sentMessage, 1000, ProtocolVersion.V2);
+    signal(sentMessage, 1000, ProtocolVersion.V3);
     //wait for signal to come through and validate
     TestMessage receivedMessage = expectedSignal.get(1000, TimeUnit.MILLISECONDS).msg;
     assertEquals(sentMessage.getCallID(), receivedMessage.getCallID());
@@ -75,11 +82,11 @@ public class JMSRequestProxyTest extends AbstractJMSRequestTest {
       return ctx;
     });
     TestMessage sentMessage = new TestMessage("test1");
-    Destination responseQueue = signal(sentMessage, 1000, ProtocolVersion.V2);
+    Destination responseQueue = signal(sentMessage, 1000, ProtocolVersion.V3);
     Message eosMessage = receiveFrom(responseQueue).poll(1000, TimeUnit.MILLISECONDS);
     Assert.assertEquals(JMSRequestProxy.MESSAGE_TYPE_STREAM_CLOSED, eosMessage.getStringProperty(JMSRequestProxy.PROPERTY_MESSAGE_TYPE));
     assertEquals(sentMessage.getCallID(), eosMessage.getJMSCorrelationID());
-    assertEquals(ProtocolVersion.V2, getProtocolVersion(eosMessage));
+    assertEquals(ProtocolVersion.V3, getProtocolVersion(eosMessage));
   }
 
 
@@ -95,14 +102,14 @@ public class JMSRequestProxyTest extends AbstractJMSRequestTest {
       //blocking queue, which registers the signals, but keeps them trapped until the latch is count down
       BlockingQueue<TestMessage> signalQueue = getBlockingSignalQueue(latch);
 
-      signal(new TestMessage("standard1").setPriority(standard), 1000, ProtocolVersion.V2);
-      signal(new TestMessage("standard2").setPriority(standard), 1000, ProtocolVersion.V2);
-      signal(new TestMessage("bulk1").setPriority(bulk), 1000, ProtocolVersion.V2);
+      signal(new TestMessage("standard1").setPriority(standard), 1000, ProtocolVersion.V3);
+      signal(new TestMessage("standard2").setPriority(standard), 1000, ProtocolVersion.V3);
+      signal(new TestMessage("bulk1").setPriority(bulk), 1000, ProtocolVersion.V3);
       //this message is never accepted by the proxy, because it has run out of concurrent bulk calls
-      signal(new TestMessage("bulk2").setPriority(bulk), 1000, ProtocolVersion.V2);
-      signal(new TestMessage("expedite1").setPriority(expedite), 1000, ProtocolVersion.V2);
+      signal(new TestMessage("bulk2").setPriority(bulk), 1000, ProtocolVersion.V3);
+      signal(new TestMessage("expedite1").setPriority(expedite), 1000, ProtocolVersion.V3);
       //this message is never accepted by the proxy, because it has run out of concurrent expedite calls
-      signal(new TestMessage("expedite2").setPriority(expedite), 1000, ProtocolVersion.V2);
+      signal(new TestMessage("expedite2").setPriority(expedite), 1000, ProtocolVersion.V3);
 
       //verify four received messages
       Set<String> received = set();
@@ -141,20 +148,20 @@ public class JMSRequestProxyTest extends AbstractJMSRequestTest {
         Thread.sleep(500);
         ctx.keepAlive(System.currentTimeMillis() + 1000);
       }
-      ctx.addResponse(new TestMessage("resp"));
+      ctx.addResponse(new TestMessage("resp"), ()->{});
       ctx.endOfStream();
       return ctx;
     });
 
     TestMessage sentMessage = new TestMessage("test1");
-    Destination responseQueue = signal(sentMessage, 1000, ProtocolVersion.V2);
+    Destination responseQueue = signal(sentMessage, 1000, ProtocolVersion.V3);
     System.out.println("Timeout at " + new Date(System.currentTimeMillis() + 1000));
     BlockingQueue<Message> response = receiveFrom(responseQueue);
 
     for (int i = 0; i < 10; i++) {
       Message r = response.poll(1000, TimeUnit.MILLISECONDS);
       assertEquals(JMSRequestProxy.MESSAGE_TYPE_EXTEND_WAIT, r.getStringProperty(JMSRequestProxy.PROPERTY_MESSAGE_TYPE));
-      assertEquals(ProtocolVersion.V2, getProtocolVersion(r));
+      assertEquals(ProtocolVersion.V3, getProtocolVersion(r));
       assertEquals(sentMessage.getCallID(), r.getJMSCorrelationID());
       long until = r.getLongProperty(JMSRequestProxy.PROPERTY_REQ_TIMEOUT);
       assertTrue(until > System.currentTimeMillis());
@@ -182,7 +189,7 @@ public class JMSRequestProxyTest extends AbstractJMSRequestTest {
     }).when(endpoint).abort(any());
 
     TestMessage sentMessage = new TestMessage("test1");
-    signal(sentMessage, 1000, ProtocolVersion.V2);
+    signal(sentMessage, 1000, ProtocolVersion.V3);
     assertTrue(semaphore.tryAcquire(1, 1, TimeUnit.SECONDS));
 
     abort(sentMessage.getCallID());
@@ -225,11 +232,11 @@ public class JMSRequestProxyTest extends AbstractJMSRequestTest {
     //listen for signal invocation
     Future<MessageAndContext> expectedSignal = expectSignal();
     //request channel
-    Destination responseQueue = signal(sentMessage, 1000, ProtocolVersion.V2);
+    Destination responseQueue = signal(sentMessage, 1000, ProtocolVersion.V3);
     BlockingQueue<Message> responses = receiveFrom(responseQueue);
 
     //wait for signal to be received, and send huge response
-    expectedSignal.get(1000, TimeUnit.MILLISECONDS).ctx.addResponse(response);
+    expectedSignal.get(1000, TimeUnit.MILLISECONDS).ctx.addResponse(response, ()->{});
 
     //wait for fragmented reply
     Message firstFragment = responses.poll(100000, TimeUnit.MILLISECONDS);
@@ -247,40 +254,20 @@ public class JMSRequestProxyTest extends AbstractJMSRequestTest {
     assertEquals(digest, endOfFragments.getStringProperty(JMSRequestProxy.PROPERTY_DATA_CHECKSUM_MD5));
   }
 
-  @Test
-  public void testNoFragmentedResponseOnV1Request() throws Exception {
-    setupEnvironment();
-    TestMessage response = createBigResponse();
-
-    TestMessage sentMessage = new TestMessage("request");
-    //listen for signal invocation
-    Future<MessageAndContext> expectedSignal = expectSignal();
-    //request channel
-    Destination responseQueue = signal(sentMessage, 1000, ProtocolVersion.V1);
-    BlockingQueue<Message> responses = receiveFrom(responseQueue);
-
-    //wait for signal to be received, and send huge response
-    expectedSignal.get(1000, TimeUnit.MILLISECONDS).ctx.addResponse(response);
-
-    //wait for fragmented reply
-    Message responseMessage = responses.poll(100000, TimeUnit.MILLISECONDS);
-    assertEquals(JMSRequestProxy.MESSAGE_TYPE_SIGNAL_RESPONSE, responseMessage.getStringProperty(JMSRequestProxy.PROPERTY_MESSAGE_TYPE));
-  }
-
   //private methods
 
   private void doTestSignalResponse(int numberOfResponses) throws NamingException, JMSException, IOException, InterruptedException, ClassNotFoundException {
     respondToSignal(numberOfResponses);
 
     TestMessage sentMessage = new TestMessage("test1");
-    Destination responseQueue = signal(sentMessage, 1000, ProtocolVersion.V2);
+    Destination responseQueue = signal(sentMessage, 1000, ProtocolVersion.V3);
     BlockingQueue<Message> response = receiveFrom(responseQueue);
 
     for (int i = 0; i < numberOfResponses; i++) {
       Message r = response.poll(1000, TimeUnit.MILLISECONDS);
       assertNotNull(r);
       assertEquals(JMSRequestProxy.MESSAGE_TYPE_SIGNAL_RESPONSE, r.getStringProperty(JMSRequestProxy.PROPERTY_MESSAGE_TYPE));
-      assertEquals(ProtocolVersion.V2, getProtocolVersion(r));
+      assertEquals(ProtocolVersion.V3, getProtocolVersion(r));
       assertEquals(sentMessage.getCallID(), r.getJMSCorrelationID());
       assertEquals("resp" + i, ((TestMessage) TestUtils.unserialize(extractMessageBytes(r))).getId());
     }
@@ -292,7 +279,7 @@ public class JMSRequestProxyTest extends AbstractJMSRequestTest {
     when(endpoint.signal(any(), any(), anyLong())).thenAnswer(inv -> {
       RequestContext ctx = inv.getArgument(1);
       for (int i = 0; i < numberOfResponses; i++) {
-        ctx.addResponse(new TestMessage("resp" + i));
+        ctx.addResponse(new TestMessage("resp" + i), ()->{});
       }
       ctx.endOfStream();
       return ctx;
@@ -338,7 +325,7 @@ public class JMSRequestProxyTest extends AbstractJMSRequestTest {
     return future;
   }
 
-  private BlockingQueue<Message> receiveFrom(Destination destination) throws NamingException, JMSException {
+  private BlockingQueue<Message> receiveFrom(Destination destination) throws JMSException {
     BlockingQueue<Message> q = new LinkedBlockingDeque<>();
     MessageConsumer consumer = session.createConsumer(destination);
     consumer.setMessageListener(q::add);

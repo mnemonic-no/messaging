@@ -1,6 +1,7 @@
 package no.mnemonic.messaging.requestsink.jms.context;
 
 import no.mnemonic.messaging.requestsink.RequestContext;
+import no.mnemonic.messaging.requestsink.ResponseListener;
 import no.mnemonic.messaging.requestsink.jms.ExceptionMessage;
 import no.mnemonic.messaging.requestsink.jms.MockMessageBuilder;
 import no.mnemonic.messaging.requestsink.jms.ProtocolVersion;
@@ -13,6 +14,7 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
+import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 
@@ -52,6 +54,10 @@ class ClientRequestContextTest {
   private Runnable closeListener;
   @Mock
   private Clock clock;
+  @Mock
+  private ResponseListener responseListener;
+  @Mock
+  private ClientRequestContext.ResponseCallback responseCallback;
 
   private ClientRequestContext handler;
   private final TestMessage testMessage = new TestMessage(CALL_ID);
@@ -64,7 +70,7 @@ class ClientRequestContextTest {
     lenient().when(session.createTemporaryQueue()).thenReturn(temporaryQueue);
     lenient().when(session.createConsumer(any())).thenReturn(messageConsumer);
     lenient().when(requestContext.isClosed()).thenReturn(false);
-    lenient().when(requestContext.addResponse(any())).thenReturn(true);
+    lenient().when(requestContext.addResponse(any(), any())).thenReturn(true);
     lenient().when(requestContext.keepAlive(anyLong())).thenReturn(true);
     messageBytes = TestUtils.serialize(testMessage);
     handler = new ClientRequestContext(CALL_ID, session, new ClientMetrics(), ClassLoader.getSystemClassLoader(), requestContext, closeListener, new DefaultJavaMessageSerializer());
@@ -76,24 +82,33 @@ class ClientRequestContextTest {
   }
 
   @Test
+  void testClientAcknowledgement() throws JMSException, IOException {
+    ArgumentCaptor<ResponseListener> captor = ArgumentCaptor.forClass(ResponseListener.class);
+    handler.handleResponse(createResponseMessage(CALL_ID, testMessage), responseCallback);
+    verify(requestContext).addResponse(eq(testMessage), captor.capture());
+    captor.getValue().responseAccepted();
+    verify(responseCallback).responseAccepted();
+  }
+
+  @Test
   void testHandleFragments() {
-    assertTrue(handler.addFragment(new MessageFragment("callID", "responseID", 0, Arrays.copyOfRange(messageBytes, 0, 3))));
-    assertTrue(handler.addFragment(new MessageFragment("callID", "responseID", 1, Arrays.copyOfRange(messageBytes, 3, messageBytes.length))));
-    assertTrue(handler.reassemble("responseID", 2, md5(messageBytes)));
-    verify(requestContext).addResponse(testMessage);
+    assertTrue(handler.addFragment(new MessageFragment("callID", "responseID", 0, Arrays.copyOfRange(messageBytes, 0, 3)), responseListener));
+    assertTrue(handler.addFragment(new MessageFragment("callID", "responseID", 1, Arrays.copyOfRange(messageBytes, 3, messageBytes.length)), responseListener));
+    assertTrue(handler.reassemble("responseID", 2, md5(messageBytes), responseListener));
+    verify(requestContext).addResponse(eq(testMessage), any());
   }
 
   @Test
   void testHandleFragmentsOutOfOrder() {
-    assertTrue(handler.addFragment(new MessageFragment("callID", "responseID", 0, Arrays.copyOfRange(messageBytes, 0, 3))));
-    assertTrue(handler.reassemble("responseID", 2, md5(messageBytes)));
-    assertTrue(handler.addFragment(new MessageFragment("callID", "responseID", 1, Arrays.copyOfRange(messageBytes, 3, messageBytes.length))));
-    verify(requestContext).addResponse(testMessage);
+    assertTrue(handler.addFragment(new MessageFragment("callID", "responseID", 0, Arrays.copyOfRange(messageBytes, 0, 3)), responseListener));
+    assertTrue(handler.reassemble("responseID", 2, md5(messageBytes), responseListener));
+    assertTrue(handler.addFragment(new MessageFragment("callID", "responseID", 1, Arrays.copyOfRange(messageBytes, 3, messageBytes.length)), responseListener));
+    verify(requestContext).addResponse(eq(testMessage), any());
   }
 
   @Test
   void testHandleFragmentSubmitsKeepalive() {
-    assertTrue(handler.addFragment(new MessageFragment("callID", "responseID", 0, Arrays.copyOfRange(messageBytes, 0, 3))));
+    assertTrue(handler.addFragment(new MessageFragment("callID", "responseID", 0, Arrays.copyOfRange(messageBytes, 0, 3)), responseListener));
     verify(requestContext).keepAlive(20000L);
   }
 
@@ -110,16 +125,16 @@ class ClientRequestContextTest {
     byte[] messageBytes1 = TestUtils.serialize(message1);
     byte[] messageBytes2 = TestUtils.serialize(message2);
 
-    assertTrue(handler.addFragment(new MessageFragment("callID", "responseID1", 0, Arrays.copyOfRange(messageBytes1, 0, 3))));
-    assertTrue(handler.addFragment(new MessageFragment("callID", "responseID1", 1, Arrays.copyOfRange(messageBytes1, 3, messageBytes1.length))));
-    assertTrue(handler.reassemble("responseID1", 2, md5(messageBytes1)));
+    assertTrue(handler.addFragment(new MessageFragment("callID", "responseID1", 0, Arrays.copyOfRange(messageBytes1, 0, 3)), responseListener));
+    assertTrue(handler.addFragment(new MessageFragment("callID", "responseID1", 1, Arrays.copyOfRange(messageBytes1, 3, messageBytes1.length)), responseListener));
+    assertTrue(handler.reassemble("responseID1", 2, md5(messageBytes1), responseListener));
 
-    assertTrue(handler.addFragment(new MessageFragment("callID", "responseID2", 0, Arrays.copyOfRange(messageBytes2, 0, 3))));
-    assertTrue(handler.addFragment(new MessageFragment("callID", "responseID2", 1, Arrays.copyOfRange(messageBytes2, 3, messageBytes2.length))));
-    assertTrue(handler.reassemble("responseID2", 2, md5(messageBytes2)));
+    assertTrue(handler.addFragment(new MessageFragment("callID", "responseID2", 0, Arrays.copyOfRange(messageBytes2, 0, 3)), responseListener));
+    assertTrue(handler.addFragment(new MessageFragment("callID", "responseID2", 1, Arrays.copyOfRange(messageBytes2, 3, messageBytes2.length)), responseListener));
+    assertTrue(handler.reassemble("responseID2", 2, md5(messageBytes2), responseListener));
 
-    verify(requestContext).addResponse(message1);
-    verify(requestContext).addResponse(message2);
+    verify(requestContext).addResponse(eq(message1), any());
+    verify(requestContext).addResponse(eq(message2), any());
   }
 
   @Test
@@ -129,56 +144,56 @@ class ClientRequestContextTest {
     byte[] messageBytes1 = TestUtils.serialize(message1);
     byte[] messageBytes2 = TestUtils.serialize(message2);
 
-    assertTrue(handler.addFragment(new MessageFragment("callID", "responseID2", 0, Arrays.copyOfRange(messageBytes2, 0, 3))));
-    assertTrue(handler.addFragment(new MessageFragment("callID", "responseID2", 1, Arrays.copyOfRange(messageBytes2, 3, messageBytes2.length))));
-    assertTrue(handler.addFragment(new MessageFragment("callID", "responseID1", 0, Arrays.copyOfRange(messageBytes1, 0, 3))));
-    assertTrue(handler.addFragment(new MessageFragment("callID", "responseID1", 1, Arrays.copyOfRange(messageBytes1, 3, messageBytes1.length))));
+    assertTrue(handler.addFragment(new MessageFragment("callID", "responseID2", 0, Arrays.copyOfRange(messageBytes2, 0, 3)), responseListener));
+    assertTrue(handler.addFragment(new MessageFragment("callID", "responseID2", 1, Arrays.copyOfRange(messageBytes2, 3, messageBytes2.length)), responseListener));
+    assertTrue(handler.addFragment(new MessageFragment("callID", "responseID1", 0, Arrays.copyOfRange(messageBytes1, 0, 3)), responseListener));
+    assertTrue(handler.addFragment(new MessageFragment("callID", "responseID1", 1, Arrays.copyOfRange(messageBytes1, 3, messageBytes1.length)), responseListener));
 
-    assertTrue(handler.reassemble("responseID2", 2, md5(messageBytes2)));
-    assertTrue(handler.reassemble("responseID1", 2, md5(messageBytes1)));
+    assertTrue(handler.reassemble("responseID2", 2, md5(messageBytes2), responseListener));
+    assertTrue(handler.reassemble("responseID1", 2, md5(messageBytes1), responseListener));
 
-    verify(requestContext).addResponse(message1);
-    verify(requestContext).addResponse(message2);
+    verify(requestContext).addResponse(eq(message1), any());
+    verify(requestContext).addResponse(eq(message2), any());
   }
 
   @Test
   void testClosedRequestContextRejectsResponse() {
-    when(requestContext.addResponse(any())).thenReturn(false);
-    assertTrue(handler.addFragment(new MessageFragment("callID", "responseID", 0, Arrays.copyOfRange(messageBytes, 0, 3))));
-    assertTrue(handler.addFragment(new MessageFragment("callID", "responseID", 1, Arrays.copyOfRange(messageBytes, 3, messageBytes.length))));
-    assertFalse(handler.reassemble("responseID", 2, md5(messageBytes)));
+    when(requestContext.addResponse(any(), any())).thenReturn(false);
+    assertTrue(handler.addFragment(new MessageFragment("callID", "responseID", 0, Arrays.copyOfRange(messageBytes, 0, 3)), responseListener));
+    assertTrue(handler.addFragment(new MessageFragment("callID", "responseID", 1, Arrays.copyOfRange(messageBytes, 3, messageBytes.length)), responseListener));
+    assertFalse(handler.reassemble("responseID", 2, md5(messageBytes), responseListener));
   }
 
   @Test
   void testInvalidChecksumRejectsResponse() {
-    assertTrue(handler.addFragment(new MessageFragment("callID", "responseID", 0, Arrays.copyOfRange(messageBytes, 0, 3))));
-    assertTrue(handler.addFragment(new MessageFragment("callID", "responseID", 1, Arrays.copyOfRange(messageBytes, 3, messageBytes.length))));
-    assertFalse(handler.reassemble("responseID", 2, "invalid"));
+    assertTrue(handler.addFragment(new MessageFragment("callID", "responseID", 0, Arrays.copyOfRange(messageBytes, 0, 3)), responseListener));
+    assertTrue(handler.addFragment(new MessageFragment("callID", "responseID", 1, Arrays.copyOfRange(messageBytes, 3, messageBytes.length)), responseListener));
+    assertFalse(handler.reassemble("responseID", 2, "invalid", responseListener));
   }
 
   @Test
   void testTooManyFragmentsRejectsResponse() {
-    assertTrue(handler.addFragment(new MessageFragment("callID", "responseID", 0, Arrays.copyOfRange(messageBytes, 0, 3))));
-    assertTrue(handler.addFragment(new MessageFragment("callID", "responseID", 1, Arrays.copyOfRange(messageBytes, 3, messageBytes.length))));
-    assertFalse(handler.reassemble("responseID", 1, "invalid"));
+    assertTrue(handler.addFragment(new MessageFragment("callID", "responseID", 0, Arrays.copyOfRange(messageBytes, 0, 3)), responseListener));
+    assertTrue(handler.addFragment(new MessageFragment("callID", "responseID", 1, Arrays.copyOfRange(messageBytes, 3, messageBytes.length)), responseListener));
+    assertFalse(handler.reassemble("responseID", 1, "invalid", responseListener));
   }
 
   @Test
   void testTooFewFragmentsPendingOutOfOrder() {
-    assertTrue(handler.addFragment(new MessageFragment("callID", "responseID", 0, Arrays.copyOfRange(messageBytes, 0, 3))));
-    assertTrue(handler.addFragment(new MessageFragment("callID", "responseID", 1, Arrays.copyOfRange(messageBytes, 3, messageBytes.length))));
-    assertTrue(handler.reassemble("responseID", 3, "incomplete"));
+    assertTrue(handler.addFragment(new MessageFragment("callID", "responseID", 0, Arrays.copyOfRange(messageBytes, 0, 3)), responseListener));
+    assertTrue(handler.addFragment(new MessageFragment("callID", "responseID", 1, Arrays.copyOfRange(messageBytes, 3, messageBytes.length)), responseListener));
+    assertTrue(handler.reassemble("responseID", 3, "incomplete", responseListener));
     //nothing happens here, as the handler will wait to see if more fragments arrive
   }
 
   @Test
   void testReassembleWithoutFragmentsRejectsResponse() {
-    assertFalse(handler.reassemble("responseID", 2, md5(messageBytes)));
+    assertFalse(handler.reassemble("responseID", 2, md5(messageBytes), responseListener));
   }
 
   @Test
   void testNullFragment() {
-    assertFalse(handler.addFragment(null));
+    assertFalse(handler.addFragment(null, responseListener));
   }
 
   @Test
@@ -188,63 +203,63 @@ class ClientRequestContextTest {
 
   @Test
   void testNullMessage() throws JMSException {
-    handler.handleResponse(null);
+    handler.handleResponse(null, () -> {});
     verifyNoMoreInteractions(requestContext);
   }
 
   @Test
   void testMessageWithoutProtocolVersion() throws JMSException {
-    handler.handleResponse(new MockMessageBuilder<>(TextMessage.class).build());
+    handler.handleResponse(new MockMessageBuilder<>(TextMessage.class).build(), () -> {});
     verifyNoMoreInteractions(requestContext);
   }
 
   @Test
   void testMessageWithoutType() throws JMSException {
-    handler.handleResponse(textMessage().build());
+    handler.handleResponse(textMessage().build(), () -> {});
     verifyNoMoreInteractions(requestContext);
   }
 
   @Test
   void testAddSingleResponse() throws JMSException, IOException {
-    handler.handleResponse(createResponseMessage(CALL_ID, testMessage));
-    verify(requestContext).addResponse(testMessage);
+    handler.handleResponse(createResponseMessage(CALL_ID, testMessage), () -> {});
+    verify(requestContext).addResponse(eq(testMessage), any());
   }
 
   @Test
   void testAddSingleResponseWithWrongCallID() throws JMSException, IOException {
-    handler.handleResponse(createResponseMessage("invalid", testMessage));
+    handler.handleResponse(createResponseMessage("invalid", testMessage), () -> {});
     verifyNoMoreInteractions(requestContext);
   }
 
   @Test
   void testAddSingleResponseWithClosedRequestContext() throws JMSException, IOException {
     when(requestContext.isClosed()).thenReturn(true);
-    handler.handleResponse(createResponseMessage(CALL_ID, testMessage));
-    verify(requestContext, never()).addResponse(any());
+    handler.handleResponse(createResponseMessage(CALL_ID, testMessage), () -> {});
+    verify(requestContext, never()).addResponse(any(), any());
   }
 
   @Test
   void testEndOfStream() throws JMSException {
-    handler.handleResponse(createEOS(CALL_ID));
+    handler.handleResponse(createEOS(CALL_ID), () -> {});
     verify(requestContext).endOfStream();
   }
 
   @Test
   void testErrorSignal() throws JMSException, IOException {
-    handler.handleResponse(createErrorSignal(CALL_ID, new IllegalStateException()));
+    handler.handleResponse(createErrorSignal(CALL_ID, new IllegalStateException()), () -> {});
     verify(requestContext).notifyError(isA(IllegalStateException.class));
   }
 
   @Test
   void testExtendWait() throws JMSException {
-    handler.handleResponse(createExtendWaitMessage(CALL_ID, 1000));
+    handler.handleResponse(createExtendWaitMessage(CALL_ID, 1000), () -> {});
     verify(requestContext).keepAlive(1000);
   }
 
   @Test
   void testExtendWaitWithClosedRequestContext() throws JMSException {
     when(requestContext.isClosed()).thenReturn(true);
-    handler.handleResponse(createExtendWaitMessage(CALL_ID, 1000));
+    handler.handleResponse(createExtendWaitMessage(CALL_ID, 1000), () -> {});
     verify(requestContext, never()).keepAlive(anyLong());
   }
 
@@ -253,11 +268,11 @@ class ClientRequestContextTest {
     TestMessage message = new TestMessage("abc");
     byte[] messageBytes = TestUtils.serialize(message);
 
-    handler.handleResponse(createMessageFragment(CALL_ID, "response1", Arrays.copyOfRange(messageBytes, 0, 3), 0));
-    handler.handleResponse(createMessageFragment(CALL_ID, "response1", Arrays.copyOfRange(messageBytes, 3, messageBytes.length), 1));
-    handler.handleResponse(createEOF(CALL_ID, "response1", 2, md5(messageBytes)));
+    handler.handleResponse(createMessageFragment(CALL_ID, "response1", Arrays.copyOfRange(messageBytes, 0, 3), 0), () -> {});
+    handler.handleResponse(createMessageFragment(CALL_ID, "response1", Arrays.copyOfRange(messageBytes, 3, messageBytes.length), 1), () -> {});
+    handler.handleResponse(createEOF(CALL_ID, "response1", 2, md5(messageBytes)), () -> {});
 
-    verify(requestContext).addResponse(message);
+    verify(requestContext).addResponse(eq(message), any());
   }
 
   //helpers
@@ -316,12 +331,12 @@ class ClientRequestContextTest {
 
   private MockMessageBuilder<TextMessage> textMessage() throws JMSException {
     return new MockMessageBuilder<>(TextMessage.class)
-            .withProperty(PROTOCOL_VERSION_KEY, ProtocolVersion.V2.getVersionString());
+            .withProperty(PROTOCOL_VERSION_KEY, ProtocolVersion.V3.getVersionString());
   }
 
   private MockMessageBuilder<BytesMessage> bytesMessage() throws JMSException {
     return new MockMessageBuilder<>(BytesMessage.class)
-            .withProperty(PROTOCOL_VERSION_KEY, ProtocolVersion.V2.getVersionString());
+            .withProperty(PROTOCOL_VERSION_KEY, ProtocolVersion.V3.getVersionString());
   }
 
 

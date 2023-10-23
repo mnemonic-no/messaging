@@ -126,6 +126,7 @@ public class KafkaDocumentSource<T> implements DocumentSource<T>, MetricAspect {
             .addData("processing.error.retry", consumerRetryProcessError.longValue())
             .addData("kafka.error.retry", consumerRetryKafkaError.longValue());
 
+    //only report alive-metric if this source has ever been attached to a subscriber
     if (subscriberAttached.get()) {
       metrics.addData("alive", consumerRunning.get() ? 1 : 0);
     }
@@ -173,10 +174,7 @@ public class KafkaDocumentSource<T> implements DocumentSource<T>, MetricAspect {
     executorService.submit(worker);
     subscriberAttached.set(true);
 
-    return ()->{
-      worker.cancel();
-      subscriberAttached.set(false);
-    };
+    return worker::cancel;
   }
 
   private ConsumerCallbackInterface createCallbackInterface() {
@@ -228,7 +226,6 @@ public class KafkaDocumentSource<T> implements DocumentSource<T>, MetricAspect {
       ifNotNullDo(c, KafkaConsumer::close);
       return null;
     });
-    subscriberAttached.set(false);
   }
 
   public KafkaConsumer<String, T> getKafkaConsumer() {

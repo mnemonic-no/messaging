@@ -15,6 +15,7 @@ import no.mnemonic.commons.utilities.collections.CollectionUtils;
 import no.mnemonic.commons.utilities.collections.ListUtils;
 import no.mnemonic.commons.utilities.collections.MapUtils;
 import no.mnemonic.messaging.requestsink.Message;
+import no.mnemonic.messaging.requestsink.RequestContext;
 import no.mnemonic.messaging.requestsink.RequestSink;
 import no.mnemonic.messaging.requestsink.jms.context.ServerChannelUploadContext;
 import no.mnemonic.messaging.requestsink.jms.context.ServerContext;
@@ -202,6 +203,8 @@ public class JMSRequestProxy extends AbstractJMSRequestBase implements MetricAsp
       //stop accepting requests
       closed.set(true);
       stopExecutor();
+      //notify all ongoing contexts to close before we shut down sessions
+      closeAllRequestContexts();
     } catch (Exception e) {
       LOGGER.warning(e, "Error stopping request proxy");
     }
@@ -209,6 +212,12 @@ public class JMSRequestProxy extends AbstractJMSRequestBase implements MetricAsp
     closeAllResources();
   }
 
+  private void closeAllRequestContexts() {
+    calls.values()
+        .stream()
+        .filter(s -> s instanceof RequestContext)
+        .forEach(s->((RequestContext)s).notifyClose());
+  }
 
   private void stopConsumer(Message.Priority priority) {
     ifNotNull(

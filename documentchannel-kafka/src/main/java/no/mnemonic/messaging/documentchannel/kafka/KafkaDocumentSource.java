@@ -13,12 +13,20 @@ import no.mnemonic.commons.utilities.collections.SetUtils;
 import no.mnemonic.messaging.documentchannel.DocumentChannelListener;
 import no.mnemonic.messaging.documentchannel.DocumentChannelSubscription;
 import no.mnemonic.messaging.documentchannel.DocumentSource;
-import org.apache.kafka.clients.consumer.*;
+import org.apache.kafka.clients.consumer.ConsumerRebalanceListener;
+import org.apache.kafka.clients.consumer.ConsumerRecord;
+import org.apache.kafka.clients.consumer.ConsumerRecords;
+import org.apache.kafka.clients.consumer.KafkaConsumer;
+import org.apache.kafka.clients.consumer.OffsetAndTimestamp;
 import org.apache.kafka.common.PartitionInfo;
 import org.apache.kafka.common.TopicPartition;
 
 import java.time.Duration;
-import java.util.*;
+import java.util.Collection;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -250,6 +258,7 @@ public class KafkaDocumentSource<T> implements DocumentSource<T>, MetricAspect {
   }
 
   private void seek(String topic, Map<Integer, KafkaCursor.OffsetAndTimestamp> cursorPointers) throws KafkaInvalidSeekException {
+    if (MapUtils.isEmpty(cursorPointers)) return;
     //determine active partitions for this topic
     Map<Integer, PartitionInfo> partitionInfos = map(getConsumerOrFail().partitionsFor(topic), p -> MapUtils.pair(p.partition(), p));
     for (Integer partition : cursorPointers.keySet()) {

@@ -53,6 +53,7 @@ public abstract class AbstractJMSRequestBase implements LifecycleAspect, AppendM
   public static final String PROPERTY_FRAGMENTS_IDX = "FragmentIndex";
   public static final String PROPERTY_RESPONSE_ID = "ResponseID";
   public static final String PROPERTY_DATA_CHECKSUM_MD5 = "DataChecksumMD5";
+  public static final String PROPERTY_SERVER_NODE_ID = "ServerNodeID";
 
   static final String ERROR_CLOSED = "closed";
 
@@ -76,7 +77,7 @@ public abstract class AbstractJMSRequestBase implements LifecycleAspect, AppendM
   final AtomicReference<Connection> connection = new AtomicReference<>();
   final AtomicReference<Session> session = new AtomicReference<>();
   final AtomicReference<Queue> queue = new AtomicReference<>();
-  final AtomicReference<Topic> topic = new AtomicReference<>();
+  final AtomicReference<Topic> broadcastTopic = new AtomicReference<>();
 
   // ************************* constructors ********************************
 
@@ -160,9 +161,9 @@ public abstract class AbstractJMSRequestBase implements LifecycleAspect, AppendM
     return getOrUpdateSynchronized(queue, this::lookupQueue);
   }
 
-  Topic getTopic() throws JMSException, NamingException {
+  Topic getBroadcastTopic() throws JMSException, NamingException {
     if (isClosed()) throw new IllegalStateException(ERROR_CLOSED);
-    return getOrUpdateSynchronized(topic, this::lookupTopic);
+    return getOrUpdateSynchronized(broadcastTopic, this::lookupTopic);
   }
 
   Session getSession() throws JMSException, NamingException {

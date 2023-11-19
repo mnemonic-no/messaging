@@ -154,27 +154,23 @@ public class JMSRequestSink extends AbstractJMSRequestBase implements RequestSin
         metrics.incompatibleMessage();
         return;
       }
+      String messageType = message.getStringProperty(PROPERTY_MESSAGE_TYPE);
+      String serverNodeID = message.getStringProperty(PROPERTY_SERVER_NODE_ID);
+      if (messageType == null) messageType = "N/A";
+
       ClientRequestContext handler = requestHandlers.get(message.getJMSCorrelationID());
+
       if (handler == null) {
-        //do not notify/count close message as missing handler, as single-value replies often lead to client-initiated stream close
-        if (MESSAGE_TYPE_STREAM_CLOSED.equals(message.getStringProperty(PROPERTY_MESSAGE_TYPE))) {
-          LOGGER.debug("No request handler for callID: %s (type=%s)",
-              message.getJMSCorrelationID(),
-              MESSAGE_TYPE_STREAM_CLOSED);
-          return;
-        }
-        metrics.unknownCallIDMessage();
-        LOGGER.warning("No request handler for callID: %s (type=%s)",
-            message.getJMSCorrelationID(),
-            message.getStringProperty(PROPERTY_MESSAGE_TYPE));
+        handleMissingHandler(message, messageType);
         return;
       }
 
       String callID = message.getJMSCorrelationID();
       Destination replyDestination = message.getJMSReplyTo();
+
       handler.handleResponse(message, () -> {
         if (protocolVersion.atLeast(ProtocolVersion.V4)) {
-          sendAcknowledgement(replyDestination, callID);
+          sendAcknowledgement(replyDestination, callID, serverNodeID);
         }
       });
     } catch (Exception e) {
@@ -209,10 +205,11 @@ public class JMSRequestSink extends AbstractJMSRequestBase implements RequestSin
     }
     try {
       sendMessage(topicProducer,
-          this.topic.get(),
+          getBroadcastTopic(),
           null,
           createTextMessage(getSession(), CHANNEL_CLOSED_REQUEST_MSG, protocolVersion),
           callID,
+          null,
           Message.Priority.standard,
           MESSAGE_TYPE_STREAM_CLOSED,
           ABORT_MSG_LIFETIME_MS,
@@ -257,25 +254,45 @@ public class JMSRequestSink extends AbstractJMSRequestBase implements RequestSin
     closeAllResources();
   }
 
+
   // ****************** private methods ************************
 
-  private void sendAcknowledgement(Destination ackQueue, String callID) {
-    if (ackQueue == null) return;
+  private void handleMissingHandler(javax.jms.Message message, String messageType) throws JMSException {
+    //do not notify/count close message as missing handler, as single-value replies often lead to client-initiated stream close
+    if (MESSAGE_TYPE_STREAM_CLOSED.equals(messageType)) {
+      LOGGER.debug("No request handler for callID: %s (type=%s)",
+          message.getJMSCorrelationID(),
+          MESSAGE_TYPE_STREAM_CLOSED);
+    } else {
+      metrics.unknownCallIDMessage();
+      LOGGER.warning("No request handler for callID: %s (type=%s)",
+          message.getJMSCorrelationID(),
+          message.getStringProperty(PROPERTY_MESSAGE_TYPE));
+    }
+  }
+
+  private void sendAcknowledgement(Destination ackDestination, String callID, String serverNodeID) {
+    if (ackDestination == null) return;
     try {
       sendMessage(
           getOrCreateResponseAcknowledgementProducer(),
-          ackQueue,
+          ackDestination,
           null,
           createTextMessage(getSession(), CLIENT_RESPONSE_ACKNOWLEDGEMENT, protocolVersion),
           callID,
+          serverNodeID,
           Message.Priority.standard,
           MESSAGE_TYPE_CLIENT_RESPONSE_ACKNOWLEDGEMENT,
           ABORT_MSG_LIFETIME_MS,
           0);
+      LOGGER.debug(">> acknowledge [callID=%s messageType=%s replyTo=%s]",
+          callID,
+          MESSAGE_TYPE_CLIENT_RESPONSE_ACKNOWLEDGEMENT,
+          getBroadcastTopic()
+      );
     } catch (JMSException | NamingException e) {
       throw new IllegalStateException("Error creating message", e);
     }
-    LOGGER.debug(">> acknowledge [callID=%s messageType=%s replyTo=%s]", callID, MESSAGE_TYPE_CLIENT_RESPONSE_ACKNOWLEDGEMENT, ackQueue);
   }
 
   private MessageProducer getOrCreateQueueProducer() {
@@ -308,7 +325,7 @@ public class JMSRequestSink extends AbstractJMSRequestBase implements RequestSin
     return topicProducer.updateAndGet(p -> {
       if (p != null) return p;
       try {
-        MessageProducer producer = getSession().createProducer(getTopic());
+        MessageProducer producer = getSession().createProducer(getBroadcastTopic());
         producer.setDeliveryMode(DeliveryMode.NON_PERSISTENT);
         return producer;
       } catch (JMSException | NamingException e) {
@@ -437,6 +454,7 @@ public class JMSRequestSink extends AbstractJMSRequestBase implements RequestSin
           getCurrentResponseQueue(),
           createByteMessage(getSession(), messageBytes, protocolVersion, serializer.serializerID()),
           msg.getCallID(),
+          null,
           msg.getPriority(),
           messageType,
           maxWait,
@@ -474,6 +492,7 @@ public class JMSRequestSink extends AbstractJMSRequestBase implements RequestSin
                            Destination replyTo,
                            javax.jms.Message msg,
                            String callID,
+                           String serverNodeID,
                            Message.Priority priority,
                            String messageType,
                            long lifeTime,
@@ -486,12 +505,15 @@ public class JMSRequestSink extends AbstractJMSRequestBase implements RequestSin
       msg.setJMSReplyTo(replyTo);
       msg.setJMSCorrelationID(callID);
       msg.setStringProperty(PROPERTY_MESSAGE_TYPE, messageType);
-      msg.setLongProperty(JMSRequestProxy.PROPERTY_REQ_TIMEOUT, timeout);
-      msg.setIntProperty(JMSRequestProxy.PROPERTY_SEGMENT_WINDOW_SIZE, segmentWindowSize);
+      msg.setLongProperty(PROPERTY_REQ_TIMEOUT, timeout);
+      msg.setIntProperty(PROPERTY_SEGMENT_WINDOW_SIZE, segmentWindowSize);
+      if (serverNodeID != null) msg.setStringProperty(PROPERTY_SERVER_NODE_ID, serverNodeID);
+
       producer.send(destination, msg, DeliveryMode.NON_PERSISTENT, resolveJMSPriority(priority), lifeTime);
       if (LOGGER.isDebug()) {
         LOGGER.debug(">> sendMessage [callID=%s messageType=%s replyTo=%s timeout=%s]", callID, messageType, replyTo, new Date(timeout));
       }
+
     } catch (Exception e) {
       LOGGER.warning(e, "Error in sendMessage");
       //if exception is caught when preparing/sending message, we are truly disconnected, so close ALL resources and let next request reconnect
@@ -519,7 +541,7 @@ public class JMSRequestSink extends AbstractJMSRequestBase implements RequestSin
     topicProducer.set(null);
     session.set(null);
     queue.set(null);
-    topic.set(null);
+    broadcastTopic.set(null);
     connection.set(null);
   }
 

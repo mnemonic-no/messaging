@@ -57,6 +57,7 @@ public class ServerResponseContext implements RequestContext, ServerContext {
   private final Destination replyTo;
   private final Destination acknowledgementTo;
   private final String callID;
+  private final UUID serverNodeID;
   private final AtomicLong timeout = new AtomicLong();
   private final AtomicBoolean closed = new AtomicBoolean();
   private final ProtocolVersion protocolVersion;
@@ -71,23 +72,25 @@ public class ServerResponseContext implements RequestContext, ServerContext {
   private final Semaphore segmentWindow;
 
   private ServerResponseContext(
-          String callID,
-          Session session,
-          MessageProducer replyProducer,
-          Destination replyTo,
-          Destination acknowledgementTo,
-          long timeout,
-          ProtocolVersion protocolVersion,
-          int maxMessageSize,
-          int maxWindowAttempts,
-          int maxWindowWaitSeconds,
-          int segmentWindowSize,
-          ServerMetrics metrics,
-          MessageSerializer serializer,
-          RequestSink requestSink) {
+      String callID,
+      Session session,
+      MessageProducer replyProducer,
+      Destination replyTo,
+      Destination acknowledgementTo,
+      long timeout,
+      UUID serverNodeID,
+      ProtocolVersion protocolVersion,
+      int maxMessageSize,
+      int maxWindowAttempts,
+      int maxWindowWaitSeconds,
+      int segmentWindowSize,
+      ServerMetrics metrics,
+      MessageSerializer serializer,
+      RequestSink requestSink) {
     if (segmentWindowSize < 1) throw new IllegalArgumentException("segmentWindowSize must be at least 1");
     if (maxWindowAttempts < 1) throw new IllegalArgumentException("maxWindowAttempts must be at least 1");
     if (maxWindowWaitSeconds < 1) throw new IllegalArgumentException("maxWindowWaitSeconds must be at least 1");
+    this.serverNodeID = serverNodeID;
     this.maxWindowAttempts = maxWindowAttempts;
     this.maxWindowWaitSeconds = maxWindowWaitSeconds;
     this.callID = assertNotNull(callID, "CallID not set");
@@ -213,6 +216,7 @@ public class ServerResponseContext implements RequestContext, ServerContext {
     returnMessage.setJMSCorrelationID(callID);
     returnMessage.setJMSReplyTo(acknowledgementTo);
     returnMessage.setStringProperty(PROPERTY_MESSAGE_TYPE, MESSAGE_TYPE_SIGNAL_RESPONSE);
+    returnMessage.setStringProperty(PROPERTY_SERVER_NODE_ID, serverNodeID.toString());
     // send return message
     replyProducer.send(replyTo, returnMessage);
     if (LOGGER.isDebug()) {
@@ -230,6 +234,7 @@ public class ServerResponseContext implements RequestContext, ServerContext {
           BytesMessage fragment = createByteMessage(session, data, protocolVersion, serializer.serializerID());
           fragment.setJMSCorrelationID(callID);
           fragment.setJMSReplyTo(acknowledgementTo);
+          fragment.setStringProperty(PROPERTY_SERVER_NODE_ID, serverNodeID.toString());
           fragment.setStringProperty(PROPERTY_MESSAGE_TYPE, MESSAGE_TYPE_SIGNAL_FRAGMENT);
           fragment.setStringProperty(PROPERTY_RESPONSE_ID, responseID.toString());
           fragment.setIntProperty(PROPERTY_FRAGMENTS_IDX, idx);
@@ -350,6 +355,7 @@ public class ServerResponseContext implements RequestContext, ServerContext {
   public static class Builder {
 
     //fields
+    private UUID serverNodeID;
     private String callID;
     private Session session;
     private MessageProducer replyProducer;
@@ -373,7 +379,7 @@ public class ServerResponseContext implements RequestContext, ServerContext {
           replyTo,
           acknowledgementTo,
           timeout,
-          protocolVersion,
+          serverNodeID, protocolVersion,
           maxMessageSize,
           maxWindowAttempts,
           maxWindowWaitSeconds,
@@ -386,6 +392,11 @@ public class ServerResponseContext implements RequestContext, ServerContext {
 
     //setters
 
+
+    public Builder setServerNodeID(UUID serverNodeID) {
+      this.serverNodeID = serverNodeID;
+      return this;
+    }
 
     public Builder setMaxWindowWaitSeconds(int maxWindowWaitSeconds) {
       this.maxWindowWaitSeconds = maxWindowWaitSeconds;

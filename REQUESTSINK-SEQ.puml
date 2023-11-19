@@ -1,0 +1,11 @@
+@startuml
+RequestContext <- Client : create
+Client -> "RequestSink server" : signal
+RequestContext <-- "RequestSink server" : keepalive
+RequestContext <-- "RequestSink server" : keepalive
+RequestContext <-- "RequestSink server" : response 1
+RequestContext <-- "RequestSink server" : response 2
+RequestContext <-- "RequestSink server" : response 3
+RequestContext <-- "RequestSink server" : end-of-stream
+
+@enduml

@@ -1,0 +1,24 @@
+@startuml
+
+queue "Queue"
+queue "ResponseQueue"
+node Client
+node JMSRequestSink
+node JMSRequestProxy
+node "RequestSink Implementation"
+interface Topic
+
+Client -> JMSRequestSink
+JMSRequestSink --> Queue
+JMSRequestSink ..> Topic : broadcast
+
+Queue -> JMSRequestProxy
+Topic ..> JMSRequestProxy
+JMSRequestProxy -> "RequestSink Implementation"
+JMSRequestProxy <.. "RequestSink Implementation" : RequestContext.addResponse()
+
+JMSRequestProxy ..> "ResponseQueue"
+"ResponseQueue" .> JMSRequestSink
+JMSRequestSink ..> Client : RequestContext.addResponse()
+
+@enduml

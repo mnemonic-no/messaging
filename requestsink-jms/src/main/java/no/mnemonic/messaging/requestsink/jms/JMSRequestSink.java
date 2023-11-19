@@ -504,14 +504,9 @@ public class JMSRequestSink extends AbstractJMSRequestBase implements RequestSin
     LOGGER.warning("Resetting connection");
     metrics.disconnected();
     try {
-      // try to nicely shut down all resources
-      executeAndReset(currentResponseQueue, ResponseQueueState::close, "Error closing response queue");
-      executeAndReset(queueProducer, MessageProducer::close, "Error closing queue producer");
-      executeAndReset(responseAcknowledgementProducer, MessageProducer::close, "Error closing acknowledgement producer");
-      executeAndReset(topicProducer, MessageProducer::close, "Error closing topic producer");
+      // try to shut down session and connection (the remaining resources will be discarded)
       executeAndReset(session, Session::close, "Error closing session");
       executeAndReset(connection, Connection::close, "Error closing connection");
-      invalidatedResponseQueues.forEach(ResponseQueueState::close);
     } finally {
       resetState();
     }

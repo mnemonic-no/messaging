@@ -1,0 +1,26 @@
+@startuml
+
+queue "Queue" #Cyan
+queue ResponseQueue1 as "Tmp ResponseQueue" #Cyan
+node JMSRequestSink1 as "JMSRequestSink" "#Khaki
+node JMSRequestProxy1 #Khaki
+node JMSRequestProxy2 #Khaki
+node JMSRequestProxy3 #Khaki
+interface Topic #LightGreen
+
+JMSRequestSink1 -> Queue
+JMSRequestSink1 ..> Topic : broadcast
+
+Queue --> JMSRequestProxy1
+Queue --> JMSRequestProxy2
+Queue --> JMSRequestProxy3
+Topic ..> JMSRequestProxy1
+Topic ..> JMSRequestProxy2
+Topic ..> JMSRequestProxy3
+
+JMSRequestProxy1 ...> ResponseQueue1
+JMSRequestProxy2 ...> ResponseQueue1
+JMSRequestProxy3 ...> ResponseQueue1
+ResponseQueue1 .> JMSRequestSink1
+
+@enduml

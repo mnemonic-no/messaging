@@ -1,12 +1,12 @@
 @startuml
 
-queue "Queue"
-queue "ResponseQueue"
-node Client
-node JMSRequestSink
-node JMSRequestProxy
-node "RequestSink Implementation"
-interface Topic
+queue "Queue" #Cyan
+queue ResponseQueue as "Tmp ResponseQueue" #Cyan
+node Client #Orchid
+node JMSRequestSink #Khaki
+node JMSRequestProxy #Khaki
+node "RequestSink Implementation" #Orchid
+interface Topic #LightGreen
 
 Client -> JMSRequestSink
 JMSRequestSink --> Queue
@@ -17,8 +17,8 @@ Topic ..> JMSRequestProxy
 JMSRequestProxy -> "RequestSink Implementation"
 JMSRequestProxy <.. "RequestSink Implementation" : RequestContext.addResponse()
 
-JMSRequestProxy ..> "ResponseQueue"
-"ResponseQueue" .> JMSRequestSink
+JMSRequestProxy ..> ResponseQueue
+ResponseQueue .> JMSRequestSink
 JMSRequestSink ..> Client : RequestContext.addResponse()
 
 @enduml

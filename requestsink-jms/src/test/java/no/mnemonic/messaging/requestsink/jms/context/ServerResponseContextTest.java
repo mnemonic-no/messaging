@@ -14,17 +14,11 @@ import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 
-import javax.jms.Destination;
-import javax.jms.InvalidDestinationException;
-import javax.jms.JMSException;
-import javax.jms.MessageProducer;
-import javax.jms.Session;
+import javax.jms.*;
 import java.time.Clock;
 
 import static no.mnemonic.messaging.requestsink.jms.AbstractJMSRequestBase.*;
-import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertFalse;
-import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.ArgumentMatchers.*;
 import static org.mockito.Mockito.*;
 
@@ -144,6 +138,12 @@ public class ServerResponseContextTest {
   @Test
   void testKeepAliveFailsOnDestinationError() throws JMSException {
     doThrow(InvalidDestinationException.class).when(messageProducer).send(same(replyTo), any());
+    assertFalse(context.keepAlive(NOW + 1000));
+  }
+
+  @Test
+  void testKeepAliveFailsOnSessionClosed() throws JMSException {
+    doThrow(javax.jms.IllegalStateException.class).when(messageProducer).send(same(replyTo), any());
     assertFalse(context.keepAlive(NOW + 1000));
   }
 

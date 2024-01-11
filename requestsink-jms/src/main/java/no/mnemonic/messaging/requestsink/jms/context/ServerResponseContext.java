@@ -3,23 +3,14 @@ package no.mnemonic.messaging.requestsink.jms.context;
 import no.mnemonic.commons.logging.Logger;
 import no.mnemonic.commons.logging.Logging;
 import no.mnemonic.messaging.requestsink.Message;
-import no.mnemonic.messaging.requestsink.MessagingInterruptedException;
-import no.mnemonic.messaging.requestsink.RequestContext;
-import no.mnemonic.messaging.requestsink.RequestListener;
-import no.mnemonic.messaging.requestsink.RequestSink;
-import no.mnemonic.messaging.requestsink.ResponseListener;
+import no.mnemonic.messaging.requestsink.*;
 import no.mnemonic.messaging.requestsink.jms.ExceptionMessage;
 import no.mnemonic.messaging.requestsink.jms.ProtocolVersion;
 import no.mnemonic.messaging.requestsink.jms.serializer.MessageSerializer;
 import no.mnemonic.messaging.requestsink.jms.util.FragmentConsumer;
 import no.mnemonic.messaging.requestsink.jms.util.ServerMetrics;
 
-import javax.jms.BytesMessage;
-import javax.jms.Destination;
-import javax.jms.InvalidDestinationException;
-import javax.jms.JMSException;
-import javax.jms.MessageProducer;
-import javax.jms.Session;
+import javax.jms.*;
 import java.io.ByteArrayInputStream;
 import java.io.IOException;
 import java.io.InputStream;
@@ -35,6 +26,8 @@ import java.util.concurrent.atomic.AtomicReference;
 import static no.mnemonic.commons.utilities.ObjectUtils.ifNotNullDo;
 import static no.mnemonic.messaging.requestsink.jms.JMSRequestProxy.*;
 import static no.mnemonic.messaging.requestsink.jms.util.JMSUtils.*;
+
+import java.lang.IllegalStateException;
 
 /**
  * The server response context is the context object sent to the server side RequestSink along with the signal received from the client.
@@ -137,7 +130,7 @@ public class ServerResponseContext implements RequestContext, ServerContext {
       if (LOGGER.isDebug()) {
         LOGGER.debug(">> keepalive [callID=%s until=%s replyTo=%s]", callID, new Date(until), replyTo);
       }
-    } catch (InvalidDestinationException e) {
+    } catch (JMSException e) {
       LOGGER.warning(e, "Cannot keep connection alive for %s, response channel invalid.", callID);
       return false;
     } catch (Exception e) {

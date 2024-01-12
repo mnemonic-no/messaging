@@ -5,7 +5,7 @@
   <groupId>no.mnemonic.messaging</groupId>
   <artifactId>parent</artifactId>
   <packaging>pom</packaging>
-  <version>1.4.8</version>
+  <version>1.4.9-SNAPSHOT</version>
 
   <name>mnemonic messaging</name>
   <description>Java messaging libraries</description>
@@ -85,7 +85,7 @@
     <connection>scm:git:git://github.com/mnemonic-no/messaging.git</connection>
     <developerConnection>scm:git:ssh://github.com:mnemonic-no/messaging.git</developerConnection>
     <url>https://github.com/mnemonic-no/messaging</url>
-    <tag>parent-1.4.8</tag>
+    <tag>HEAD</tag>
   </scm>
 
   <build>

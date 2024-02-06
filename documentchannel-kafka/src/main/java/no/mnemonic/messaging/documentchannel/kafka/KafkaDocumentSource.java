@@ -9,7 +9,6 @@ import no.mnemonic.commons.metrics.MetricsData;
 import no.mnemonic.commons.utilities.collections.CollectionUtils;
 import no.mnemonic.commons.utilities.collections.ListUtils;
 import no.mnemonic.commons.utilities.collections.MapUtils;
-import no.mnemonic.commons.utilities.collections.SetUtils;
 import no.mnemonic.messaging.documentchannel.DocumentChannelListener;
 import no.mnemonic.messaging.documentchannel.DocumentChannelSubscription;
 import no.mnemonic.messaging.documentchannel.DocumentSource;
@@ -18,7 +17,6 @@ import org.apache.kafka.clients.consumer.ConsumerRecord;
 import org.apache.kafka.clients.consumer.ConsumerRecords;
 import org.apache.kafka.clients.consumer.KafkaConsumer;
 import org.apache.kafka.clients.consumer.OffsetAndTimestamp;
-import org.apache.kafka.common.PartitionInfo;
 import org.apache.kafka.common.TopicPartition;
 
 import java.time.Duration;
@@ -115,15 +113,12 @@ public class KafkaDocumentSource<T> implements DocumentSource<T>, MetricAspect {
 
     currentConsumer.set(provider.createConsumer(type));
 
+    assign(set(topicName));
     if (cursor != null) {
       //parse cursor into current cursor
       currentCursor.parse(cursor);
       for (String topic : topicName) {
         seek(topic, currentCursor.getPointers().get(topic));
-      }
-    } else {
-      for (String topic : topicName) {
-        assign(topic);
       }
     }
   }
@@ -159,8 +154,8 @@ public class KafkaDocumentSource<T> implements DocumentSource<T>, MetricAspect {
    * Note; this cursor is not thread safe; if there is a separate consumer thread polling, you should rather
    * use the cursor of the KafkaDocument.
    *
-   * @throws InterruptedException if interrupted while waiting for Kafka to assign partitions
    * @return the String cursor for the current position of this source
+   * @throws InterruptedException if interrupted while waiting for Kafka to assign partitions
    * @see KafkaDocument
    */
   public String getCursor() throws InterruptedException {
@@ -248,26 +243,31 @@ public class KafkaDocumentSource<T> implements DocumentSource<T>, MetricAspect {
     return getCurrentConsumerOrSubscribe().poll(duration);
   }
 
-  private void assign(String topic) {
+  private void assign(Set<String> topics) {
     //determine active partitions for this topic
-    Set<TopicPartition> partitionInfos = SetUtils.set(getConsumerOrFail().partitionsFor(topic), p -> new TopicPartition(topic, p.partition()));
+    Set<TopicPartition> partitionInfos = set(topics).stream()
+            .map(topic -> set(getConsumerOrFail().partitionsFor(topic)))
+            .flatMap(Collection::stream)
+            .map(p -> new TopicPartition(p.topic(), p.partition()))
+            .collect(Collectors.toSet());
+
     //assign all partitions to this consumer
     getConsumerOrFail().assign(partitionInfos);
+    //update the cursor to point to this position
+    currentCursor.set(getConsumerOrFail());
     //free latch
     assignmentLatch.countDown();
   }
 
   private void seek(String topic, Map<Integer, KafkaCursor.OffsetAndTimestamp> cursorPointers) throws KafkaInvalidSeekException {
     if (MapUtils.isEmpty(cursorPointers)) return;
-    //determine active partitions for this topic
-    Map<Integer, PartitionInfo> partitionInfos = map(getConsumerOrFail().partitionsFor(topic), p -> MapUtils.pair(p.partition(), p));
+
+    Set<Integer> partitions = getConsumerOrFail().partitionsFor(topic).stream().map(p->p.partition()).collect(Collectors.toSet());
     for (Integer partition : cursorPointers.keySet()) {
-      if (!partitionInfos.containsKey(partition)) {
-        throw new KafkaInvalidSeekException("Invalid partition " + partition);
+      if (!partitions.contains(partition)) {
+        throw new KafkaInvalidSeekException("Unable to seek invalid partition " + partition + " for topic " + topic);
       }
     }
-    //assign all partitions to this consumer
-    getConsumerOrFail().assign(SetUtils.set(partitionInfos.values(), p -> new TopicPartition(topic, p.partition())));
 
     //If the cursor contains timestamp: find timestamp to seek to for each partition in the cursor (all other partitions will stay at initial offset set by OffsetResetStrategy)
     Map<TopicPartition, Long> partitionsToSeek = new HashMap<>();

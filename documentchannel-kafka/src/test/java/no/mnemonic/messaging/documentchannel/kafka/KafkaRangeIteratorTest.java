@@ -13,11 +13,17 @@ import org.junit.Test;
 import org.mockito.Mock;
 
 import java.time.Duration;
-import java.util.*;
+import java.util.ArrayList;
+import java.util.Collection;
+import java.util.Iterator;
+import java.util.List;
+import java.util.Set;
+import java.util.UUID;
 import java.util.function.Consumer;
 
 import static no.mnemonic.commons.utilities.ObjectUtils.ifNotNullDo;
 import static no.mnemonic.commons.utilities.collections.ListUtils.list;
+import static no.mnemonic.commons.utilities.collections.SetUtils.set;
 import static no.mnemonic.commons.utilities.lambda.LambdaUtils.tryTo;
 import static org.junit.Assert.assertEquals;
 
@@ -27,7 +33,8 @@ public class KafkaRangeIteratorTest {
   private Consumer<Exception> errorListener;
 
   private Collection<AutoCloseable> channels = new ArrayList<>();
-  private String topic = UUID.randomUUID().toString();
+  private String topic1 = UUID.randomUUID().toString();
+  private String topic2 = UUID.randomUUID().toString();
 
   @ClassRule
   public static DockerComposeRule docker = DockerComposeRule.builder()
@@ -43,7 +50,7 @@ public class KafkaRangeIteratorTest {
 
   @Test
   public void iterateRange() throws KafkaInvalidSeekException, InterruptedException {
-    DocumentDestination<String> destination = setupDestination();
+    DocumentDestination<String> destination = setupDestination(topic1);
     DocumentChannel<String> documentChannel = destination.getDocumentChannel();
 
     for (int i = 0; i < 100; i++) {
@@ -69,9 +76,44 @@ public class KafkaRangeIteratorTest {
   }
 
   @Test
+  public void iterateRangeFromMultipleTopics() throws KafkaInvalidSeekException, InterruptedException {
+    DocumentDestination<String> destination1 = setupDestination(topic1);
+    DocumentDestination<String> destination2 = setupDestination(topic2);
+    DocumentChannel<String> documentChannel1 = destination1.getDocumentChannel();
+    DocumentChannel<String> documentChannel2 = destination2.getDocumentChannel();
+
+    documentChannel1.sendDocument("initial1");
+    documentChannel2.sendDocument("initial2");
+    Set<String> allDocuments = set();
+    allDocuments.addAll(set("initial1", "initial2"));
+
+    KafkaDocumentSource<String> source = setupSource("group", s->s.setCommitType(KafkaDocumentSource.CommitType.none), null);
+    source.seek(null);
+    String fromCursor = source.getCursor();
+
+    for (int i = 0; i < 100; i++) {
+      documentChannel1.sendDocument("doc1-" + i);
+      documentChannel2.sendDocument("doc2-" + i);
+      allDocuments.addAll(set("doc1-" + i, "doc2-" + i));
+    }
+    documentChannel1.flush();
+    documentChannel2.flush();
+
+    source = setupSource("group", s->s.setCommitType(KafkaDocumentSource.CommitType.none), null);
+    source.seek(null);
+    String toCursor = source.getCursor();
+
+    source = setupSource("group", s->s.setCommitType(KafkaDocumentSource.CommitType.none), null);
+    KafkaRangeIterator<String> iterator = new KafkaRangeIterator<>(source, fromCursor, toCursor);
+    List<String> replayedDocuments = ListUtils.list(iterator, KafkaDocument::getDocument);
+    assertEquals(allDocuments, set(replayedDocuments));
+    assertEquals(202, replayedDocuments.size());
+  }
+
+  @Test
   public void rangeIterateWithIterator() throws KafkaInvalidSeekException, InterruptedException {
     useTopic("rangeIterateWithIteratorTest");
-    KafkaDocumentDestination<String> senderChannel = setupDestination();
+    KafkaDocumentDestination<String> senderChannel = setupDestination(topic1);
 
     for (int i = 0; i<200; i++) {
       senderChannel.getDocumentChannel().sendDocument("mydoc" + i);
@@ -103,7 +145,7 @@ public class KafkaRangeIteratorTest {
   @Test
   public void noCommitWithRangeIterator() throws InterruptedException, KafkaInvalidSeekException {
     useTopic("noCommitWithRangeIteratorTest");
-    KafkaDocumentDestination<String> senderChannel = setupDestination();
+    KafkaDocumentDestination<String> senderChannel = setupDestination(topic1);
 
     for (int i = 0; i<100; i++) {
       senderChannel.getDocumentChannel().sendDocument("mydoc" + i);
@@ -138,7 +180,7 @@ public class KafkaRangeIteratorTest {
 
 
 
-  private KafkaDocumentDestination<String> setupDestination() {
+  private KafkaDocumentDestination<String> setupDestination(String topic) {
     KafkaDocumentDestination<String> channel = KafkaDocumentDestination.<String>builder()
             .setProducerProvider(createProducerProvider())
             .setFlushAfterWrite(false)
@@ -158,7 +200,7 @@ public class KafkaRangeIteratorTest {
     KafkaDocumentSource.Builder<String> builder = KafkaDocumentSource.<String>builder()
             .setConsumerProvider(createConsumerProvider(group, providerEdit))
             .addErrorListener(errorListener)
-            .setTopicName(topic)
+            .setTopicName(topic1, topic2)
             .setType(String.class)
             .setCommitType(KafkaDocumentSource.CommitType.sync);
     ifNotNullDo(sourceEdit, s->s.accept(builder));
@@ -200,8 +242,9 @@ public class KafkaRangeIteratorTest {
             .getExternalPort();
   }
 
-  private void useTopic(String topic) {
-    this.topic = topic;
+  private void useTopic(String topicPrefix) {
+    topic1 = topicPrefix + "1";
+    topic2 = topicPrefix + "2";
   }
 
 }

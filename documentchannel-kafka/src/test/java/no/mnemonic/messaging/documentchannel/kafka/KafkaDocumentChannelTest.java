@@ -34,17 +34,12 @@ import static no.mnemonic.commons.utilities.collections.MapUtils.map;
 import static no.mnemonic.commons.utilities.collections.MapUtils.pair;
 import static no.mnemonic.commons.utilities.collections.SetUtils.set;
 import static no.mnemonic.commons.utilities.lambda.LambdaUtils.tryTo;
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertNotNull;
-import static org.junit.Assert.assertTrue;
+import static org.junit.Assert.*;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.fail;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.argThat;
-import static org.mockito.Mockito.doAnswer;
-import static org.mockito.Mockito.isA;
-import static org.mockito.Mockito.times;
-import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.*;
 
 @RunWith(MockitoJUnitRunner.class)
 public class KafkaDocumentChannelTest {
@@ -76,7 +71,7 @@ public class KafkaDocumentChannelTest {
 
   @Before
   public void setUp() {
-    doAnswer(asVoid(str->semaphore.release())).when(listener).documentReceived(any());
+    doAnswer(asVoid(str -> semaphore.release())).when(listener).documentReceived(any());
   }
 
   @Test
@@ -110,7 +105,7 @@ public class KafkaDocumentChannelTest {
     KafkaDocumentSource<String> receiverChannel1 = setupSource("group1", null, b -> b.setMaxPollRecords(10));
 
     Map<Integer, KafkaCursor.OffsetAndTimestamp> partitions = map(
-        pair(99, new KafkaCursor.OffsetAndTimestamp(100, 1000))
+            pair(99, new KafkaCursor.OffsetAndTimestamp(100, 1000))
     );
     Map<String, Map<Integer, KafkaCursor.OffsetAndTimestamp>> cursor = map(pair("invalidCursor", partitions));
     assertThrows(KafkaInvalidSeekException.class, () -> receiverChannel1.seek(new KafkaCursor(cursor).toString()));
@@ -264,9 +259,9 @@ public class KafkaDocumentChannelTest {
   @Test
   public void retryOnError() throws InterruptedException {
     useTopic("retryOnErrorTest");
-    doAnswer(asVoid(str->semaphore.release()))
+    doAnswer(asVoid(str -> semaphore.release()))
             .doThrow(new RuntimeException()) //ONE error when first listener is invoked
-            .doAnswer(asVoid(str->semaphore.release()))
+            .doAnswer(asVoid(str -> semaphore.release()))
             .when(listener).documentReceived(any());
 
     KafkaDocumentDestination<String> senderChannel = setupDestination();
@@ -289,10 +284,10 @@ public class KafkaDocumentChannelTest {
   @Test
   public void retryOnKafkaRebalanced() throws InterruptedException {
     useTopic("retryOnKafkaRebalancedTest");
-    doAnswer(asVoid(str->semaphore.release()))
+    doAnswer(asVoid(str -> semaphore.release()))
             // Demonstrate processing took longer than max.poll.interval.ms that would trigger rebalance of kafka consumer
-            .doAnswer(asVoid(str->tryTo(()->TimeUnit.SECONDS.sleep(3L))))
-            .doAnswer(asVoid(str->semaphore.release()))
+            .doAnswer(asVoid(str -> tryTo(() -> TimeUnit.SECONDS.sleep(3L))))
+            .doAnswer(asVoid(str -> semaphore.release()))
             .when(listener).documentReceived(any());
 
 
@@ -318,9 +313,15 @@ public class KafkaDocumentChannelTest {
     useTopic("retryWithMultipleConsumersTest");
     Set<String> documents = set();
 
-    doAnswer(asVoid(str->{documents.add(str); semaphore.release(); }))
+    doAnswer(asVoid(str -> {
+      documents.add(str);
+      semaphore.release();
+    }))
             .doThrow(new RuntimeException()) //ONE error when first listener is invoked
-            .doAnswer(asVoid(str->{documents.add(str); semaphore.release();}))
+            .doAnswer(asVoid(str -> {
+              documents.add(str);
+              semaphore.release();
+            }))
             .when(listener).documentReceived(any());
 
     KafkaDocumentDestination<String> senderChannel = setupDestination();
@@ -348,7 +349,7 @@ public class KafkaDocumentChannelTest {
     }
 
     //in total, we should have received 1001 documents (1000 OK, and 1 which was rejected)
-    verify(listener, times(1001)).documentReceived(argThat(i->i.startsWith("mydoc")));
+    verify(listener, times(1001)).documentReceived(argThat(i -> i.startsWith("mydoc")));
     //we should have received ONE error
     verify(errorListener).accept(isA(RuntimeException.class));
   }
@@ -385,7 +386,7 @@ public class KafkaDocumentChannelTest {
 
   //convenience method to reduce verbosity of doAnswer
   private static Answer asVoid(Consumer<String> task) {
-    return i->{
+    return i -> {
       task.accept(i.getArgument(0));
       return null;
     };

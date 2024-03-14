@@ -3,6 +3,11 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [1.4.10] - 2024-03-13
+### Changed
+ARGUSUSER-7231
+- Add error logging in `KafkaDocumentDestination.sendDocument(T)` as there is no callback to register the error.  
+
 ## [1.4.0] - 2023-09-27
 ### Changed
 ARGUSUSER-6549

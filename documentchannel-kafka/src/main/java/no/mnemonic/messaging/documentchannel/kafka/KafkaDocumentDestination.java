@@ -1,5 +1,7 @@
 package no.mnemonic.messaging.documentchannel.kafka;
 
+import no.mnemonic.commons.logging.Logger;
+import no.mnemonic.commons.logging.Logging;
 import no.mnemonic.messaging.documentchannel.DocumentChannel;
 import no.mnemonic.messaging.documentchannel.DocumentDestination;
 import no.mnemonic.messaging.documentchannel.noop.NullChannel;
@@ -9,9 +11,7 @@ import org.apache.kafka.clients.producer.ProducerRecord;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Function;
 
-import static no.mnemonic.commons.utilities.ObjectUtils.ifNotNull;
-import static no.mnemonic.commons.utilities.ObjectUtils.ifNotNullDo;
-import static no.mnemonic.commons.utilities.ObjectUtils.ifNull;
+import static no.mnemonic.commons.utilities.ObjectUtils.*;
 
 /**
  * Kafka version of a document channel destination, which writes the document to a configured
@@ -20,6 +20,8 @@ import static no.mnemonic.commons.utilities.ObjectUtils.ifNull;
  * @param <T> document type
  */
 public class KafkaDocumentDestination<T> implements DocumentDestination<T> {
+
+  private final static Logger LOGGER = Logging.getLogger(KafkaDocumentDestination.class);
 
   private final KafkaProducerProvider provider;
   private final Class<T> type;
@@ -41,7 +43,8 @@ public class KafkaDocumentDestination<T> implements DocumentDestination<T> {
     if (provider == null) throw new IllegalArgumentException("provider not set");
     if (type == null) throw new IllegalArgumentException("type not set");
     if (topicName == null) throw new IllegalArgumentException("topicName not set");
-    if (!provider.hasType(type)) throw new IllegalArgumentException("Provider does not support type, maybe add a serializer for " + type);
+    if (!provider.hasType(type))
+      throw new IllegalArgumentException("Provider does not support type, maybe add a serializer for " + type);
     this.keySerializer = keySerializer;
     this.disabled = disabled;
     this.provider = provider;
@@ -83,15 +86,20 @@ public class KafkaDocumentDestination<T> implements DocumentDestination<T> {
   //private methods
 
   private void writeDocument(T doc) {
-    getProducer().send(new ProducerRecord<>(topicName, ifNotNull(keySerializer, k->k.apply(doc)), doc));
+    getProducer().send(
+            new ProducerRecord<>(topicName, ifNotNull(keySerializer, k -> k.apply(doc)), doc),
+            (metadata, exception) -> ifNotNullDo(exception, e->LOGGER.error(e, "Error writing message to topic %s", topicName))
+    );
     if (flushAfterWrite) getProducer().flush();
   }
 
   private <K> void writeDocument(T doc, K documentKey, DocumentChannel.DocumentCallback<K> callback) {
-    getProducer().send(new ProducerRecord<>(topicName, ifNotNull(keySerializer, k->k.apply(doc)), doc), (metadata, exception) -> {
-      if (metadata != null) callback.documentAccepted(documentKey);
-      else if (exception != null) callback.channelError(documentKey, exception);
-    });
+    getProducer().send(
+            new ProducerRecord<>(topicName, ifNotNull(keySerializer, k -> k.apply(doc)), doc),
+            (metadata, exception) -> {
+              if (metadata != null) callback.documentAccepted(documentKey);
+              else if (exception != null) callback.channelError(documentKey, exception);
+            });
     if (flushAfterWrite) getProducer().flush();
   }
 

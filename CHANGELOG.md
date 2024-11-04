@@ -3,6 +3,11 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [1.4.11] - 2024-11-04
+### Changed
+ARGUS-47033
+- Upgraded dependencies 
+
 ## [1.4.10] - 2024-03-13
 ### Changed
 ARGUSUSER-7231

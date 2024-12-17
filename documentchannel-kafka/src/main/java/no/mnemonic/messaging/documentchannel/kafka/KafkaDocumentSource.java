@@ -9,6 +9,7 @@ import no.mnemonic.commons.metrics.MetricsData;
 import no.mnemonic.commons.utilities.collections.CollectionUtils;
 import no.mnemonic.commons.utilities.collections.ListUtils;
 import no.mnemonic.commons.utilities.collections.MapUtils;
+import no.mnemonic.commons.utilities.lambda.LambdaUtils;
 import no.mnemonic.messaging.documentchannel.DocumentChannelListener;
 import no.mnemonic.messaging.documentchannel.DocumentChannelSubscription;
 import no.mnemonic.messaging.documentchannel.DocumentSource;
@@ -85,7 +86,8 @@ public class KafkaDocumentSource<T> implements DocumentSource<T>, MetricAspect {
           Class<T> type,
           List<String> topicName,
           CommitType commitType,
-          Set<Consumer<Exception>> errorListeners
+          Set<Consumer<Exception>> errorListeners,
+          boolean createIfMissing
   ) {
     this.commitType = commitType;
     this.errorListeners = errorListeners;
@@ -97,6 +99,14 @@ public class KafkaDocumentSource<T> implements DocumentSource<T>, MetricAspect {
     this.provider = provider;
     this.type = type;
     this.topicName = topicName;
+
+    if (createIfMissing) {
+      try (KafkaTopicHelper helper = new KafkaTopicHelper(provider.createBootstrapServerList())) {
+        for (String t : topicName) {
+          LambdaUtils.tryTo(() -> helper.createMissingTopic(t), ex -> LOGGER.error(ex, "Error creating topic %s", t));
+        }
+      }
+    }
   }
 
   /**
@@ -262,7 +272,7 @@ public class KafkaDocumentSource<T> implements DocumentSource<T>, MetricAspect {
   private void seek(String topic, Map<Integer, KafkaCursor.OffsetAndTimestamp> cursorPointers) throws KafkaInvalidSeekException {
     if (MapUtils.isEmpty(cursorPointers)) return;
 
-    Set<Integer> partitions = getConsumerOrFail().partitionsFor(topic).stream().map(p->p.partition()).collect(Collectors.toSet());
+    Set<Integer> partitions = getConsumerOrFail().partitionsFor(topic).stream().map(p -> p.partition()).collect(Collectors.toSet());
     for (Integer partition : cursorPointers.keySet()) {
       if (!partitions.contains(partition)) {
         throw new KafkaInvalidSeekException("Unable to seek invalid partition " + partition + " for topic " + topic);
@@ -371,9 +381,10 @@ public class KafkaDocumentSource<T> implements DocumentSource<T>, MetricAspect {
     private List<String> topicName;
     private CommitType commitType = CommitType.async;
     private Set<Consumer<Exception>> errorListeners = set();
+    private boolean createIfMissing;
 
     public KafkaDocumentSource<T> build() {
-      return new KafkaDocumentSource<>(kafkaConsumerProvider, type, topicName, commitType, errorListeners);
+      return new KafkaDocumentSource<>(kafkaConsumerProvider, type, topicName, commitType, errorListeners, createIfMissing);
     }
 
     //setters
@@ -419,6 +430,11 @@ public class KafkaDocumentSource<T> implements DocumentSource<T>, MetricAspect {
 
     public Builder<T> addTopicName(String topicName) {
       this.topicName = addToList(this.topicName, topicName);
+      return this;
+    }
+
+    public Builder<T> setCreateIfMissing(boolean createIfMissing) {
+      this.createIfMissing = createIfMissing;
       return this;
     }
   }

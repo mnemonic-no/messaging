@@ -124,7 +124,7 @@ public class KafkaConsumerProvider {
     return properties;
   }
 
-  private List<String> createBootstrapServerList() {
+  protected List<String> createBootstrapServerList() {
     return Arrays.stream(kafkaHosts.split(","))
             .map(h -> String.format("%s:%d", h, kafkaPort))
             .collect(Collectors.toList());

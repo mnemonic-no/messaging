@@ -3,6 +3,12 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [1.4.12] - 2024-12-16
+### Changed
+ARGUS-48373
+- Add configurable option `createIfMissing` in `KafkaDocumentSource` (default to false).
+- This option is useful for api tests where kafka topics are not already created, to avoid timeouts on missing topics.
+
 ## [1.4.11] - 2024-11-04
 ### Changed
 ARGUS-47033

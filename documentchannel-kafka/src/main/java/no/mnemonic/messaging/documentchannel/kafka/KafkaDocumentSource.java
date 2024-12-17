@@ -101,6 +101,7 @@ public class KafkaDocumentSource<T> implements DocumentSource<T>, MetricAspect {
     this.topicName = topicName;
 
     if (createIfMissing) {
+      LOGGER.info("Creating any missing topics in %s", topicName);
       try (KafkaTopicHelper helper = new KafkaTopicHelper(provider.createBootstrapServerList())) {
         for (String t : topicName) {
           LambdaUtils.tryTo(() -> helper.createMissingTopic(t), ex -> LOGGER.error(ex, "Error creating topic %s", t));

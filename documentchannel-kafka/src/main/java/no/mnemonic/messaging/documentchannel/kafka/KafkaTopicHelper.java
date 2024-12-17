@@ -1,5 +1,7 @@
 package no.mnemonic.messaging.documentchannel.kafka;
 
+import no.mnemonic.commons.logging.Logger;
+import no.mnemonic.commons.logging.Logging;
 import no.mnemonic.commons.utilities.collections.ListUtils;
 import org.apache.kafka.clients.admin.Admin;
 import org.apache.kafka.clients.admin.AdminClientConfig;
@@ -17,6 +19,7 @@ import java.util.stream.Collectors;
 
 public class KafkaTopicHelper implements AutoCloseable {
 
+  private static final Logger LOGGER = Logging.getLogger(KafkaTopicHelper.class);
   private final Admin admin;
 
   public KafkaTopicHelper(String bootstrapServers) {
@@ -48,8 +51,12 @@ public class KafkaTopicHelper implements AutoCloseable {
   }
 
   public void createMissingTopic(String topicName, int partitions, short replicationFactor) throws ExecutionException, InterruptedException {
-    if (listTopics().contains(topicName)) return;
+    if (listTopics().contains(topicName)) {
+      LOGGER.info("Topic %s already exists", topicName);
+      return;
+    };
 
+    LOGGER.info("Creating missing topic %s", topicName);
     NewTopic newTopic = new NewTopic(topicName, partitions, replicationFactor);
 
     CreateTopicsResult result = admin.createTopics(

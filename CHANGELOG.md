@@ -3,6 +3,11 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [1.4.13] - 2024-12-17
+### Changed
+ARGUS-48373
+- Add logging when checking/creating missing Kafka topics  
+
 ## [1.4.12] - 2024-12-16
 ### Changed
 ARGUS-48373

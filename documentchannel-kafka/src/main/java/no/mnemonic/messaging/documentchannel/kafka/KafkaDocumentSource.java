@@ -79,7 +79,7 @@ public class KafkaDocumentSource<T> implements DocumentSource<T>, MetricAspect {
 
   private final CountDownLatch assignmentLatch = new CountDownLatch(1);
 
-  private long maxAssignmentWait = DEFAULT_MAX_ASSIGNMENT_WAIT_MS;
+  private final long maxAssignmentWait;
 
   private KafkaDocumentSource(
           KafkaConsumerProvider provider,
@@ -87,10 +87,12 @@ public class KafkaDocumentSource<T> implements DocumentSource<T>, MetricAspect {
           List<String> topicName,
           CommitType commitType,
           Set<Consumer<Exception>> errorListeners,
-          boolean createIfMissing
+          boolean createIfMissing,
+          long maxAssignmentWait
   ) {
     this.commitType = commitType;
     this.errorListeners = errorListeners;
+    this.maxAssignmentWait = maxAssignmentWait;
     if (provider == null) throw new IllegalArgumentException("provider not set");
     if (type == null) throw new IllegalArgumentException("type not set");
     if (CollectionUtils.isEmpty(topicName)) throw new IllegalArgumentException("topicName not set");
@@ -175,7 +177,7 @@ public class KafkaDocumentSource<T> implements DocumentSource<T>, MetricAspect {
 
   KafkaCursor getKafkaCursor() throws InterruptedException {
     if (!waitForAssignment(Duration.ofMillis(maxAssignmentWait))) {
-      throw new IllegalStateException(String.format("No assignment in %d ms", maxAssignmentWait));
+      throw new IllegalStateException(String.format("No assignment in %d ms for topics %s", maxAssignmentWait, topicName));
     }
     return currentCursor;
   }
@@ -317,16 +319,6 @@ public class KafkaDocumentSource<T> implements DocumentSource<T>, MetricAspect {
     return new KafkaDocumentBatch<>(result, commitType, getConsumerOrFail());
   }
 
-  /**
-   * This parameter only applies to getCursor(), and should probably never need to be changed.
-   *
-   * @param maxAssignmentWait max millis to wait for assignments.
-   */
-  public KafkaDocumentSource<T> setMaxAssignmentWait(long maxAssignmentWait) {
-    this.maxAssignmentWait = maxAssignmentWait;
-    return this;
-  }
-
   private KafkaConsumer<String, T> getConsumerOrFail() {
     if (currentConsumer.get() == null) throw new IllegalStateException("Consumer not set");
     return currentConsumer.get();
@@ -383,12 +375,23 @@ public class KafkaDocumentSource<T> implements DocumentSource<T>, MetricAspect {
     private CommitType commitType = CommitType.async;
     private Set<Consumer<Exception>> errorListeners = set();
     private boolean createIfMissing;
+    private long maxAssignmentWait = DEFAULT_MAX_ASSIGNMENT_WAIT_MS;
 
     public KafkaDocumentSource<T> build() {
-      return new KafkaDocumentSource<>(kafkaConsumerProvider, type, topicName, commitType, errorListeners, createIfMissing);
+      return new KafkaDocumentSource<>(kafkaConsumerProvider, type, topicName, commitType, errorListeners, createIfMissing, maxAssignmentWait);
     }
 
     //setters
+
+    /**
+     * This parameter only applies to getCursor(), and should probably never need to be changed.
+     *
+     * @param maxAssignmentWait max millis to wait for assignments.
+     */
+    public Builder<T> setMaxAssignmentWait(long maxAssignmentWait) {
+      this.maxAssignmentWait = maxAssignmentWait;
+      return this;
+    }
 
     public Builder<T> setErrorListeners(Set<Consumer<Exception>> errorListeners) {
       this.errorListeners = set(errorListeners);

@@ -6,10 +6,7 @@ mnemonic messaging
 ## Usage
 
 [![Javadocs](https://javadoc.io/badge/no.mnemonic.messaging/documentchannel.svg?color=orange&label=documentchannel)](https://javadoc.io/doc/no.mnemonic.messaging/documentchannel)
-[![Javadocs](https://javadoc.io/badge/no.mnemonic.messaging/documentchannel-jms.svg?color=orange&label=documentchannel-jms)](https://javadoc.io/doc/no.mnemonic.messaging/documentchannel-jms)
 [![Javadocs](https://javadoc.io/badge/no.mnemonic.messaging/documentchannel-kafka.svg?color=orange&label=documentchannel-kafka)](https://javadoc.io/doc/no.mnemonic.messaging/documentchannel-kafka)
-[![Javadocs](https://javadoc.io/badge/no.mnemonic.messaging/requestsink.svg?color=orange&label=requestsink)](https://javadoc.io/doc/no.mnemonic.messaging/requestsink)
-[![Javadocs](https://javadoc.io/badge/no.mnemonic.messaging/requestsink-jms.svg?color=orange&label=requestsink-jms)](https://javadoc.io/doc/no.mnemonic.messaging/requestsink-jms)
 
 See [RequestSink documentation](docs/REQUESTSINK.md) for more details on the RequestSink mechanism.
 

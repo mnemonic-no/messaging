@@ -3,6 +3,11 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [1.5.0] - 2025-03-17
+### Removed
+ARGUS-49698
+- Remove requestsink and documentchannel-jms libraries which are no longer maintained/not in use  
+
 ## [1.4.13] - 2024-12-17
 ### Changed
 ARGUS-48373

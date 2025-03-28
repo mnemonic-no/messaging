@@ -1,6 +1,24 @@
 mnemonic messaging
 ================
 
+## Deprecation notice
+
+This repository is no longer maintained.
+The modules `documentchannel` and `documentchannel-kafka` are moved to the `no.mnemonic.services.common` groupID, 
+in the `common-services` repository, from version `0.8.0`.
+
+To use, replace your package import with:
+
+```xml
+<dependency>
+  <groupId>no.mnemonic.services.common</groupId>
+  <artifactId>documentchannel</artifactId>
+  <version>0.8.0</version>
+</dependency>
+```
+
+## About
+
 *mnemonic messaging* provides a set of reusable Java components for creating networked applications. Following the Don't-Repeat-Yourself principle those components contain common functionality which we have written over the years for our projects. We publish them as Open Source with the hope that they might be useful to others as well.
 
 ## Usage
